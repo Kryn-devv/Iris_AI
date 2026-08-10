@@ -34,18 +34,14 @@ class MockLLMProvider(LLMProvider):
 
     def _extract_calculator_expression(self, prompt: str) -> str:
         """Extract a complete mathematical expression from user input without truncating chained operations."""
-        text = prompt.strip()
+        from nova.app.language.normalizer import default_language_normalizer
+        normalized = default_language_normalizer.normalize_tool_expression(prompt)
+
+        text = normalized.strip()
 
         # Remove prefix phrases like "what is", "calculate", "compute"
         prefix_pattern = r"^(?:what\s+is|what's|calculate|compute|eval|evaluate|please\s+calculate|please\s+compute|please\s+eval|result\s+of|value\s+of|solve)\s*"
         cleaned = re.sub(prefix_pattern, "", text, flags=re.IGNORECASE).strip().rstrip("?").rstrip(".")
-
-        # Normalize verbal word operators to math symbols
-        cleaned = re.sub(r"\bmultiplied\s+by\b", "*", cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r"\bdivided\s+by\b", "/", cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r"\bplus\b", "+", cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r"\bminus\b", "-", cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r"\btimes\b", "*", cleaned, flags=re.IGNORECASE)
 
         # Extract candidates containing digits, operators, spaces, parentheses
         math_matches = [m.group(0).strip() for m in re.finditer(r"([\d\.\s\+\-\*\/\%\(\)\*\*]+)", cleaned) if m.group(0).strip()]
@@ -64,7 +60,7 @@ class MockLLMProvider(LLMProvider):
         text = prompt.lower().strip()
 
         # 1. Calculator Intent
-        if any(term in text for term in ["calculate", "compute", "multiplied", "plus", "minus", "divided", "times", "sum", "math"]) or re.search(r"\d+\s*[\+\-\*\/\%]", text):
+        if any(term in text for term in ["calculate", "compute", "multiply", "multiplied", "divide", "divided", "plus", "add", "minus", "subtract", "times", "sum", "math", "गुणा", "भाग", "जोड़ो", "घटाओ"]) or re.search(r"\d+\s*[\+\-\*\/\%]", text):
             expr = self._extract_calculator_expression(prompt)
 
             return AgentPlan(
@@ -136,6 +132,29 @@ class MockLLMProvider(LLMProvider):
     ) -> LLMResponse:
         text = prompt.lower().strip()
         history_msgs = kwargs.get("messages", [])
+
+        # Extract system content from system_prompt param or latest system message in history_msgs
+        sys_content = system_prompt or ""
+        if not sys_content and history_msgs and isinstance(history_msgs, list):
+            for m in reversed(history_msgs):
+                if isinstance(m, dict) and m.get("role") == "system":
+                    sys_content = m.get("content", "")
+                    break
+
+        all_msgs_str = str(history_msgs) + sys_content
+
+        if "response_language=hinglish" in sys_content:
+            is_hindi = False
+            is_hinglish = True
+        elif re.search(r"\bresponse_language=hi\b", sys_content):
+            is_hindi = True
+            is_hinglish = False
+        elif "response_language=en" in sys_content:
+            is_hindi = False
+            is_hinglish = False
+        else:
+            is_hindi = len(re.findall(r"[\u0900-\u097F]", text)) > 0 or "in hindi" in text or "hindi mein" in text
+            is_hinglish = "hinglish" in text or any(w in text for w in ["bhai", "kya", "haal", "samjha", "batao", "kaise"])
 
         # Check for multi-step / simulated tool call test cases when tools or agent loop requests it
         if tools or kwargs.get("agent_mode"):
@@ -266,11 +285,11 @@ class MockLLMProvider(LLMProvider):
                 )
 
             # Single tool calls for standard queries if tool_calls expected
-            if any(term in text for term in ["calculator", "multiplied", "plus", "minus", "divided", "times", "calculate", "compute"]) or re.search(r"\d+\s*[\+\-\*\/\%]", text):
+            if any(term in text for term in ["calculator", "multiplied", "multiply", "plus", "minus", "divided", "divide", "times", "calculate", "compute", "गुणा", "भाग", "जोड़ो", "घटाओ"]) or re.search(r"\d+\s*[\+\-\*\/\%]", text):
                 expr = self._extract_calculator_expression(prompt)
 
                 obs_text = str(history_msgs)
-                if "result" in obs_text or "formatted" in obs_text or "1175" in obs_text or "90" in obs_text or "12558" in obs_text:
+                if "result" in obs_text or "formatted" in obs_text or "1175" in obs_text or "90" in obs_text or "12558" in obs_text or "1000" in obs_text:
                     return LLMResponse(
                         content="Calculation result processed successfully.",
                         provider_name=self.provider_name,
@@ -289,13 +308,8 @@ class MockLLMProvider(LLMProvider):
 
         plan = self._parse_intent_and_plan(prompt)
 
-        # Check language tags in system_prompt or messages
-        sys_str = (system_prompt or "") + str(history_msgs)
-        is_hindi = "response_language=hi" in sys_str or len(re.findall(r"[\u0900-\u097F]", text)) > 0 or "in hindi" in text or "hindi mein" in text
-        is_hinglish = "response_language=hinglish" in sys_str or "hinglish" in text or any(w in text for w in ["bhai", "kya", "haal", "samjha", "batao", "kaise"])
-
         if plan.user_intent == "unsupported":
-            if "recursion" in text or "explain" in text:
+            if "recursion" in all_msgs_str.lower() or "recursion" in text or "explain" in text or "samjha" in text or "batao" in text:
                 if is_hindi:
                     content = "रिकर्शन (Recursion) एक ऐसी प्रक्रिया है जिसमें कोई फ़ंक्शन खुद को ही कॉल करता है।"
                 elif is_hinglish:

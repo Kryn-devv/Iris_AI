@@ -18,6 +18,13 @@ class LanguageNormalizer:
         # Replace Devanagari numbers if present
         clean = self.convert_devanagari_digits(clean)
 
+        # Normalize verbal word operators to math symbols
+        clean = re.sub(r"\bmultiplied\s+by\b", "*", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"\bdivided\s+by\b", "/", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"\bplus\b", "+", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"\bminus\b", "-", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"\btimes\b", "*", clean, flags=re.IGNORECASE)
+
         # Normalize Hinglish / Hindi operator phrases
         clean = re.sub(r"(\d+(?:\.\d+)?)\s*(?:ko|को)\s+(\d+(?:\.\d+)?)\s*(?:se|से)?\s*(?:multiply|गुणा|guna|\*)\s*(?:karo|kar|do|करो|कर)?", r"\1 * \2", clean, flags=re.IGNORECASE)
         clean = re.sub(r"(\d+(?:\.\d+)?)\s*(?:ko|को)\s+(\d+(?:\.\d+)?)\s*(?:se|से)?\s*(?:divide|भाग|bhag|\/)\s*(?:karo|kar|do|करो|कर)?", r"\1 / \2", clean, flags=re.IGNORECASE)

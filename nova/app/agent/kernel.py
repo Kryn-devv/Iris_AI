@@ -557,7 +557,11 @@ class AgentKernel:
                                 )
                             final_output_parts.append(f"Could not execute tool '{step.tool_name}': {exec_result.error}")
                     elif step.action == "final_response":
-                        provider_res = await provider.generate(state.user_input)
+                        provider_res = await provider.generate(
+                            state.user_input,
+                            system_prompt=context_data["system_prompt"],
+                            messages=context_data["messages"],
+                        )
                         final_output_parts.append(provider_res.content)
                 break
             elif llm_res.content and llm_res.content.strip():

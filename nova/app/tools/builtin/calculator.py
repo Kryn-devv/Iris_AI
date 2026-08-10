@@ -2,6 +2,7 @@
 
 import ast
 import operator
+import re
 from typing import Any, Dict
 from nova.app.tools.base import BaseTool
 from nova.app.core.security import PermissionLevel
@@ -71,6 +72,11 @@ class CalculatorTool(BaseTool):
 
         # Clean string expression
         clean_expr = expression.strip().replace("x", "*").replace("X", "*")
+        clean_expr = re.sub(r"\bmultiplied\s+by\b", "*", clean_expr, flags=re.IGNORECASE)
+        clean_expr = re.sub(r"\bdivided\s+by\b", "/", clean_expr, flags=re.IGNORECASE)
+        clean_expr = re.sub(r"\bplus\b", "+", clean_expr, flags=re.IGNORECASE)
+        clean_expr = re.sub(r"\bminus\b", "-", clean_expr, flags=re.IGNORECASE)
+        clean_expr = re.sub(r"\btimes\b", "*", clean_expr, flags=re.IGNORECASE)
 
         try:
             tree = ast.parse(clean_expr, mode="eval")
