@@ -95,6 +95,25 @@ KNOWN_SITES = frozenset(
 
 _DOMAIN_RX = re.compile(r"^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(/\S*)?$", re.IGNORECASE)
 
+#: Folder words the "open X" rule routes to the file manager.
+KNOWN_FOLDERS = {
+    "downloads": "~/Downloads",
+    "downloads folder": "~/Downloads",
+    "documents": "~/Documents",
+    "documents folder": "~/Documents",
+    "desktop": "~/Desktop",
+    "pictures": "~/Pictures",
+    "photos": "~/Pictures",
+    "music": "~/Music",
+    "videos": "~/Videos",
+    "home folder": "~",
+    "iris folder": "~/Iris",
+    "my outputs": "~/Iris/outputs",
+    "outputs folder": "~/Iris/outputs",
+    "projects folder": "~/Iris/projects",
+    "screenshots folder": "~/Iris/screenshots",
+}
+
 _NUMBER_WORDS = {
     "one": 1, "a": 1, "an": 1, "two": 2, "three": 3, "four": 4, "five": 5,
     "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "fifteen": 15,
@@ -134,13 +153,16 @@ def parse_duration_seconds(amount: str, unit: str) -> Optional[int]:
 # ---------------------------------------------------------------------------
 
 def _build_open_target(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
-    """Decide website vs application for a bare 'open X' command."""
+    """Decide website vs folder vs application for a bare 'open X' command."""
     target = (m.group("target") or "").strip().rstrip(".")
     if not target:
         return None
     lowered = target.lower()
     if lowered in KNOWN_SITES or _DOMAIN_RX.match(lowered) or lowered.startswith(("http://", "https://")):
         return {"__tool__": "open_website", "site": target}
+    folder = KNOWN_FOLDERS.get(lowered) or KNOWN_FOLDERS.get(lowered.removeprefix("my ").strip())
+    if folder:
+        return {"__tool__": "open_path", "path": folder}
     return {"__tool__": "open_app", "app": target}
 
 
