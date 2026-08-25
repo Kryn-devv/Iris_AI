@@ -122,6 +122,37 @@ def package_root() -> Path:
     return Path(__file__).resolve().parent.parent.parent
 
 
+def project_root() -> Path:
+    """Directory containing the ``iris`` package (the clone or install root)."""
+    return package_root().parent
+
+
+def env_file_candidates() -> list[Path]:
+    """Absolute ``.env`` locations to load, lowest priority first.
+
+    Resolving these absolutely matters because IRIS is launched at login by a
+    registry Run key / LaunchAgent whose working directory is *not* the project
+    folder. A relative ``.env`` would silently never be found, so the API keys
+    the user carefully pasted in would be ignored on every boot.
+    """
+    seen: set[Path] = set()
+    ordered: list[Path] = []
+    for candidate in (project_root() / ".env", config_dir() / ".env", Path.cwd() / ".env"):
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if resolved not in seen:
+            seen.add(resolved)
+            ordered.append(resolved)
+    return ordered
+
+
+def existing_env_files() -> list[Path]:
+    """The subset of :func:`env_file_candidates` that actually exists on disk."""
+    return [p for p in env_file_candidates() if p.is_file()]
+
+
 def static_dir() -> Path:
     """Bundled web UI assets."""
     return package_root() / "iris" / "app" / "static" if (package_root() / "iris").exists() \

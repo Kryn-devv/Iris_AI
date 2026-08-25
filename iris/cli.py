@@ -5,6 +5,7 @@ Usage:
     iris --minimized           start without opening a browser window
     iris --headless            API server only, never touch the desktop
     iris --host 0.0.0.0        allow phones on the same network
+    iris stop                  stop the running IRIS instance
     iris autostart enable      start IRIS when the computer boots
     iris autostart disable
     iris autostart status
@@ -62,6 +63,59 @@ def _run_server(args: argparse.Namespace) -> None:
             tray.stop()
 
 
+def _stop(port: int | None = None) -> int:
+    """Stop a running IRIS instance so the port is free to bind again.
+
+    Only processes that look like IRIS are terminated: if something unrelated
+    holds the port we report it rather than killing a stranger's process.
+    """
+    import os as _os
+
+    import psutil
+
+    from iris.app.core.config import settings
+
+    target = port or settings.PORT
+    me = _os.getpid()
+    holders: list[tuple[int, str, bool]] = []
+
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        if proc.pid == me:
+            continue
+        try:
+            for conn in proc.net_connections(kind="inet"):
+                if conn.status == psutil.CONN_LISTEN and conn.laddr and conn.laddr.port == target:
+                    cmdline = " ".join(proc.info.get("cmdline") or [])
+                    is_iris = "iris" in cmdline.lower()
+                    holders.append((proc.pid, cmdline or (proc.info.get("name") or "?"), is_iris))
+                    break
+        except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess):
+            continue
+
+    if not holders:
+        print(f"Nothing is listening on port {target}. IRIS is not running.")
+        return 0
+
+    stopped = 0
+    for pid, cmdline, is_iris in holders:
+        if not is_iris:
+            print(f"Port {target} is held by PID {pid} ({cmdline}), which is not IRIS — leaving it alone.")
+            continue
+        try:
+            proc = psutil.Process(pid)
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except psutil.TimeoutExpired:
+                proc.kill()
+            print(f"Stopped IRIS (PID {pid}).")
+            stopped += 1
+        except (psutil.NoSuchProcess, psutil.AccessDenied) as exc:
+            print(f"Could not stop PID {pid}: {exc}")
+
+    return 0 if stopped or holders else 1
+
+
 def _autostart(action: str) -> int:
     from iris.app.desktop import autostart
 
@@ -113,11 +167,15 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command")
     auto = sub.add_parser("autostart", help="start IRIS at login")
     auto.add_argument("action", choices=["enable", "disable", "status"])
+    stop = sub.add_parser("stop", help="stop the running IRIS instance")
+    stop.add_argument("--port", type=int, dest="stop_port", help="port to free (default 8756)")
     sub.add_parser("token", help="print the API token for phone pairing")
     sub.add_parser("doctor", help="diagnose platform capabilities")
 
     args = parser.parse_args(argv)
 
+    if args.command == "stop":
+        return _stop(getattr(args, "stop_port", None))
     if args.command == "autostart":
         return _autostart(args.action)
     if args.command == "token":

@@ -37,8 +37,11 @@ def _split_csv(value: Any) -> List[str]:
 class Settings(BaseSettings):
     """System-wide configuration settings."""
 
+    # ``.env`` is resolved to ABSOLUTE paths: IRIS is started at login by a
+    # registry Run key / LaunchAgent whose working directory is not the project
+    # folder, and a relative path there would silently find nothing.
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=tuple(str(p) for p in paths.env_file_candidates()),
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
@@ -370,5 +373,10 @@ def reload_settings() -> Settings:
     """Re-read configuration from disk/environment (used by the settings API)."""
     global settings
     paths.reset_cache()
-    settings = Settings()
+    settings = Settings(_env_file=tuple(str(p) for p in paths.env_file_candidates()))
     return settings
+
+
+def loaded_env_files() -> List[str]:
+    """The ``.env`` files that were found and applied, for startup diagnostics."""
+    return [str(p) for p in paths.existing_env_files()]
