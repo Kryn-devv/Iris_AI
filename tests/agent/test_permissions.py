@@ -1,7 +1,7 @@
 """Tests for Security Permission Manager."""
 
 import pytest
-from nova.app.core.security import PermissionManager, PermissionLevel, PermissionDecision
+from iris.app.core.security import PermissionManager, PermissionLevel, PermissionDecision
 
 
 def test_permission_read():

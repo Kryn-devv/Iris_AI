@@ -1,9 +1,10 @@
 """Tests for LLM abstraction layer and MockLLMProvider."""
 
 import pytest
-from nova.app.llm.mock import MockLLMProvider
-from nova.app.llm.gateway import ModelGateway
-from nova.app.schemas.agent import AgentPlan
+from iris.app.llm.mock import MockLLMProvider
+from iris.app.core.config import settings
+from iris.app.llm.gateway import ModelGateway
+from iris.app.schemas.agent import AgentPlan
 
 
 @pytest.mark.asyncio
@@ -36,8 +37,8 @@ async def test_mock_llm_time_intent():
 async def test_mock_llm_unsupported_intent():
     provider = MockLLMProvider()
     res = await provider.generate("Control the physical humanoid robot arms")
-    assert "real LLM provider" in res.content
-    assert "not connected yet" in res.content
+    assert "free AI key" in res.content
+    assert "offline" in res.content
 
 
 def test_model_gateway_routing():
@@ -46,5 +47,6 @@ def test_model_gateway_routing():
     assert mock_provider.provider_name == "mock"
 
     # Capability tags
-    assert gateway.select_model("FAST") == "mock-fast"
-    assert gateway.select_model("REASONING") == "mock-reasoning"
+    # With no capability overrides and no cloud providers, the default model is used.
+    assert gateway.select_model("FAST") == settings.DEFAULT_MODEL
+    assert gateway.select_model("REASONING") == settings.DEFAULT_MODEL

@@ -1,13 +1,13 @@
 """Tests for ResponseLanguagePolicy."""
 
 import pytest
-from nova.app.language.models import (
+from iris.app.language.models import (
     LanguageCode,
     LanguageStyle,
     LanguageDetectionResult,
     LanguageContext,
 )
-from nova.app.language.policy import ResponseLanguagePolicy
+from iris.app.language.policy import ResponseLanguagePolicy
 
 
 def test_policy_explicit_directive_override():

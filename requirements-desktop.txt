@@ -1,0 +1,31 @@
+# ── Desktop automation extras (recommended on your own machine) ──────
+# Install with:  pip install -r requirements-desktop.txt
+pyautogui>=0.9.54          # keyboard/mouse control
+pygetwindow>=0.0.9         # window management (Windows)
+pyperclip>=1.8.2           # clipboard
+mss>=9.0.1                 # fast screenshots
+pillow>=10.2.0             # image handling + tray icon
+plyer>=2.1.0               # desktop notifications
+pystray>=0.19.5            # system tray icon
+pynput>=1.7.6              # global hotkeys
+
+# ── Voice (offline-first) ─────────────────────────────────────────────
+pyttsx3>=2.90              # offline text-to-speech (SAPI5/NSSpeech/espeak)
+sounddevice>=0.4.6         # microphone / playback
+soundfile>=0.12.1
+SpeechRecognition>=3.10.0  # free Google Web Speech API
+# faster-whisper>=1.0.0    # best offline STT (larger download)
+# vosk>=0.3.45             # light offline STT
+edge-tts>=6.1.10           # free neural voices (online)
+
+# ── Content creation ──────────────────────────────────────────────────
+python-pptx>=0.6.23        # PowerPoint decks
+python-docx>=1.1.0         # Word documents
+openpyxl>=3.1.2            # Excel spreadsheets
+
+# ── Extras ────────────────────────────────────────────────────────────
+qrcode[pil]>=7.4.2         # phone-pairing QR code
+beautifulsoup4>=4.12.3     # better web page extraction
+send2trash>=1.8.2          # safe deletes go to the recycle bin
+# pycaw>=20230407          # Windows volume control (Windows only)
+# comtypes>=1.2.0          # (Windows only)

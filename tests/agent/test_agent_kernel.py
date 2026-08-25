@@ -1,8 +1,8 @@
 """Tests for AgentKernel orchestrator logic."""
 
 import pytest
-from nova.app.agent.kernel import AgentKernel
-from nova.app.schemas.tasks import TaskStatus
+from iris.app.agent.kernel import AgentKernel
+from iris.app.schemas.tasks import TaskStatus
 
 
 @pytest.mark.asyncio
@@ -37,6 +37,8 @@ async def test_kernel_time_flow(kernel: AgentKernel):
 async def test_kernel_unsupported_query_flow(kernel: AgentKernel):
     res = await kernel.process_request("Can you drive my car?")
     assert res.status == "COMPLETED"
-    assert res.intent_detected == "unsupported"
+    # Unmatched requests flow through the agent loop and still answer gracefully.
+    assert res.handler in ("agent", "smalltalk")
+    assert res.response
     assert len(res.tools_executed) == 0
-    assert "real LLM provider" in res.response
+    assert "free AI key" in res.response

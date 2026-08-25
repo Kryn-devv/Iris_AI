@@ -47,3 +47,5 @@ htmlcov/
 
 # Project specific
 nova.db
+iris.db
+.venv/

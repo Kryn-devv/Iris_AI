@@ -2,12 +2,12 @@
 
 import pytest
 from httpx import AsyncClient, ASGITransport
-from nova.app.schemas.memory import MemoryType, ConfidenceLevel, MemoryRecord
-from nova.app.memory.sanitizer import MemorySanitizer
-from nova.app.memory.service import MemoryService
-from nova.app.memory.extractor import MemoryExtractor
-from nova.app.agent.kernel import AgentKernel
-from nova.app.main import app
+from iris.app.schemas.memory import MemoryType, ConfidenceLevel, MemoryRecord
+from iris.app.memory.sanitizer import MemorySanitizer
+from iris.app.memory.service import MemoryService
+from iris.app.memory.extractor import MemoryExtractor
+from iris.app.agent.kernel import AgentKernel
+from iris.app.main import app
 
 
 # 1. Memory CRUD Tests
@@ -107,21 +107,21 @@ async def test_agent_kernel_memory_followup_flow():
     kernel = AgentKernel()
     await kernel.memory_service.clear()
 
-    # Step 1: Tell NOVA to remember budget
+    # Step 1: Tell IRIS to remember budget
     res1 = await kernel.process_request("Remember that my robot project budget is ₹15,000.")
     assert res1.status == "COMPLETED"
     assert "remember" in res1.response.lower() or "robot project" in res1.response.lower()
 
-    # Step 2: Ask NOVA for budget (retrieval)
+    # Step 2: Ask IRIS for budget (retrieval)
     res2 = await kernel.process_request("What is my robot budget?")
     assert res2.status == "COMPLETED"
     assert "15,000" in res2.response or "15000" in res2.response
 
-    # Step 3: Tell NOVA to remember microcontroller
+    # Step 3: Tell IRIS to remember microcontroller
     res3 = await kernel.process_request("Remember that my robot uses ESP32.")
     assert res3.status == "COMPLETED"
 
-    # Step 4: Ask NOVA for microcontroller (retrieval)
+    # Step 4: Ask IRIS for microcontroller (retrieval)
     res4 = await kernel.process_request("What microcontroller does my robot use?")
     assert res4.status == "COMPLETED"
     assert "ESP32" in res4.response
@@ -130,7 +130,7 @@ async def test_agent_kernel_memory_followup_flow():
     res5 = await kernel.process_request("Forget my robot budget.")
     assert res5.status == "COMPLETED"
 
-    # Step 6: Ask NOVA for budget again (must indicate no longer available)
+    # Step 6: Ask IRIS for budget again (must indicate no longer available)
     res6 = await kernel.process_request("What is my robot budget?")
     assert res6.status == "COMPLETED"
     assert "don't have" in res6.response.lower() or "no record" in res6.response.lower() or "not" in res6.response.lower()

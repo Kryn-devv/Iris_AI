@@ -1,4 +1,4 @@
-"""Integration tests for NOVA REST API endpoints."""
+"""Integration tests for IRIS REST API endpoints."""
 
 import pytest
 from httpx import AsyncClient
