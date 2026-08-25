@@ -37,8 +37,8 @@ async def test_mock_llm_time_intent():
 async def test_mock_llm_unsupported_intent():
     provider = MockLLMProvider()
     res = await provider.generate("Control the physical humanoid robot arms")
-    assert "real LLM provider" in res.content
-    assert "not connected yet" in res.content
+    assert "free AI key" in res.content
+    assert "offline" in res.content
 
 
 def test_model_gateway_routing():

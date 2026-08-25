@@ -41,4 +41,4 @@ async def test_kernel_unsupported_query_flow(kernel: AgentKernel):
     assert res.handler in ("agent", "smalltalk")
     assert res.response
     assert len(res.tools_executed) == 0
-    assert "real LLM provider" in res.response
+    assert "free AI key" in res.response
