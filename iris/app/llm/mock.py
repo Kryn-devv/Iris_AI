@@ -133,6 +133,14 @@ class MockLLMProvider(LLMProvider):
         text = prompt.lower().strip()
         history_msgs = kwargs.get("messages", [])
 
+        # The agent loop passes conversation history instead of re-sending the
+        # prompt on later iterations; recover the user text from history.
+        if not text and isinstance(history_msgs, list):
+            for m in reversed(history_msgs):
+                if isinstance(m, dict) and m.get("role") == "user" and m.get("content"):
+                    text = str(m["content"]).lower().strip()
+                    break
+
         # Extract system content from system_prompt param or latest system message in history_msgs
         sys_content = system_prompt or ""
         if not sys_content and history_msgs and isinstance(history_msgs, list):
@@ -158,9 +166,16 @@ class MockLLMProvider(LLMProvider):
 
         # Check for multi-step / simulated tool call test cases when tools or agent loop requests it
         if tools or kwargs.get("agent_mode"):
+            # Observations live in tool/assistant turns; the system prompt must
+            # never trip these keyword checks.
+            obs_msgs = [
+                m for m in history_msgs
+                if isinstance(m, dict) and m.get("role") in ("tool", "assistant")
+            ] if isinstance(history_msgs, list) else []
+
             # Multi-step calculation simulation: "20 + 30", then "* 5"
             if "20 + 30" in text or "multiply the result by 5" in text:
-                obs_text = str(history_msgs)
+                obs_text = str(obs_msgs)
                 if "50" in obs_text and ("150" in obs_text or "250" in obs_text or "calculator" in obs_text):
                     if "250" in obs_text:
                         return LLMResponse(
@@ -192,7 +207,7 @@ class MockLLMProvider(LLMProvider):
 
             # Replanning test case: "test tool failure replan"
             if "replan" in text or "failure recovery" in text:
-                obs_text = str(history_msgs)
+                obs_text = str(obs_msgs)
                 if "failed" in obs_text or "not registered" in obs_text:
                     if "calculator" in obs_text or "10" in obs_text:
                         return LLMResponse(

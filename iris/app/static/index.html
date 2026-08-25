@@ -1,100 +1,129 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>IRIS — Personal AI Assistant</title>
-    <link rel="stylesheet" href="/static/style.css">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#05070f">
+  <title>IRIS</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='38' fill='none' stroke='%235eead4' stroke-width='6'/%3E%3Ccircle cx='50' cy='50' r='14' fill='%235eead4'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <div class="app-container">
-        <!-- Header -->
-        <header class="app-header">
-            <div class="header-left">
-                <div class="logo-icon">✨</div>
-                <div class="brand">
-                    <h1>IRIS</h1>
-                    <span class="subtitle">Personal AI Agent Foundation</span>
-                </div>
-            </div>
-            
-            <div class="header-center">
-                <div class="status-pill" id="statusPill">
-                    <span class="status-dot"></span>
-                    <span class="status-text" id="statusText">Connecting...</span>
-                    <div class="status-details" id="statusDetails">
-                        <span id="providerBadge">Mock</span>
-                        <span id="modelBadge">mock-model</span>
-                        <span id="modeBadge">Reasoning</span>
-                    </div>
-                </div>
-            </div>
+  <div id="app">
 
-            <div class="header-right">
-                <button class="btn btn-secondary btn-sm" id="toggleToolsBtn">⚙️ Tools</button>
-                <button class="btn btn-danger btn-sm" id="clearChatBtn">🗑️ Clear</button>
-            </div>
-        </header>
+    <!-- ═══════════ Top bar ═══════════ -->
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-orb"></div>
+        <span class="brand-name">IRIS</span>
+      </div>
+      <div class="top-status">
+        <span class="chip" id="chipProvider" title="Active model provider">local</span>
+        <span class="chip" id="chipVoice" title="Voice engine">voice</span>
+        <span class="conn-dot" id="connDot" title="Connection"></span>
+        <button class="icon-btn" id="btnSettings" title="Settings" aria-label="Settings">
+          <svg viewBox="0 0 24 24" width="17" height="17"><path fill="currentColor" d="M12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7zm7.4-2.6c.04-.3.07-.6.07-.9s-.03-.6-.07-.9l2.1-1.65a.5.5 0 0 0 .12-.64l-2-3.46a.5.5 0 0 0-.6-.22l-2.5 1a7.3 7.3 0 0 0-1.55-.9l-.37-2.65A.5.5 0 0 0 14.1 2h-4a.5.5 0 0 0-.5.42l-.37 2.65c-.55.23-1.07.53-1.55.9l-2.5-1a.5.5 0 0 0-.6.22l-2 3.46a.5.5 0 0 0 .12.64L4.8 11.1c-.04.3-.07.6-.07.9s.03.6.07.9l-2.1 1.65a.5.5 0 0 0-.12.64l2 3.46c.13.22.39.31.6.22l2.5-1c.48.37 1 .67 1.55.9l.37 2.65c.04.24.25.42.5.42h4c.25 0 .46-.18.5-.42l.37-2.65c.55-.23 1.07-.53 1.55-.9l2.5 1c.21.09.47 0 .6-.22l2-3.46a.5.5 0 0 0-.12-.64l-2.1-1.65z"/></svg>
+        </button>
+      </div>
+    </header>
 
-        <!-- Tools Drawer (Collapsible) -->
-        <aside class="tools-drawer hidden" id="toolsDrawer">
-            <div class="drawer-header">
-                <h3>Registered Capabilities & Tools</h3>
-                <button class="close-btn" id="closeToolsBtn">&times;</button>
-            </div>
-            <ul class="tools-list" id="toolsList">
-                <li class="tool-item-placeholder">Loading tools...</li>
-            </ul>
-        </aside>
+    <!-- ═══════════ Hologram stage ═══════════ -->
+    <section class="stage" id="stage">
+      <canvas id="holo"></canvas>
+      <div class="stage-caption">
+        <div class="state-label" id="stateLabel">ready</div>
+        <div class="transcript" id="liveTranscript"></div>
+      </div>
+    </section>
 
-        <!-- Chat History Stream -->
-        <main class="chat-viewport" id="chatViewport">
-            <div class="welcome-banner" id="welcomeBanner">
-                <div class="welcome-icon">🚀</div>
-                <h2>Welcome to IRIS</h2>
-                <p>Offline-First Personal AI Agent Kernel. Ask a question, run calculations, inspect system info, or manage memories.</p>
-                <div class="suggestion-chips">
-                    <button class="chip" onclick="sendPrompt('Hello IRIS')">"Hello IRIS"</button>
-                    <button class="chip" onclick="sendPrompt('What is 25 * 47?')">"What is 25 * 47?"</button>
-                    <button class="chip" onclick="sendPrompt('What operating system am I running?')">"What operating system?"</button>
-                    <button class="chip" onclick="sendPrompt('What time is it?')">"What time is it?"</button>
-                    <button class="chip" onclick="sendPrompt('Calculate 20 + 30, then multiply the result by 5.')">"Multi-step calculation"</button>
-                </div>
-            </div>
-            <div class="messages-list" id="messagesList"></div>
-        </main>
-
-        <!-- Error Notification Toast -->
-        <div class="toast-error hidden" id="errorToast">
-            <span class="error-icon">⚠️</span>
-            <span class="error-msg" id="errorMsg">An unexpected error occurred.</span>
-            <button class="toast-close" onclick="hideError()">&times;</button>
+    <!-- ═══════════ Conversation ═══════════ -->
+    <main class="conversation" id="conversation">
+      <div class="welcome" id="welcome">
+        <p class="welcome-hi">Hi, I'm <b>Iris</b> — your desktop assistant.</p>
+        <div class="chips-row">
+          <button class="suggest" data-q="open youtube">open youtube</button>
+          <button class="suggest" data-q="what's the weather">weather</button>
+          <button class="suggest" data-q="take a screenshot">screenshot</button>
+          <button class="suggest" data-q="set a timer for 5 minutes">5 min timer</button>
+          <button class="suggest" data-q="make a ppt about space exploration">make a ppt</button>
+          <button class="suggest" data-q="what can you do">what can you do?</button>
         </div>
+      </div>
+      <div class="messages" id="messages"></div>
+    </main>
 
-        <!-- Input Bar Footer -->
-        <footer class="app-footer">
-            <div class="input-container">
-                <textarea 
-                    id="chatInput" 
-                    placeholder="Type your message to IRIS... (Shift+Enter for line break)"
-                    rows="1"
-                ></textarea>
-                <button class="btn btn-primary" id="sendBtn">
-                    <span>Send</span>
-                    <span class="send-icon">➔</span>
-                </button>
-            </div>
-            <div class="footer-meta">
-                <span>Phase 4A Developer Interface</span>
-                <span class="separator">•</span>
-                <a href="/docs" target="_blank" rel="noopener">OpenAPI Specs (/docs)</a>
-            </div>
-        </footer>
+    <!-- ═══════════ Activity ticker ═══════════ -->
+    <div class="ticker" id="ticker"></div>
+
+    <!-- ═══════════ Input dock ═══════════ -->
+    <footer class="dock">
+      <div class="dock-inner">
+        <button class="mic-btn" id="btnMic" title="Voice input (hold or click)" aria-label="Microphone">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3zm5.3-3a.75.75 0 0 1 1.5.08A6.8 6.8 0 0 1 12.75 17v2.25h2.5a.75.75 0 0 1 0 1.5h-6.5a.75.75 0 0 1 0-1.5h2.5V17A6.8 6.8 0 0 1 5.2 11.08.75.75 0 0 1 6.7 11a5.3 5.3 0 0 0 10.6 0z"/></svg>
+        </button>
+        <textarea id="input" rows="1" placeholder="Ask anything, or say “Hey Iris…”" autocomplete="off"></textarea>
+        <button class="send-btn" id="btnSend" title="Send" aria-label="Send">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3.4 20.4 20.85 12 3.4 3.6l-.01 6.53L15 12 3.39 13.87z"/></svg>
+        </button>
+      </div>
+      <div class="dock-hints">
+        <label class="toggle-mini" title="Continuous listening with the wake word">
+          <input type="checkbox" id="wakeToggle"> <span>wake word</span>
+        </label>
+        <label class="toggle-mini" title="Speak responses aloud">
+          <input type="checkbox" id="speakToggle" checked> <span>speak replies</span>
+        </label>
+      </div>
+    </footer>
+
+    <!-- ═══════════ Confirmation modal ═══════════ -->
+    <div class="modal hidden" id="confirmModal">
+      <div class="modal-card">
+        <h3>Confirm action</h3>
+        <p id="confirmText">IRIS wants to run a tool.</p>
+        <pre id="confirmArgs"></pre>
+        <div class="modal-actions">
+          <button class="btn ghost" id="btnReject">Cancel</button>
+          <button class="btn solid" id="btnApprove">Run it</button>
+        </div>
+      </div>
     </div>
 
-    <script src="/static/app.js"></script>
+    <!-- ═══════════ Settings drawer ═══════════ -->
+    <aside class="drawer hidden" id="drawer">
+      <div class="drawer-head">
+        <h3>Settings & Status</h3>
+        <button class="icon-btn" id="btnCloseDrawer" aria-label="Close">✕</button>
+      </div>
+      <div class="drawer-body">
+        <section>
+          <h4>Model</h4>
+          <div class="kv" id="llmStatus">loading…</div>
+        </section>
+        <section>
+          <h4>Voice</h4>
+          <div class="kv" id="voiceStatus">loading…</div>
+        </section>
+        <section>
+          <h4>Tools <span class="muted" id="toolCount"></span></h4>
+          <div class="tool-grid" id="toolGrid"></div>
+        </section>
+        <section>
+          <h4>Reminders</h4>
+          <div class="kv" id="reminderList">none</div>
+        </section>
+        <section>
+          <h4>Phone access</h4>
+          <div class="kv" id="pairInfo">
+            <button class="btn ghost small" id="btnPair">Show pairing info</button>
+            <div id="pairDetails"></div>
+          </div>
+        </section>
+      </div>
+    </aside>
+  </div>
+
+  <script src="/static/hologram.js"></script>
+  <script src="/static/app.js"></script>
 </body>
 </html>

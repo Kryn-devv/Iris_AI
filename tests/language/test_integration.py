@@ -13,7 +13,7 @@ async def test_integration_english_flow():
     res = await kernel.process_request(user_input="Hello IRIS")
     assert res.status == "COMPLETED"
     assert res.language == "en"
-    assert "IRIS" in res.response
+    assert "iris" in res.response.lower()
 
 
 @pytest.mark.asyncio

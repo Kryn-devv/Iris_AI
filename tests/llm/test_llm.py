@@ -2,6 +2,7 @@
 
 import pytest
 from iris.app.llm.mock import MockLLMProvider
+from iris.app.core.config import settings
 from iris.app.llm.gateway import ModelGateway
 from iris.app.schemas.agent import AgentPlan
 
@@ -46,5 +47,6 @@ def test_model_gateway_routing():
     assert mock_provider.provider_name == "mock"
 
     # Capability tags
-    assert gateway.select_model("FAST") == "mock-fast"
-    assert gateway.select_model("REASONING") == "mock-reasoning"
+    # With no capability overrides and no cloud providers, the default model is used.
+    assert gateway.select_model("FAST") == settings.DEFAULT_MODEL
+    assert gateway.select_model("REASONING") == settings.DEFAULT_MODEL

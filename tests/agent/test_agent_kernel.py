@@ -37,6 +37,8 @@ async def test_kernel_time_flow(kernel: AgentKernel):
 async def test_kernel_unsupported_query_flow(kernel: AgentKernel):
     res = await kernel.process_request("Can you drive my car?")
     assert res.status == "COMPLETED"
-    assert res.intent_detected == "unsupported"
+    # Unmatched requests flow through the agent loop and still answer gracefully.
+    assert res.handler in ("agent", "smalltalk")
+    assert res.response
     assert len(res.tools_executed) == 0
     assert "real LLM provider" in res.response

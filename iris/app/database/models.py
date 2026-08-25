@@ -60,3 +60,19 @@ class ToolExecutionLogModel(Base):
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     execution_time_seconds: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+
+
+class ReminderModel(Base):
+    """Persistent reminders, timers and recurring routines."""
+    __tablename__ = "reminders"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16), default="reminder", nullable=False)  # "reminder" | "timer" | "routine"
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    due_at: Mapped[datetime] = mapped_column(DateTime, index=True, nullable=False)
+    recurrence: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)  # None | "daily" | "weekly" | "weekdays" | "hourly"
+    status: Mapped[str] = mapped_column(String(16), default="scheduled", nullable=False, index=True)  # scheduled | fired | cancelled
+    channel: Mapped[str] = mapped_column(String(32), default="all", nullable=False)  # where to announce
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+    fired_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    meta_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

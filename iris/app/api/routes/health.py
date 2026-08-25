@@ -27,8 +27,8 @@ async def system_status(
 
     return {
         "app_name": settings.APP_NAME,
-        "version": "0.1.0",
-        "phase": "Phase 1 - Kernel Foundation",
+        "version": "1.0.0",
+        "phase": "IRIS Desktop Assistant",
         "status": "healthy",
         "offline_mode": True,
         "llm_provider": {
