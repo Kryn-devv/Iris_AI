@@ -46,7 +46,7 @@ It's built **free-first**: every command works with *zero* API keys thanks to a 
 | "remember my project budget is 5000" | long-term memory |
 | "start iris when my pc boots" | registers itself as a startup app |
 
-…and anything else becomes a conversation with a free AI model, which can chain any of the 60+ tools itself.
+…and anything else becomes a conversation with a free AI model, which can chain any of the 65+ tools itself.
 
 ## 🖥 The interface
 
