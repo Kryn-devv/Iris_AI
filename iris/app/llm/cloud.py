@@ -1,0 +1,376 @@
+"""Generic OpenAI-compatible chat-completions provider over httpx.
+
+One class serves every free hosted endpoint IRIS supports — OpenRouter, Groq,
+Google AI Studio, Cerebras, Mistral, Together, GitHub Models, Hugging Face
+router and any custom OpenAI-compatible gateway — because they all speak the
+same ``/chat/completions`` protocol. Provider-specific quirks (extra headers,
+free-model filtering) are handled by small hooks.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from typing import Any, AsyncGenerator, Dict, List, Optional, Type, TypeVar
+
+import httpx
+from pydantic import BaseModel, ValidationError
+
+from iris.app.core.config import settings
+from iris.app.core.logging import get_logger
+from iris.app.llm.base import LLMHealthStatus, LLMProvider, LLMProviderError, LLMResponse
+
+logger = get_logger("llm.cloud")
+
+T = TypeVar("T", bound=BaseModel)
+
+#: HTTP status codes worth retrying on another provider.
+_RETRYABLE_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 529})
+
+
+def _strip_code_fences(text: str) -> str:
+    """Remove Markdown code fences wrapping a JSON payload."""
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        first_newline = stripped.find("\n")
+        if first_newline != -1:
+            stripped = stripped[first_newline + 1 :]
+        if stripped.rstrip().endswith("```"):
+            stripped = stripped.rstrip()[:-3]
+    return stripped.strip()
+
+
+def extract_json_object(text: str) -> Optional[dict]:
+    """Best-effort extraction of the first JSON object embedded in text."""
+    candidate = _strip_code_fences(text)
+    try:
+        parsed = json.loads(candidate)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    depth = 0
+    start = -1
+    for i, ch in enumerate(candidate):
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start != -1:
+                    try:
+                        parsed = json.loads(candidate[start : i + 1])
+                        if isinstance(parsed, dict):
+                            return parsed
+                    except json.JSONDecodeError:
+                        continue
+    return None
+
+
+class CloudLLMProvider(LLMProvider):
+    """Async OpenAI-compatible chat completions client for hosted providers."""
+
+    def __init__(
+        self,
+        provider_name: str,
+        base_url: str,
+        api_key: Optional[str],
+        default_model: str,
+        timeout: Optional[float] = None,
+        extra_headers: Optional[Dict[str, str]] = None,
+    ):
+        super().__init__(provider_name=provider_name, default_model=default_model)
+        self.base_url = (base_url or "").rstrip("/")
+        self.api_key = api_key
+        self.timeout = timeout if timeout is not None else settings.LLM_TIMEOUT_SECONDS
+        self.extra_headers = dict(extra_headers or {})
+        self._client: Optional[httpx.AsyncClient] = None
+
+    # ----------------------------------------------------------------- plumbing
+    @property
+    def configured(self) -> bool:
+        """True when this provider has enough configuration to be called."""
+        return bool(self.base_url and self.api_key)
+
+    def _headers(self) -> Dict[str, str]:
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+        }
+        headers.update(self.extra_headers)
+        return headers
+
+    def _client_or_create(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=httpx.Timeout(self.timeout, connect=10.0))
+        return self._client
+
+    async def close(self) -> None:
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+
+    def _redact(self, text: str) -> str:
+        if self.api_key and self.api_key in text:
+            return text.replace(self.api_key, "[REDACTED]")
+        return text
+
+    def _build_messages(
+        self,
+        prompt: str,
+        system_prompt: Optional[str],
+        history: Optional[List[Dict[str, Any]]],
+    ) -> List[Dict[str, Any]]:
+        messages: List[Dict[str, Any]] = []
+        if history:
+            messages.extend(history)
+        if system_prompt and not any(m.get("role") == "system" for m in messages):
+            messages.insert(0, {"role": "system", "content": system_prompt})
+        if prompt:
+            messages.append({"role": "user", "content": prompt})
+        return messages
+
+    async def _post_chat(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        client = self._client_or_create()
+        url = f"{self.base_url}/chat/completions"
+        try:
+            response = await client.post(url, json=payload, headers=self._headers())
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError) as exc:
+            raise LLMProviderError(
+                f"{self.provider_name}: connection failed ({type(exc).__name__})", retryable=True
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise LLMProviderError(
+                f"{self.provider_name}: transport error ({self._redact(str(exc))})", retryable=True
+            ) from exc
+
+        if response.status_code != 200:
+            body_preview = self._redact(response.text[:400])
+            retryable = response.status_code in _RETRYABLE_STATUS
+            raise LLMProviderError(
+                f"{self.provider_name}: HTTP {response.status_code} — {body_preview}",
+                retryable=retryable,
+                status_code=response.status_code,
+            )
+
+        try:
+            return response.json()
+        except json.JSONDecodeError as exc:
+            raise LLMProviderError(
+                f"{self.provider_name}: invalid JSON response", retryable=True
+            ) from exc
+
+    # --------------------------------------------------------------- interface
+    async def generate(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        model: Optional[str] = None,
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+        tools: Optional[list] = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        if not self.configured:
+            raise LLMProviderError(f"{self.provider_name}: not configured (missing API key).", retryable=False)
+
+        target_model = model or self.default_model
+        messages = self._build_messages(prompt, system_prompt, kwargs.get("messages"))
+
+        payload: Dict[str, Any] = {
+            "model": target_model,
+            "messages": messages,
+            "temperature": temperature,
+        }
+        payload["max_tokens"] = max_tokens or settings.LLM_MAX_TOKENS
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = kwargs.get("tool_choice", "auto")
+        if kwargs.get("response_format"):
+            payload["response_format"] = kwargs["response_format"]
+
+        start = time.perf_counter()
+        data = await self._post_chat(payload)
+        latency = (time.perf_counter() - start) * 1000.0
+
+        choices = data.get("choices") or []
+        if not choices:
+            raise LLMProviderError(f"{self.provider_name}: response had no choices.", retryable=True)
+
+        message = choices[0].get("message") or {}
+        content = message.get("content") or ""
+        usage = data.get("usage") or {}
+
+        tool_calls = None
+        raw_tool_calls = message.get("tool_calls")
+        if raw_tool_calls:
+            tool_calls = []
+            for tc in raw_tool_calls:
+                fn = tc.get("function") or {}
+                tool_calls.append(
+                    {
+                        "id": tc.get("id"),
+                        "type": tc.get("type", "function"),
+                        "function": {
+                            "name": fn.get("name", ""),
+                            "arguments": fn.get("arguments", "{}"),
+                        },
+                    }
+                )
+
+        logger.info(
+            "%s completion ok (model=%s, %.0fms, %s tool calls)",
+            self.provider_name, target_model, latency, len(tool_calls or []),
+        )
+
+        return LLMResponse(
+            content=content,
+            provider_name=self.provider_name,
+            model_name=data.get("model") or target_model,
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+            raw_response=data,
+            tool_calls=tool_calls,
+            latency_ms=round(latency, 1),
+            finish_reason=choices[0].get("finish_reason"),
+        )
+
+    async def generate_structured(
+        self,
+        prompt: str,
+        response_model: Type[T],
+        system_prompt: Optional[str] = None,
+        model: Optional[str] = None,
+        **kwargs: Any,
+    ) -> T:
+        schema_json = json.dumps(response_model.model_json_schema())
+        augmented_system = (
+            (system_prompt or "")
+            + "\nCRITICAL: Respond ONLY with a single valid JSON object matching this schema"
+            + " — no prose, no code fences:\n"
+            + schema_json
+        ).strip()
+
+        last_error: Optional[Exception] = None
+        for attempt in range(2):
+            res = await self.generate(
+                prompt=prompt,
+                system_prompt=augmented_system,
+                model=model,
+                temperature=0.2 if attempt == 0 else 0.0,
+                **kwargs,
+            )
+            parsed = extract_json_object(res.content)
+            if parsed is not None:
+                try:
+                    return response_model.model_validate(parsed)
+                except ValidationError as exc:
+                    last_error = exc
+            augmented_system += "\nYour previous answer was not valid JSON for the schema. Try again."
+
+        raise LLMProviderError(
+            f"{self.provider_name}: could not produce valid structured output ({last_error}).",
+            retryable=True,
+        )
+
+    async def stream(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        model: Optional[str] = None,
+        **kwargs: Any,
+    ) -> AsyncGenerator[str, None]:
+        if not self.configured:
+            raise LLMProviderError(f"{self.provider_name}: not configured (missing API key).", retryable=False)
+
+        target_model = model or self.default_model
+        messages = self._build_messages(prompt, system_prompt, kwargs.get("messages"))
+        payload: Dict[str, Any] = {
+            "model": target_model,
+            "messages": messages,
+            "temperature": kwargs.get("temperature", settings.LLM_TEMPERATURE),
+            "max_tokens": kwargs.get("max_tokens") or settings.LLM_MAX_TOKENS,
+            "stream": True,
+        }
+
+        client = self._client_or_create()
+        url = f"{self.base_url}/chat/completions"
+        try:
+            async with client.stream("POST", url, json=payload, headers=self._headers()) as response:
+                if response.status_code != 200:
+                    body = await response.aread()
+                    raise LLMProviderError(
+                        f"{self.provider_name}: HTTP {response.status_code} — {self._redact(body.decode(errors='replace')[:300])}",
+                        retryable=response.status_code in _RETRYABLE_STATUS,
+                        status_code=response.status_code,
+                    )
+                async for line in response.aiter_lines():
+                    line = line.strip()
+                    if not line.startswith("data:"):
+                        continue
+                    chunk = line[5:].strip()
+                    if chunk == "[DONE]":
+                        break
+                    try:
+                        event = json.loads(chunk)
+                    except json.JSONDecodeError:
+                        continue
+                    delta = ((event.get("choices") or [{}])[0].get("delta") or {})
+                    piece = delta.get("content")
+                    if piece:
+                        yield piece
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError) as exc:
+            raise LLMProviderError(
+                f"{self.provider_name}: stream failed ({type(exc).__name__})", retryable=True
+            ) from exc
+
+    async def health_check(self) -> bool:
+        if not self.configured:
+            return False
+        client = self._client_or_create()
+        try:
+            response = await client.get(f"{self.base_url}/models", headers=self._headers())
+            return response.status_code == 200
+        except httpx.HTTPError:
+            return False
+
+    async def health_check_detailed(self) -> LLMHealthStatus:
+        if not self.configured:
+            return LLMHealthStatus(
+                provider=self.provider_name,
+                available=False,
+                base_url=self.base_url or None,
+                model=self.default_model,
+                error="Not configured (missing API key).",
+            )
+        start = time.perf_counter()
+        healthy = await self.health_check()
+        latency = (time.perf_counter() - start) * 1000.0
+        return LLMHealthStatus(
+            provider=self.provider_name,
+            available=healthy,
+            base_url=self.base_url,
+            model=self.default_model,
+            latency_ms=round(latency, 1),
+            error=None if healthy else "Provider unreachable or key rejected.",
+        )
+
+
+def build_provider(name: str, credentials: Dict[str, Optional[str]]) -> CloudLLMProvider:
+    """Construct a provider from a name and its settings credentials."""
+    extra_headers: Dict[str, str] = {}
+    if name == "openrouter":
+        # OpenRouter asks apps to identify themselves; also enables app leaderboards.
+        extra_headers = {
+            "HTTP-Referer": settings.OPENROUTER_APP_URL,
+            "X-Title": settings.OPENROUTER_APP_TITLE,
+        }
+    return CloudLLMProvider(
+        provider_name=name,
+        base_url=credentials.get("base_url") or "",
+        api_key=credentials.get("api_key"),
+        default_model=credentials.get("model") or "auto",
+        extra_headers=extra_headers,
+    )
