@@ -2,7 +2,7 @@
 
 import pytest
 from httpx import AsyncClient, ASGITransport
-from nova.app.main import app
+from iris.app.main import app
 
 
 @pytest.mark.asyncio
@@ -12,7 +12,7 @@ async def test_chat_ui_endpoint_returns_200():
         res = await client.get("/chat")
         assert res.status_code == 200
         assert "text/html" in res.headers.get("content-type", "")
-        assert "NOVA" in res.text
+        assert "IRIS" in res.text
         assert "app.js" in res.text
 
 

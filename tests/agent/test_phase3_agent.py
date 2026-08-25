@@ -4,15 +4,15 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 from httpx import AsyncClient
 
-from nova.app.agent.kernel import AgentKernel
-from nova.app.agent.events import EventDispatcher, AgentEventType
-from nova.app.agent.context import ContextAssembler
-from nova.app.tools.builtin.calculator import CalculatorTool
-from nova.app.tools.builtin.string_utils import StringUtilsTool
-from nova.app.tools.builtin.unit_converter import UnitConverterTool
-from nova.app.tools.registry import ToolRegistry
-from nova.app.core.security import PermissionManager, PermissionLevel, PermissionDecision
-from nova.app.schemas.tasks import TaskStatus
+from iris.app.agent.kernel import AgentKernel
+from iris.app.agent.events import EventDispatcher, AgentEventType
+from iris.app.agent.context import ContextAssembler
+from iris.app.tools.builtin.calculator import CalculatorTool
+from iris.app.tools.builtin.string_utils import StringUtilsTool
+from iris.app.tools.builtin.unit_converter import UnitConverterTool
+from iris.app.tools.registry import ToolRegistry
+from iris.app.core.security import PermissionManager, PermissionLevel, PermissionDecision
+from iris.app.schemas.tasks import TaskStatus
 
 
 @pytest.mark.asyncio
@@ -93,13 +93,13 @@ async def test_phase3_new_safe_builtin_tools():
     unit_tool = UnitConverterTool()
 
     # String tool tests
-    res_str = await string_tool.execute(text="nova agent", operation="uppercase")
+    res_str = await string_tool.execute(text="iris agent", operation="uppercase")
     assert res_str.success is True
-    assert res_str.result["result"] == "NOVA AGENT"
+    assert res_str.result["result"] == "IRIS AGENT"
 
-    res_replace = await string_tool.execute(text="hello world", operation="replace", old="world", new="NOVA")
+    res_replace = await string_tool.execute(text="hello world", operation="replace", old="world", new="IRIS")
     assert res_replace.success is True
-    assert res_replace.result["result"] == "hello NOVA"
+    assert res_replace.result["result"] == "hello IRIS"
 
     # Unit converter tests
     res_temp = await unit_tool.execute(value=100.0, from_unit="fahrenheit", to_unit="celsius")

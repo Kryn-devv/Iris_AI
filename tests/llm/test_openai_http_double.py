@@ -4,7 +4,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient, ASGITransport
 from openai import AsyncOpenAI
-from nova.app.llm.local import LocalLLMProvider
+from iris.app.llm.local import LocalLLMProvider
 
 # Create fake OpenAI-compatible server app
 fake_openai_app = FastAPI()
@@ -22,7 +22,7 @@ async def fake_chat_completions(payload: dict):
                 "index": 0,
                 "message": {
                     "role": "assistant",
-                    "content": "Hello, I am NOVA.",
+                    "content": "Hello, I am IRIS.",
                 },
                 "finish_reason": "stop",
             }
@@ -39,7 +39,7 @@ async def fake_chat_completions(payload: dict):
 async def fake_list_models():
     return {
         "object": "list",
-        "data": [{"id": "fake-local-model", "object": "model", "owned_by": "nova"}],
+        "data": [{"id": "fake-local-model", "object": "model", "owned_by": "iris"}],
     }
 
 
@@ -69,7 +69,7 @@ async def test_openai_http_double_chat_completions():
 
     # 2. Call generate() over HTTP to POST /v1/chat/completions
     response = await provider.generate("Greetings")
-    assert response.content == "Hello, I am NOVA."
+    assert response.content == "Hello, I am IRIS."
     assert response.provider_name == "local"
     assert response.model_name == "fake-local-model"
     assert response.prompt_tokens == 15

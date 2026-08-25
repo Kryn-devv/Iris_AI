@@ -1,13 +1,13 @@
 """Tests for LanguageDetector."""
 
 import pytest
-from nova.app.language.models import LanguageCode, LanguageStyle
-from nova.app.language.detector import LanguageDetector
+from iris.app.language.models import LanguageCode, LanguageStyle
+from iris.app.language.detector import LanguageDetector
 
 
 def test_english_detection():
     detector = LanguageDetector()
-    res = detector.detect("Hello NOVA, how are you today?")
+    res = detector.detect("Hello IRIS, how are you today?")
     assert res.language == LanguageCode.EN
     assert res.style == LanguageStyle.ENGLISH
     assert res.detected_script == "latin"

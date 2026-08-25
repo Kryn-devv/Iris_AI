@@ -1,8 +1,8 @@
 """Tests for TaskManager and task tracking."""
 
 import pytest
-from nova.app.agent.task_manager import TaskManager
-from nova.app.schemas.tasks import TaskStatus
+from iris.app.agent.task_manager import TaskManager
+from iris.app.schemas.tasks import TaskStatus
 
 
 @pytest.mark.asyncio

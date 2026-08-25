@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IRIS — Personal AI Assistant</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="header-left">
+                <div class="logo-icon">✨</div>
+                <div class="brand">
+                    <h1>IRIS</h1>
+                    <span class="subtitle">Personal AI Agent Foundation</span>
+                </div>
+            </div>
+            
+            <div class="header-center">
+                <div class="status-pill" id="statusPill">
+                    <span class="status-dot"></span>
+                    <span class="status-text" id="statusText">Connecting...</span>
+                    <div class="status-details" id="statusDetails">
+                        <span id="providerBadge">Mock</span>
+                        <span id="modelBadge">mock-model</span>
+                        <span id="modeBadge">Reasoning</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="header-right">
+                <button class="btn btn-secondary btn-sm" id="toggleToolsBtn">⚙️ Tools</button>
+                <button class="btn btn-danger btn-sm" id="clearChatBtn">🗑️ Clear</button>
+            </div>
+        </header>
+
+        <!-- Tools Drawer (Collapsible) -->
+        <aside class="tools-drawer hidden" id="toolsDrawer">
+            <div class="drawer-header">
+                <h3>Registered Capabilities & Tools</h3>
+                <button class="close-btn" id="closeToolsBtn">&times;</button>
+            </div>
+            <ul class="tools-list" id="toolsList">
+                <li class="tool-item-placeholder">Loading tools...</li>
+            </ul>
+        </aside>
+
+        <!-- Chat History Stream -->
+        <main class="chat-viewport" id="chatViewport">
+            <div class="welcome-banner" id="welcomeBanner">
+                <div class="welcome-icon">🚀</div>
+                <h2>Welcome to IRIS</h2>
+                <p>Offline-First Personal AI Agent Kernel. Ask a question, run calculations, inspect system info, or manage memories.</p>
+                <div class="suggestion-chips">
+                    <button class="chip" onclick="sendPrompt('Hello IRIS')">"Hello IRIS"</button>
+                    <button class="chip" onclick="sendPrompt('What is 25 * 47?')">"What is 25 * 47?"</button>
+                    <button class="chip" onclick="sendPrompt('What operating system am I running?')">"What operating system?"</button>
+                    <button class="chip" onclick="sendPrompt('What time is it?')">"What time is it?"</button>
+                    <button class="chip" onclick="sendPrompt('Calculate 20 + 30, then multiply the result by 5.')">"Multi-step calculation"</button>
+                </div>
+            </div>
+            <div class="messages-list" id="messagesList"></div>
+        </main>
+
+        <!-- Error Notification Toast -->
+        <div class="toast-error hidden" id="errorToast">
+            <span class="error-icon">⚠️</span>
+            <span class="error-msg" id="errorMsg">An unexpected error occurred.</span>
+            <button class="toast-close" onclick="hideError()">&times;</button>
+        </div>
+
+        <!-- Input Bar Footer -->
+        <footer class="app-footer">
+            <div class="input-container">
+                <textarea 
+                    id="chatInput" 
+                    placeholder="Type your message to IRIS... (Shift+Enter for line break)"
+                    rows="1"
+                ></textarea>
+                <button class="btn btn-primary" id="sendBtn">
+                    <span>Send</span>
+                    <span class="send-icon">➔</span>
+                </button>
+            </div>
+            <div class="footer-meta">
+                <span>Phase 4A Developer Interface</span>
+                <span class="separator">•</span>
+                <a href="/docs" target="_blank" rel="noopener">OpenAPI Specs (/docs)</a>
+            </div>
+        </footer>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

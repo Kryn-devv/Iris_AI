@@ -2,28 +2,28 @@
 
 import pytest
 from httpx import AsyncClient, ASGITransport
-from nova.app.main import app
-from nova.app.agent.kernel import AgentKernel
-from nova.app.schemas.messages import ChatRequest
+from iris.app.main import app
+from iris.app.agent.kernel import AgentKernel
+from iris.app.schemas.messages import ChatRequest
 
 
 @pytest.mark.asyncio
 async def test_integration_english_flow():
     kernel = AgentKernel()
-    res = await kernel.process_request(user_input="Hello NOVA")
+    res = await kernel.process_request(user_input="Hello IRIS")
     assert res.status == "COMPLETED"
     assert res.language == "en"
-    assert "NOVA" in res.response
+    assert "IRIS" in res.response
 
 
 @pytest.mark.asyncio
 async def test_integration_hindi_devanagari_flow():
     kernel = AgentKernel()
-    res = await kernel.process_request(user_input="नमस्ते NOVA")
+    res = await kernel.process_request(user_input="नमस्ते IRIS")
     assert res.status == "COMPLETED"
     assert res.language == "hi"
     assert res.response_language == "hi"
-    assert "नमस्ते" in res.response or "NOVA" in res.response
+    assert "नमस्ते" in res.response or "IRIS" in res.response
 
 
 @pytest.mark.asyncio

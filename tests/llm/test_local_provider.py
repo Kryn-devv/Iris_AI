@@ -5,11 +5,11 @@ import asyncio
 from unittest.mock import AsyncMock, patch, MagicMock
 from pydantic import BaseModel
 
-from nova.app.llm.local import LocalLLMProvider
-from nova.app.llm.gateway import ModelGateway
-from nova.app.tools.adapter import ToolSchemaAdapter
-from nova.app.tools.builtin.calculator import CalculatorTool
-from nova.app.core.config import settings
+from iris.app.llm.local import LocalLLMProvider
+from iris.app.llm.gateway import ModelGateway
+from iris.app.tools.adapter import ToolSchemaAdapter
+from iris.app.tools.builtin.calculator import CalculatorTool
+from iris.app.core.config import settings
 
 
 class DummyResponseModel(BaseModel):
@@ -72,7 +72,7 @@ async def test_local_provider_generate_success():
     provider = LocalLLMProvider(base_url="http://localhost:8000/v1", default_model="test-model")
 
     mock_choice = MagicMock()
-    mock_choice.message.content = "Hello, I am NOVA."
+    mock_choice.message.content = "Hello, I am IRIS."
     mock_response = MagicMock(choices=[mock_choice], usage=MagicMock(prompt_tokens=10, completion_tokens=5))
     
     mock_completions = MagicMock()
@@ -80,7 +80,7 @@ async def test_local_provider_generate_success():
     provider.client.chat.completions = mock_completions
 
     res = await provider.generate("Hi")
-    assert res.content == "Hello, I am NOVA."
+    assert res.content == "Hello, I am IRIS."
     assert res.provider_name == "local"
     assert res.model_name == "test-model"
     assert res.prompt_tokens == 10

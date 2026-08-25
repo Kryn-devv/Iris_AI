@@ -1,4 +1,4 @@
-"""Security audit tests for NOVA Phase 2.
+"""Security audit tests for IRIS Phase 2.
 
 Verifies:
 1. API keys never appear in logs or health checks
@@ -14,11 +14,11 @@ import logging
 from unittest.mock import AsyncMock, MagicMock
 from httpx import AsyncClient
 
-from nova.app.llm.local import LocalLLMProvider
-from nova.app.llm.gateway import ModelGateway
-from nova.app.core.security import PermissionManager, PermissionLevel, PermissionDecision
-from nova.app.tools.builtin.calculator import CalculatorTool
-from nova.app.core.config import settings
+from iris.app.llm.local import LocalLLMProvider
+from iris.app.llm.gateway import ModelGateway
+from iris.app.core.security import PermissionManager, PermissionLevel, PermissionDecision
+from iris.app.tools.builtin.calculator import CalculatorTool
+from iris.app.core.config import settings
 
 
 @pytest.mark.asyncio

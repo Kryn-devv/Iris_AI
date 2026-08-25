@@ -1,10 +1,10 @@
 """Tests for builtin tools and tool registry."""
 
 import pytest
-from nova.app.tools.builtin.calculator import CalculatorTool
-from nova.app.tools.builtin.system_info import SystemInfoTool
-from nova.app.tools.builtin.time import TimeTool
-from nova.app.tools.registry import ToolRegistry
+from iris.app.tools.builtin.calculator import CalculatorTool
+from iris.app.tools.builtin.system_info import SystemInfoTool
+from iris.app.tools.builtin.time import TimeTool
+from iris.app.tools.registry import ToolRegistry
 
 
 @pytest.mark.asyncio

@@ -1,10 +1,10 @@
-"""Tests for NOVA memory abstraction layers."""
+"""Tests for IRIS memory abstraction layers."""
 
 import pytest
-from nova.app.memory.working import WorkingMemory
-from nova.app.memory.conversation import ConversationMemory
-from nova.app.memory.long_term import LongTermMemory
-from nova.app.memory.project import ProjectMemory
+from iris.app.memory.working import WorkingMemory
+from iris.app.memory.conversation import ConversationMemory
+from iris.app.memory.long_term import LongTermMemory
+from iris.app.memory.project import ProjectMemory
 
 
 @pytest.mark.asyncio
@@ -36,7 +36,7 @@ async def test_project_memory():
     mem = ProjectMemory()
     await mem.remember("custom_flag", True)
     assert await mem.retrieve("custom_flag") is True
-    assert await mem.retrieve("name") == "NOVA Project"
+    assert await mem.retrieve("name") == "IRIS Project"
 
 
 @pytest.mark.asyncio

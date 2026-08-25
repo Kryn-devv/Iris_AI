@@ -198,7 +198,7 @@ pip install -r requirements.txt
 Start the FastAPI application using Uvicorn:
 
 ```bash
-python -m uvicorn nova.app.main:app --host 127.0.0.1 --port 8000 --reload
+python -m uvicorn iris.app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 Interactive API documentation is available at:

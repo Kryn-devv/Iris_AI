@@ -1,16 +1,16 @@
-"""Pytest configuration and shared fixtures for NOVA tests."""
+"""Pytest configuration and shared fixtures for IRIS tests."""
 
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
-from nova.app.main import app
-from nova.app.agent.kernel import AgentKernel
-from nova.app.tools.registry import ToolRegistry, default_tool_registry
-from nova.app.tools.builtin.calculator import CalculatorTool
-from nova.app.tools.builtin.system_info import SystemInfoTool
-from nova.app.tools.builtin.time import TimeTool
-from nova.app.llm.gateway import ModelGateway
-from nova.app.core.security import PermissionManager
+from iris.app.main import app
+from iris.app.agent.kernel import AgentKernel
+from iris.app.tools.registry import ToolRegistry, default_tool_registry
+from iris.app.tools.builtin.calculator import CalculatorTool
+from iris.app.tools.builtin.system_info import SystemInfoTool
+from iris.app.tools.builtin.time import TimeTool
+from iris.app.llm.gateway import ModelGateway
+from iris.app.core.security import PermissionManager
 
 
 @pytest.fixture(autouse=True)

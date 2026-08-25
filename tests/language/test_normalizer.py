@@ -1,7 +1,7 @@
 """Tests for LanguageNormalizer."""
 
 import pytest
-from nova.app.language.normalizer import LanguageNormalizer
+from iris.app.language.normalizer import LanguageNormalizer
 
 
 def test_hinglish_calculator_normalization():

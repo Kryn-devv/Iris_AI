@@ -1,8 +1,8 @@
 """Tests for AgentKernel orchestrator logic."""
 
 import pytest
-from nova.app.agent.kernel import AgentKernel
-from nova.app.schemas.tasks import TaskStatus
+from iris.app.agent.kernel import AgentKernel
+from iris.app.schemas.tasks import TaskStatus
 
 
 @pytest.mark.asyncio

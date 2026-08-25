@@ -1,9 +1,9 @@
 """Tests for LLM abstraction layer and MockLLMProvider."""
 
 import pytest
-from nova.app.llm.mock import MockLLMProvider
-from nova.app.llm.gateway import ModelGateway
-from nova.app.schemas.agent import AgentPlan
+from iris.app.llm.mock import MockLLMProvider
+from iris.app.llm.gateway import ModelGateway
+from iris.app.schemas.agent import AgentPlan
 
 
 @pytest.mark.asyncio
