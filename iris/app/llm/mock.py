@@ -341,9 +341,10 @@ class MockLLMProvider(LLMProvider):
                 content = "Hello! I'm IRIS, your personal AI agent foundation."
             else:
                 content = (
-                    "I am IRIS (Phase 1 Kernel Foundation). "
-                    "A real LLM provider (Ollama / Local LLM / Cloud API) is not connected yet. "
-                    "Currently, I support deterministic demo commands: calculator, system info, and time."
+                    "I can run commands offline — try \"open youtube\", \"take a screenshot\", "
+                    "\"remind me in 10 minutes to stretch\" or \"make a ppt about space\". "
+                    "For full conversations like this one, add any free AI key to your .env "
+                    "(OpenRouter, Groq or Google AI Studio — see .env.example) and I'll pick it up automatically."
                 )
         else:
             content = f"Plan created for intent '{plan.user_intent}' with tool '{plan.steps[0].tool_name}'."
