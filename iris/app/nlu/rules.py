@@ -596,7 +596,8 @@ RULES: list[Rule] = [
         name="web_search_explicit",
         intent="web",
         tool="web_search",
-        pattern=_rx(r"^(?:search(?:\s+the)?(?:\s+web|\s+internet|\s+online)?\s+(?:for\s+)?|google\s+|look\s+up\s+)(?P<q>.+)$"),
+        # Negative lookahead: "search (for) files ..." belongs to the file tools.
+        pattern=_rx(r"^(?:search(?:\s+the)?(?:\s+web|\s+internet|\s+online)?\s+(?:for\s+)?|google\s+|look\s+up\s+)(?!(?:for\s+)?files?\b)(?P<q>.+)$"),
         builder=_passthrough_query("query"),
         confidence=0.9,
     ),
@@ -713,7 +714,7 @@ RULES: list[Rule] = [
         name="find_files",
         intent="files",
         tool="search_files",
-        pattern=_rx(r"^(?:find|search\s+for)\s+(?:a\s+)?files?\s+(?:named|called|matching)\s+(?P<pattern>.+)$"),
+        pattern=_rx(r"^(?:find|search(?:\s+for)?)\s+(?:a\s+)?files?\s+(?:named|called|matching)\s+(?P<pattern>.+)$"),
         confidence=0.94,
     ),
 
