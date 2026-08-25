@@ -54,8 +54,8 @@ DEFAULT_LIMIT = 8
 MAX_LIMIT = 20
 
 #: Similarity ratio at or above which two normalized titles count as the
-#: same story ("OpenAI releases new model" vs "OpenAI Releases New Model!").
-_NEAR_DUPLICATE_RATIO = 0.92
+#: same story ("OpenAI releases new model" vs "OpenAI releases new model today").
+_NEAR_DUPLICATE_RATIO = 0.88
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 

@@ -531,8 +531,14 @@ async def test_news_tool_fails_only_when_every_feed_fails(
 
 async def test_news_tool_limit_is_clamped(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "NEWS_FEEDS", ["https://big.example.com/rss"])
+    words = [
+        "avocado", "bulldozer", "cathedral", "dynamite", "eclipse", "falcon", "glacier",
+        "harmonica", "iguana", "jasmine", "kayak", "lantern", "meteor", "nebula", "obsidian",
+        "pyramid", "quasar", "rhubarb", "saxophone", "tundra", "umbrella", "volcano", "walrus",
+        "xylophone", "yodel",
+    ]
     items = "".join(
-        f"<item><title>Unique story number {i} about topic {i}</title>"
+        f"<item><title>{words[i].capitalize()} report {i}</title>"
         f"<link>https://big.example.com/{i}</link>"
         f"<pubDate>Mon, {i + 1:02d} Jun 2026 0{i % 10}:00:00 GMT</pubDate></item>"
         for i in range(25)
