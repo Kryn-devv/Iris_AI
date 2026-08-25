@@ -131,7 +131,7 @@ iris token            # print the phone-pairing token
 │                          "open youtube" runs in milliseconds,      │
 │                          offline, no model call at all             │
 │ 5 LLM agent loop         free-provider router with fallback chain  │
-│                          + function calling over all 45+ tools     │
+│                          + function calling over all 65+ tools     │
 └──────────────────┬──────────────────────────────┬──────────────────┘
                    ▼                              ▼
         ┌──────────────────┐          ┌───────────────────────┐
