@@ -129,3 +129,15 @@ def test_dynamic_open_resolution(engine: IntentEngine):
     assert site.tool_name == "open_website"
     app = engine.match("open task manager")
     assert app.tool_name == "open_app"
+
+
+def test_file_search_beats_web_search(engine: IntentEngine):
+    assert engine.match("search files named report").tool_name == "search_files"
+    assert engine.match("search for files called notes").tool_name == "search_files"
+    assert engine.match("search for rust tutorials").tool_name == "web_search"
+
+
+def test_open_folder_names(engine: IntentEngine):
+    m = engine.match("open downloads")
+    assert m.tool_name == "open_path"
+    assert m.arguments["path"] == "~/Downloads"
