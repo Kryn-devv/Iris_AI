@@ -117,11 +117,15 @@ def validate_fetch_url(url: str) -> str:
     if not candidate:
         raise ToolError("A URL is required.", speech="Which page should I read?")
 
-    if "://" not in candidate:
-        if candidate.startswith("//"):
-            candidate = "https:" + candidate
-        else:
-            candidate = "https://" + candidate
+    scheme_match = re.match(r"^([a-zA-Z][a-zA-Z0-9+.\-]*):(.*)$", candidate)
+    if "://" in candidate:
+        pass  # explicit scheme, validated below
+    elif candidate.startswith("//"):
+        candidate = "https:" + candidate
+    elif scheme_match and not re.match(r"^\d+(/|$)", scheme_match.group(2)):
+        pass  # scheme-like prefix such as javascript:/mailto:, refused below
+    else:
+        candidate = "https://" + candidate  # bare domain (possibly with :port)
 
     parts = urlsplit(candidate)
     scheme = (parts.scheme or "").lower()

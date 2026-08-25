@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "iris"
-version = "0.2.0"
-description = "NOVA - Offline-First Multimodal Personal AI Agent Foundation"
+version = "1.0.0"
+description = "IRIS - your personal desktop AI assistant: voice, automation, content creation"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -14,17 +14,50 @@ dependencies = [
     "pydantic>=2.6.0",
     "pydantic-settings>=2.2.0",
     "httpx>=0.27.0",
-    "openai>=1.14.0",
     "sqlalchemy[asyncio]>=2.0.28",
     "aiosqlite>=0.20.0",
     "python-dotenv>=1.0.1",
+    "python-multipart>=0.0.9",
     "psutil>=5.9.0",
 ]
+
+[project.scripts]
+iris = "iris.cli:main"
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
+]
+desktop = [
+    "pyautogui>=0.9.54",
+    "pygetwindow>=0.0.9",
+    "pyperclip>=1.8.2",
+    "mss>=9.0.1",
+    "pillow>=10.2.0",
+    "plyer>=2.1.0",
+    "pystray>=0.19.5",
+    "pynput>=1.7.6",
+]
+voice = [
+    "pyttsx3>=2.90",
+    "sounddevice>=0.4.6",
+    "soundfile>=0.12.1",
+    "SpeechRecognition>=3.10.0",
+    "edge-tts>=6.1.10",
+]
+content = [
+    "python-pptx>=0.6.23",
+    "python-docx>=1.1.0",
+    "openpyxl>=3.1.2",
+]
+extras = [
+    "qrcode[pil]>=7.4.2",
+    "beautifulsoup4>=4.12.3",
+    "send2trash>=1.8.2",
+]
+all = [
+    "iris[desktop,voice,content,extras]",
 ]
 
 [tool.pytest.ini_options]
