@@ -51,6 +51,40 @@ logger = get_logger("main")
 static_dir = Path(__file__).parent / "static"
 
 
+def _log_llm_status() -> None:
+    """Report which reasoning backend is live, so a missing key is obvious.
+
+    Silent fallback to the offline engine is the single most confusing startup
+    state: commands keep working, so nothing looks broken, but conversation
+    quality quietly drops. One line at boot removes the guesswork.
+    """
+    from iris.app.core.config import loaded_env_files
+
+    env_files = loaded_env_files()
+    providers = settings.configured_providers()
+
+    if settings.LLM_MODE in ("off", "mock"):
+        logger.info(
+            "LLM: %s — deterministic commands and offline replies only (LLM_MODE=%s).",
+            settings.LLM_MODE, settings.LLM_MODE,
+        )
+    elif providers:
+        logger.info(
+            "LLM: %s provider(s) ready — %s (routing in that order).",
+            len(providers), ", ".join(providers),
+        )
+    else:
+        where = ", ".join(env_files) if env_files else f"{paths.project_root() / '.env'} (not found)"
+        logger.warning(
+            "LLM: no API key detected — falling back to the offline engine. "
+            "Commands still work; add OPENROUTER_API_KEY or GROQ_API_KEY to %s and restart.",
+            where,
+        )
+
+    if env_files:
+        logger.info("Config loaded from: %s", ", ".join(env_files))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Startup and shutdown initialization."""
@@ -72,6 +106,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         "Tools ready: %s registered, %s available on this platform.",
         stats["total"], stats["available"],
     )
+
+    _log_llm_status()
 
     if settings.SCHEDULER_ENABLED:
         await default_scheduler_service.start()

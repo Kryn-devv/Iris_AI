@@ -212,3 +212,5 @@ python -m pytest -q
 <div align="center">
 <sub>IRIS runs on your machine, for you. ◉</sub>
 </div>
+> **Something not working?** See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — covers missing dependencies, the port-already-in-use error, and `.env` keys being ignored.
+
