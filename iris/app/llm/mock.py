@@ -337,7 +337,7 @@ class MockLLMProvider(LLMProvider):
                 content = "Bas sab mast bhai! IRIS ekdam ready hai tumhari help ke liye."
             elif is_hindi:
                 content = "जी, मैंने आपका संदेश समझ लिया है।"
-            elif "hello" in text or "hi" in text:
+            elif re.search(r"\b(hello|hi|hey)\b", text):
                 content = "Hello! I'm IRIS, your personal AI agent foundation."
             else:
                 content = (
