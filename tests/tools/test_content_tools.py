@@ -1,16 +1,21 @@
 """Tests for the content-creation tool modules (presentation, documents, spreadsheet).
 
-The test environment is headless Linux without the optional content packages
-(python-pptx, python-docx, openpyxl), so these tests exercise:
+Strategy:
 
-* the pure helpers (slugify, outline generation, HTML deck builder,
-  markdown-ish block parsing, row normalization) directly, and
-* the zero-dependency fallback writers end-to-end against a temporary
-  workspace (``IRIS_WORKSPACE_DIR`` is monkeypatched and the module-level
-  path sandbox is replaced with a permissive stub, mirroring
-  ``test_windows_screenshot_notify.py``).
+* Pure helpers (slugify, outline generation, HTML deck builder, markdown-ish
+  block parsing, row normalization) are tested directly.
+* Fallback writers (HTML deck, .md document, .csv sheet) are forced by
+  monkeypatching each module's ``try_import`` to return ``None``, so the
+  zero-dependency paths are covered whether or not the optional packages are
+  installed.
+* When python-pptx / python-docx / openpyxl ARE installed, the rich writers
+  are additionally exercised end-to-end and the artifacts re-opened with the
+  same libraries.
 
-Nothing here touches the real home directory or requires a display.
+All files land in a temporary workspace: ``IRIS_WORKSPACE_DIR`` is
+monkeypatched and the module-level path sandbox replaced with a permissive
+stub (mirroring ``test_windows_screenshot_notify.py``). Nothing touches the
+real home directory and no display is required.
 """
 
 from __future__ import annotations
@@ -52,6 +57,8 @@ from iris.app.tools.content.spreadsheet import (
 HAS_PPTX = presentation_mod.try_import("pptx") is not None
 HAS_DOCX = documents_mod.try_import("docx") is not None
 HAS_OPENPYXL = spreadsheet_mod.try_import("openpyxl") is not None
+
+_NO_IMPORTS = lambda name: None  # noqa: E731 - tiny stand-in for try_import
 
 
 class _OpenSandbox:
@@ -204,7 +211,8 @@ def test_build_html_deck_light_theme_palette():
 # CreatePresentationTool
 # =============================================================================
 
-async def test_create_presentation_auto_falls_back_to_html(outputs_tmp):
+async def test_create_presentation_auto_falls_back_to_html(outputs_tmp, monkeypatch):
+    monkeypatch.setattr(presentation_mod, "try_import", _NO_IMPORTS)
     tool = CreatePresentationTool()
     result = await tool.execute(title="Solar Power 101", topic="solar power")
     assert result.success, result.error
@@ -213,17 +221,13 @@ async def test_create_presentation_auto_falls_back_to_html(outputs_tmp):
     assert path.exists()
     assert path.parent == outputs_tmp
     assert path.name.startswith("solar-power-101-")
-    if HAS_PPTX:
-        assert result.result["format"] == "pptx"
-        assert path.suffix == ".pptx"
-    else:
-        content = path.read_text(encoding="utf-8")
-        assert "Solar Power 101" in content
-        assert "keydown" in content
-        assert path.suffix == ".html"
-        assert result.result["format"] == "html"
-        assert result.result["fallback_used"] is True
-        assert "HTML" in (result.speech or "")
+    assert path.suffix == ".html"
+    content = path.read_text(encoding="utf-8")
+    assert "Solar Power 101" in content
+    assert "keydown" in content and "Made with" in content
+    assert result.result["format"] == "html"
+    assert result.result["fallback_used"] is True
+    assert "HTML" in (result.speech or "")
     assert result.ui == {"open": str(path)}
     assert result.result["slide_count"] >= 7
 
@@ -243,10 +247,30 @@ async def test_create_presentation_with_explicit_slides(outputs_tmp):
     assert "opener" in content  # speaker notes embedded
 
 
-@pytest.mark.skipif(HAS_PPTX, reason="python-pptx installed; the failure path can't trigger")
-async def test_create_presentation_pptx_unavailable_fails_helpfully(outputs_tmp):
+@pytest.mark.skipif(not HAS_PPTX, reason="python-pptx not installed")
+async def test_create_presentation_real_pptx_roundtrip(outputs_tmp):
+    pptx_mod = presentation_mod.try_import("pptx")
     tool = CreatePresentationTool()
-    result = await tool.execute(title="Needs PowerPoint", format="pptx")
+    slides = [
+        {"title": "Kickoff", "bullets": ["welcome everyone"], "notes": "smile"},
+        {"title": "Plan", "bullets": ["step one", "step two"], "notes": "go slow"},
+    ]
+    result = await tool.execute(title="Kickoff Deck", slides=slides, format="pptx")
+    assert result.success, result.error
+    path = Path(result.artifacts[0])
+    assert path.suffix == ".pptx" and path.parent == outputs_tmp
+    deck = pptx_mod.Presentation(str(path))
+    assert len(deck.slides.__iter__.__self__._sldIdLst) == 2 or len(list(deck.slides)) == 2
+    # 16:9 aspect ratio
+    assert abs((deck.slide_width / deck.slide_height) - (16 / 9)) < 0.01
+    # Speaker notes survived the write
+    notes = list(deck.slides)[1].notes_slide.notes_text_frame.text
+    assert "go slow" in notes
+
+
+async def test_create_presentation_pptx_unavailable_fails_helpfully(outputs_tmp, monkeypatch):
+    monkeypatch.setattr(presentation_mod, "try_import", _NO_IMPORTS)
+    result = await CreatePresentationTool().execute(title="Needs PowerPoint", format="pptx")
     assert not result.success
     assert "python-pptx" in (result.error or "")
     assert result.speech
@@ -320,7 +344,8 @@ def test_blocks_roundtrip_renderers():
 # WriteDocumentTool
 # =============================================================================
 
-async def test_write_document_auto_falls_back_to_markdown(outputs_tmp):
+async def test_write_document_auto_falls_back_to_markdown(outputs_tmp, monkeypatch):
+    monkeypatch.setattr(documents_mod, "try_import", _NO_IMPORTS)
     tool = WriteDocumentTool()
     result = await tool.execute(
         title="Team Charter",
@@ -330,16 +355,13 @@ async def test_write_document_auto_falls_back_to_markdown(outputs_tmp):
     path = Path(result.artifacts[0])
     assert path.exists() and path.parent == outputs_tmp
     assert path.name.startswith("team-charter-")
-    if HAS_DOCX:
-        assert result.result["format"] == "docx"
-    else:
-        assert path.suffix == ".md"
-        assert result.result["format"] == "md"
-        assert result.result["fallback_used"] is True
-        content = path.read_text(encoding="utf-8")
-        assert content.startswith("# Team Charter")
-        assert "## Mission" in content
-        assert "- Ownership" in content
+    assert path.suffix == ".md"
+    assert result.result["format"] == "md"
+    assert result.result["fallback_used"] is True
+    content = path.read_text(encoding="utf-8")
+    assert content.startswith("# Team Charter")
+    assert "## Mission" in content
+    assert "- Ownership" in content
     assert result.ui == {"open": str(path)}
 
 
@@ -355,8 +377,26 @@ async def test_write_document_txt_format(outputs_tmp):
     assert "Reviewed roadmap" in text
 
 
-@pytest.mark.skipif(HAS_DOCX, reason="python-docx installed; the failure path can't trigger")
-async def test_write_document_docx_unavailable_fails_helpfully(outputs_tmp):
+@pytest.mark.skipif(not HAS_DOCX, reason="python-docx not installed")
+async def test_write_document_real_docx_roundtrip(outputs_tmp):
+    docx_mod = documents_mod.try_import("docx")
+    result = await WriteDocumentTool().execute(
+        title="Charter",
+        content="# Mission\nShip it weekly.\n\n- Ownership",
+        format="docx",
+    )
+    assert result.success, result.error
+    path = Path(result.artifacts[0])
+    assert path.suffix == ".docx"
+    document = docx_mod.Document(str(path))
+    texts = [p.text for p in document.paragraphs]
+    assert "Charter" in texts and "Mission" in texts and "Ownership" in texts
+    styles = {p.text: p.style.name for p in document.paragraphs}
+    assert styles["Ownership"] == "List Bullet"
+
+
+async def test_write_document_docx_unavailable_fails_helpfully(outputs_tmp, monkeypatch):
+    monkeypatch.setattr(documents_mod, "try_import", _NO_IMPORTS)
     result = await WriteDocumentTool().execute(title="Letter", content="Dear...", format="docx")
     assert not result.success
     assert "python-docx" in (result.error or "")
@@ -461,7 +501,7 @@ def test_normalize_sheets_dedupes_names():
 # CreateSpreadsheetTool
 # =============================================================================
 
-async def test_create_spreadsheet_csv_fallback_writes_real_file(outputs_tmp):
+async def test_create_spreadsheet_csv_writes_real_file(outputs_tmp):
     tool = CreateSpreadsheetTool()
     result = await tool.execute(
         title="Team Roster",
@@ -482,22 +522,44 @@ async def test_create_spreadsheet_csv_fallback_writes_real_file(outputs_tmp):
     assert result.ui == {"open": str(path)}
 
 
-async def test_create_spreadsheet_auto_mode(outputs_tmp):
+async def test_create_spreadsheet_auto_falls_back_to_csv(outputs_tmp, monkeypatch):
+    monkeypatch.setattr(spreadsheet_mod, "try_import", _NO_IMPORTS)
     result = await CreateSpreadsheetTool().execute(
         title="Expenses", headers=["Item", "Amount"], rows=[["Coffee", 4.5]]
     )
     assert result.success, result.error
     path = Path(result.artifacts[0])
-    if HAS_OPENPYXL:
-        assert path.suffix == ".xlsx"
-    else:
-        assert path.suffix == ".csv"
-        assert result.result["fallback_used"] is True
-        assert "CSV" in (result.speech or "")
+    assert path.suffix == ".csv"
+    assert result.result["fallback_used"] is True
+    assert "CSV" in (result.speech or "")
 
 
-@pytest.mark.skipif(HAS_OPENPYXL, reason="openpyxl installed; the failure path can't trigger")
-async def test_create_spreadsheet_xlsx_unavailable_fails_helpfully(outputs_tmp):
+@pytest.mark.skipif(not HAS_OPENPYXL, reason="openpyxl not installed")
+async def test_create_spreadsheet_real_xlsx_roundtrip(outputs_tmp):
+    openpyxl_mod = spreadsheet_mod.try_import("openpyxl")
+    result = await CreateSpreadsheetTool().execute(
+        title="Q3 Finances",
+        sheets=[
+            {"name": "Budget", "headers": ["Category", "Planned"], "rows": [["Ads", 1200]]},
+            {"name": "Actuals", "headers": ["Category", "Spent"], "rows": [["Ads", 980]]},
+        ],
+        format="xlsx",
+    )
+    assert result.success, result.error
+    path = Path(result.artifacts[0])
+    assert path.suffix == ".xlsx"
+    workbook = openpyxl_mod.load_workbook(str(path))
+    assert workbook.sheetnames == ["Budget", "Actuals"]
+    budget = workbook["Budget"]
+    assert budget["A1"].value == "Category"
+    assert budget["A1"].font.bold is True
+    assert str(budget.freeze_panes) == "A2"
+    assert budget["B2"].value == 1200
+    assert result.result["sheets"] == ["Budget", "Actuals"]
+
+
+async def test_create_spreadsheet_xlsx_unavailable_fails_helpfully(outputs_tmp, monkeypatch):
+    monkeypatch.setattr(spreadsheet_mod, "try_import", _NO_IMPORTS)
     result = await CreateSpreadsheetTool().execute(
         title="Budget", headers=["A"], rows=[[1]], format="xlsx"
     )
@@ -505,7 +567,6 @@ async def test_create_spreadsheet_xlsx_unavailable_fails_helpfully(outputs_tmp):
     assert "openpyxl" in (result.error or "")
 
 
-@pytest.mark.skipif(HAS_OPENPYXL, reason="multi-sheet CSV downgrade only happens without openpyxl")
 async def test_create_spreadsheet_multi_sheet_csv_keeps_first_sheet(outputs_tmp):
     result = await CreateSpreadsheetTool().execute(
         title="Q3 Finances",
@@ -513,6 +574,7 @@ async def test_create_spreadsheet_multi_sheet_csv_keeps_first_sheet(outputs_tmp)
             {"name": "Budget", "headers": ["Category", "Planned"], "rows": [["Ads", 1200]]},
             {"name": "Actuals", "headers": ["Category", "Spent"], "rows": [["Ads", 980]]},
         ],
+        format="csv",
     )
     assert result.success, result.error
     assert result.result["sheets"] == ["Budget"]
