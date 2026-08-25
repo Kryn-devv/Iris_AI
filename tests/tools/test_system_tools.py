@@ -145,7 +145,8 @@ async def test_kill_process_terminates_real_child():
         assert len(outcomes) == 1
         assert outcomes[0]["pid"] == child.pid
         assert outcomes[0]["outcome"] in ("terminated", "force-killed")
-        assert child.wait(timeout=5) != 0
+        child.wait(timeout=5)  # reap: the process must actually be gone
+        assert not psutil.pid_exists(child.pid) or psutil.Process(child.pid).status() == psutil.STATUS_ZOMBIE
     finally:
         if child.poll() is None:  # pragma: no cover - cleanup on failure
             child.kill()
