@@ -102,6 +102,9 @@
         break;
       }
       case "llm.route": els.chipProvider.textContent = p.provider || "local"; break;
+      case "ui.state":
+        if (p.action === "push_to_talk") (listening ? stopListening() : startListening());
+        break;
     }
   }
 
