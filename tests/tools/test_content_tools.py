@@ -213,12 +213,13 @@ async def test_create_presentation_auto_falls_back_to_html(outputs_tmp):
     assert path.exists()
     assert path.parent == outputs_tmp
     assert path.name.startswith("solar-power-101-")
-    content = path.read_text(encoding="utf-8")
-    assert "Solar Power 101" in content
-    assert "keydown" in content
     if HAS_PPTX:
         assert result.result["format"] == "pptx"
+        assert path.suffix == ".pptx"
     else:
+        content = path.read_text(encoding="utf-8")
+        assert "Solar Power 101" in content
+        assert "keydown" in content
         assert path.suffix == ".html"
         assert result.result["format"] == "html"
         assert result.result["fallback_used"] is True
