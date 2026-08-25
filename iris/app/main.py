@@ -125,8 +125,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-#: Paths reachable without a token even when auth is on (health probe only).
-_PUBLIC_PATHS = {"/health"}
+#: Paths reachable without a token even when auth is on: the health probe and
+#: the UI shell (HTML/CSS/JS contain no secrets — every API call the shell
+#: makes is still token-checked individually).
+_PUBLIC_PATHS = {"/health", "/", "/chat", "/favicon.ico"}
+
+
+def _is_public_path(path: str) -> bool:
+    return path in _PUBLIC_PATHS or path.startswith("/static/")
 
 
 @app.middleware("http")
@@ -140,7 +146,7 @@ async def auth_and_context_middleware(
     try:
         client_host = request.client.host if request.client else None
 
-        if auth_required() and not is_loopback(client_host) and request.url.path not in _PUBLIC_PATHS:
+        if auth_required() and not is_loopback(client_host) and not _is_public_path(request.url.path):
             presented = extract_token(
                 request.headers.get("Authorization"),
                 request.headers.get("X-Iris-Token"),

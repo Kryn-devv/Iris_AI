@@ -260,7 +260,7 @@ async def test_create_presentation_real_pptx_roundtrip(outputs_tmp):
     path = Path(result.artifacts[0])
     assert path.suffix == ".pptx" and path.parent == outputs_tmp
     deck = pptx_mod.Presentation(str(path))
-    assert len(deck.slides.__iter__.__self__._sldIdLst) == 2 or len(list(deck.slides)) == 2
+    assert len(deck.slides) == 2
     # 16:9 aspect ratio
     assert abs((deck.slide_width / deck.slide_height) - (16 / 9)) < 0.01
     # Speaker notes survived the write
