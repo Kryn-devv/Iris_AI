@@ -189,10 +189,18 @@ static void configLoad() {
   cfg.brakeOnStop = prefs.getBool("brake", cfg.brakeOnStop);
   prefs.end();
 
-  /* A corrupt or hand-edited pin must not brick the board on boot. */
-  if (!pinUsable(cfg.aR) || !pinUsable(cfg.aL) || !pinUsable(cfg.aEn) ||
-      !pinUsable(cfg.bR) || !pinUsable(cfg.bL) || !pinUsable(cfg.bEn)) {
-    Serial.println("[cfg] stored pins invalid — reverting to defaults");
+  /* A corrupt or hand-edited pin set must not brick the board on boot: every
+   * pin has to be usable AND distinct (one GPIO cannot carry two signals). */
+  bool pinsOk = pinUsable(cfg.aR) && pinUsable(cfg.aL) && pinUsable(cfg.aEn) &&
+                pinUsable(cfg.bR) && pinUsable(cfg.bL) && pinUsable(cfg.bEn);
+  if (pinsOk) {
+    const uint8_t all[6] = { cfg.aR, cfg.aL, cfg.aEn, cfg.bR, cfg.bL, cfg.bEn };
+    for (int i = 0; i < 6 && pinsOk; i++)
+      for (int j = i + 1; j < 6; j++)
+        if (all[i] == all[j]) { pinsOk = false; break; }
+  }
+  if (!pinsOk) {
+    Serial.println("[cfg] stored pins invalid or duplicated — reverting to defaults");
     configDefaults();
   }
   if (cfg.trimA > 100) cfg.trimA = 100;
@@ -224,6 +232,15 @@ WebServer server(80);
 static int   targetA = 0, targetB = 0;   /* wanted signed duty, -255..255 */
 static int   liveA   = 0, liveB   = 0;   /* actual, ramped toward target  */
 static bool  brakingA = false, brakingB = false;
+/* What was last actually written to the hardware. rampTick() only touches the
+ * bridges when something changed, so the braking flags must be part of that
+ * comparison — otherwise clearing a brake updates the flags while the wheels
+ * stay physically locked. */
+static bool  wroteBrakeA = false, wroteBrakeB = false;
+/* A BTS7960 with EN high and both IN low turns its LOW-side FETs on, shorting
+ * the motor: that is a brake, not a coast. Real coasting needs the bridges
+ * disabled, so the enables are part of the stop state. */
+static bool  enablesOn = false;
 static unsigned long lastRampMs   = 0;
 static unsigned long lastCommandMs = 0;
 static unsigned long autoStopAt    = 0;  /* 0 = no timed stop pending */
@@ -235,7 +252,7 @@ static uint32_t commandCount = 0;
 /* raw-mode bypasses swap/invert/trim: used by /test to identify hardware */
 static bool rawMode = false;
 
-/* self-test sequence */
+/* self-test sequence (declared before doStop, which cancels it) */
 static int  selfStep = -1;                 /* -1 = idle */
 static unsigned long selfStepAt = 0;
 static const char* SELF_LABELS[] = {
@@ -243,6 +260,15 @@ static const char* SELF_LABELS[] = {
   "both forward", "spin left", "spin right", "done"
 };
 static const int SELF_STEPS = 7;
+
+/* Raise or drop both BTS7960 enable inputs. Dropping them is the only way to
+ * truly free-wheel; raising them must precede any non-zero duty. */
+static void setEnables(bool on) {
+  if (on == enablesOn) return;
+  digitalWrite(cfg.aEn, on ? HIGH : LOW);
+  digitalWrite(cfg.bEn, on ? HIGH : LOW);
+  enablesOn = on;
+}
 
 /* Write one physical side. signed: -255..255, negative = LPWM side. */
 static void writeSide(bool sideA, int signedDuty, bool brake) {
@@ -284,10 +310,8 @@ static void armHardware() {
     claimedEn[i] = 255;
   }
 
-  /* EN high = module enabled. */
-  pinMode(cfg.aEn, OUTPUT); digitalWrite(cfg.aEn, HIGH); claimedEn[0] = cfg.aEn;
-  pinMode(cfg.bEn, OUTPUT); digitalWrite(cfg.bEn, HIGH); claimedEn[1] = cfg.bEn;
-
+  /* PWM first: enabling a bridge while its inputs are still undriven inputs
+   * leaves the module reading floating pins, which can twitch a motor. */
   const uint8_t pins[4]  = { cfg.aR, cfg.aL, cfg.bR, cfg.bL };
   const uint8_t chans[4] = { CH_A_R, CH_A_L, CH_B_R, CH_B_L };
   for (int i = 0; i < 4; i++) {
@@ -296,6 +320,12 @@ static void armHardware() {
   }
   writeSide(true, 0, false);
   writeSide(false, 0, false);
+  wroteBrakeA = wroteBrakeB = false;
+
+  /* Enables start LOW: nothing is moving yet, so coast. */
+  pinMode(cfg.aEn, OUTPUT); digitalWrite(cfg.aEn, LOW); claimedEn[0] = cfg.aEn;
+  pinMode(cfg.bEn, OUTPUT); digitalWrite(cfg.bEn, LOW); claimedEn[1] = cfg.bEn;
+  enablesOn = false;
 }
 
 /* Map a logical (left,right) request onto the physical sides, applying
@@ -314,6 +344,7 @@ static void applyLogical(int leftReq, int rightReq) {
   targetA = a; targetB = b;
   brakingA = brakingB = false;
   rawMode = false;
+  if (a != 0 || b != 0) setEnables(true);
 }
 
 static void doStop(bool brake) {
@@ -322,8 +353,19 @@ static void doStop(bool brake) {
   brakingA = brakingB = brake;
   rawMode = false;
   autoStopAt = 0;
-  writeSide(true,  0, brake);
-  writeSide(false, 0, brake);
+  /* A stop must also end a running self-test, or selfTestTick() re-energises
+   * the motors ~900 ms later and undoes the failsafe / WiFi-loss stop. */
+  selfStep = -1;
+  if (brake) {
+    setEnables(true);                /* both inputs high = high-side brake */
+    writeSide(true,  0, true);
+    writeSide(false, 0, true);
+  } else {
+    writeSide(true,  0, false);
+    writeSide(false, 0, false);
+    setEnables(false);               /* bridges off = genuine free-wheel */
+  }
+  wroteBrakeA = wroteBrakeB = brake;
   lastCommand = brake ? "brake" : "stop";
 }
 
@@ -347,7 +389,7 @@ static void rampTick() {
     step = (int)((long)PWM_DUTY_MAX * dt / cfg.rampMs);
     if (step < 1) step = 1;
   }
-  bool changed = false;
+  bool changed = (brakingA != wroteBrakeA) || (brakingB != wroteBrakeB);
   if (liveA != targetA) {
     if (abs(targetA - liveA) <= step) liveA = targetA;
     else liveA += (targetA > liveA) ? step : -step;
@@ -359,8 +401,11 @@ static void rampTick() {
     changed = true;
   }
   if (changed) {
+    if (targetA != 0 || targetB != 0 || brakingA || brakingB) setEnables(true);
     writeSide(true,  liveA, brakingA);
     writeSide(false, liveB, brakingB);
+    wroteBrakeA = brakingA;
+    wroteBrakeB = brakingB;
   }
 }
 
@@ -369,10 +414,10 @@ static void rampTick() {
 static void selfTestApply(int step) {
   const int s = cfg.defaultSpeed;
   switch (step) {
-    case 0: rawMode = true; targetA =  s; targetB = 0; break;
-    case 1: rawMode = true; targetA = -s; targetB = 0; break;
-    case 2: rawMode = true; targetA = 0; targetB =  s; break;
-    case 3: rawMode = true; targetA = 0; targetB = -s; break;
+    case 0: rawMode = true; targetA =  s; targetB = 0; setEnables(true); break;
+    case 1: rawMode = true; targetA = -s; targetB = 0; setEnables(true); break;
+    case 2: rawMode = true; targetA = 0; targetB =  s; setEnables(true); break;
+    case 3: rawMode = true; targetA = 0; targetB = -s; setEnables(true); break;
     case 4: applyLogical( s,  s); break;
     case 5: applyLogical(-s,  s); break;
     case 6: applyLogical( s, -s); break;
@@ -522,6 +567,11 @@ static void handleTest() {
   if (side != "a" && side != "b") {
     sendJson(400, "{\"error\":\"side must be a or b\"}"); return;
   }
+  /* Without this, dir=stop / dir=fwd / a typo / an empty dir= all spun the
+   * side FORWARD with calibration bypassed. */
+  if (dir != "forward" && dir != "backward") {
+    sendJson(400, "{\"error\":\"dir must be forward or backward\"}"); return;
+  }
   const int signedDuty = (dir == "backward") ? -speed : speed;
 
   selfStep = -1;
@@ -529,6 +579,7 @@ static void handleTest() {
   brakingA = brakingB = false;
   if (side == "a") { targetA = signedDuty; targetB = 0; }
   else             { targetA = 0; targetB = signedDuty; }
+  setEnables(true);
   lastCommand = "test:" + side + ":" + dir;
   commandCount++;
   lastCommandMs = millis();
@@ -544,6 +595,9 @@ static void handleTest() {
 }
 
 static void handleSelfTest() {
+  /* A /test button leaves a ~1.2 s auto-stop pending; without clearing it one
+   * step of the sequence would silently not move. */
+  autoStopAt = 0;
   selfStep = 0;
   selfTestApply(0);
   selfStepAt = millis() + 900;
@@ -562,57 +616,60 @@ static void handleStop() {
 }
 
 static void handleConfig() {
-  bool pinsChanged = false;
+  /* Validate a CANDIDATE copy and only commit once the whole request is known
+   * good. Mutating cfg in place and reverting on error meant reloading from
+   * NVS, which silently threw away any calibration the user had not saved yet. */
+  Config next = cfg;
+  bool pinsChanged = false, freqChanged = false;
   String rejected = "";
 
   auto setPin = [&](const char* arg, uint8_t& field) {
     if (!server.hasArg(arg)) return;
     const int v = server.arg(arg).toInt();
-    if (pinUsable(v)) { field = (uint8_t)v; pinsChanged = true; }
+    if (pinUsable(v)) { if (field != (uint8_t)v) pinsChanged = true; field = (uint8_t)v; }
     else { rejected += String(rejected.length() ? "," : "") + arg; }
   };
-  setPin("a_rpwm", cfg.aR); setPin("a_lpwm", cfg.aL); setPin("a_en", cfg.aEn);
-  setPin("b_rpwm", cfg.bR); setPin("b_lpwm", cfg.bL); setPin("b_en", cfg.bEn);
+  setPin("a_rpwm", next.aR); setPin("a_lpwm", next.aL); setPin("a_en", next.aEn);
+  setPin("b_rpwm", next.bR); setPin("b_lpwm", next.bL); setPin("b_en", next.bEn);
 
-  if (server.hasArg("swap_sides")) cfg.swapSides = server.arg("swap_sides").toInt() != 0;
-  if (server.hasArg("invert_a"))   cfg.invA = server.arg("invert_a").toInt() != 0;
-  if (server.hasArg("invert_b"))   cfg.invB = server.arg("invert_b").toInt() != 0;
-  if (server.hasArg("trim_a"))     cfg.trimA = (uint8_t)constrain(server.arg("trim_a").toInt(), 0, 100);
-  if (server.hasArg("trim_b"))     cfg.trimB = (uint8_t)constrain(server.arg("trim_b").toInt(), 0, 100);
-  if (server.hasArg("failsafe_ms"))cfg.failsafeMs = (uint16_t)constrain(server.arg("failsafe_ms").toInt(), 0, 60000);
-  if (server.hasArg("ramp_ms"))    cfg.rampMs = (uint16_t)constrain(server.arg("ramp_ms").toInt(), 0, 3000);
-  if (server.hasArg("default_speed")) cfg.defaultSpeed = (uint8_t)clampSpeed(server.arg("default_speed").toInt());
-  if (server.hasArg("min_duty"))   cfg.minDuty = (uint8_t)clampSpeed(server.arg("min_duty").toInt());
-  if (server.hasArg("brake_on_stop")) cfg.brakeOnStop = server.arg("brake_on_stop").toInt() != 0;
+  /* One GPIO cannot carry two signals: two LEDC channels fighting over a pin
+   * gives garbage duty, and RPWM==LPWM makes direction meaningless. Refuse the
+   * request rather than half-applying it. */
+  if (pinsChanged) {
+    const uint8_t all[6] = { next.aR, next.aL, next.aEn, next.bR, next.bL, next.bEn };
+    for (int i = 0; i < 6; i++)
+      for (int j = i + 1; j < 6; j++)
+        if (all[i] == all[j]) {
+          sendJson(400, "{\"error\":\"two functions cannot share one GPIO\",\"config\":" +
+                        configJson() + "}");
+          return;
+        }
+  }
 
-  bool freqChanged = false;
+  if (server.hasArg("swap_sides")) next.swapSides = server.arg("swap_sides").toInt() != 0;
+  if (server.hasArg("invert_a"))   next.invA = server.arg("invert_a").toInt() != 0;
+  if (server.hasArg("invert_b"))   next.invB = server.arg("invert_b").toInt() != 0;
+  if (server.hasArg("trim_a"))     next.trimA = (uint8_t)constrain(server.arg("trim_a").toInt(), 0, 100);
+  if (server.hasArg("trim_b"))     next.trimB = (uint8_t)constrain(server.arg("trim_b").toInt(), 0, 100);
+  if (server.hasArg("failsafe_ms"))next.failsafeMs = (uint16_t)constrain(server.arg("failsafe_ms").toInt(), 0, 60000);
+  if (server.hasArg("ramp_ms"))    next.rampMs = (uint16_t)constrain(server.arg("ramp_ms").toInt(), 0, 3000);
+  if (server.hasArg("default_speed")) next.defaultSpeed = (uint8_t)clampSpeed(server.arg("default_speed").toInt());
+  if (server.hasArg("min_duty"))   next.minDuty = (uint8_t)clampSpeed(server.arg("min_duty").toInt());
+  if (server.hasArg("brake_on_stop")) next.brakeOnStop = server.arg("brake_on_stop").toInt() != 0;
   if (server.hasArg("pwm_freq")) {
     const uint16_t f = (uint16_t)constrain(server.arg("pwm_freq").toInt(), 100, 25000);
-    if (f != cfg.pwmFreq) { cfg.pwmFreq = f; freqChanged = true; }
+    if (f != next.pwmFreq) { next.pwmFreq = f; freqChanged = true; }
   }
 
-  /* Two functions sharing one GPIO is never valid: two LEDC channels fighting
-   * over a pin gives garbage duty, and RPWM==LPWM makes direction meaningless.
-   * Reject the whole pin change rather than half-applying it. */
-  if (pinsChanged) {
-    const uint8_t all[6] = { cfg.aR, cfg.aL, cfg.aEn, cfg.bR, cfg.bL, cfg.bEn };
-    for (int i = 0; i < 6 && !rejected.length(); i++)
-      for (int j = i + 1; j < 6; j++)
-        if (all[i] == all[j]) { rejected = "duplicate_pin"; break; }
-    if (rejected == "duplicate_pin") {
-      configLoad();                     /* discard this request entirely */
-      armHardware();
-      sendJson(400, "{\"error\":\"two functions cannot share one GPIO\",\"config\":" +
-                    configJson() + "}");
-      return;
-    }
-  }
-
-  /* Changing pins or frequency means re-arming the PWM hardware. Stop first
-   * so a motor can never be left latched on an abandoned pin. */
+  /* Stop on the CURRENT pins before the mapping moves under us, then commit
+   * and re-arm. armHardware() releases the pins it previously claimed. */
   if (pinsChanged || freqChanged) {
     doStop(false);
+    autoStopAt = 0;
+    cfg = next;
     armHardware();
+  } else {
+    cfg = next;
   }
 
   String j = "{\"ok\":true,\"rearmed\":" + String((pinsChanged || freqChanged) ? "true" : "false");

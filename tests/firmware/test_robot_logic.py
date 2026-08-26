@@ -498,3 +498,99 @@ class TestRolloverSafeDeadlines:
             for delta in range(-1500, 1501, 11):
                 now = (deadline + delta) % self.UINT32
                 assert self.safe_elapsed(now, deadline) == (delta >= 0)
+
+
+class TestBrakeLatchAndCoast:
+    """The hardware must be re-written whenever the BRAKE state changes.
+
+    rampTick() only touches the bridges when something changed. If that
+    "changed" test looks at the ramp values alone, clearing a brake while the
+    ramp is already at zero updates the flags and leaves the wheels physically
+    locked — state says idle, robot says otherwise. The firmware therefore
+    folds the braking flags into the dirty check, which is what these tests pin.
+    """
+
+    def is_dirty(self, live_a, target_a, live_b, target_b, braking_a, braking_b,
+                 wrote_brake_a, wrote_brake_b) -> bool:
+        """Mirror of the firmware's rampTick() dirty condition."""
+        changed = (braking_a != wrote_brake_a) or (braking_b != wrote_brake_b)
+        if live_a != target_a:
+            changed = True
+        if live_b != target_b:
+            changed = True
+        return changed
+
+    def test_clearing_a_brake_at_zero_still_writes(self):
+        """The reported latch: brake engaged, then a zero-valued command."""
+        assert self.is_dirty(0, 0, 0, 0, False, False, True, True) is True
+
+    def test_engaging_a_brake_at_zero_writes(self):
+        assert self.is_dirty(0, 0, 0, 0, True, True, False, False) is True
+
+    def test_single_side_brake_change_is_enough(self):
+        assert self.is_dirty(0, 0, 0, 0, True, False, False, False) is True
+        assert self.is_dirty(0, 0, 0, 0, False, True, False, False) is True
+
+    def test_steady_state_does_not_write(self):
+        """No spurious writes when nothing changed."""
+        assert self.is_dirty(0, 0, 0, 0, False, False, False, False) is False
+        assert self.is_dirty(200, 200, 200, 200, False, False, False, False) is False
+        assert self.is_dirty(0, 0, 0, 0, True, True, True, True) is False
+
+    def test_ramp_movement_still_writes(self):
+        assert self.is_dirty(0, 200, 0, 0, False, False, False, False) is True
+        assert self.is_dirty(0, 0, 0, -200, False, False, False, False) is True
+
+    def test_exhaustive_dirty_logic(self):
+        """Dirty exactly when the ramp moved or a brake flag changed."""
+        for la, ta in itertools.product([0, 100], repeat=2):
+            for lb, tb in itertools.product([0, 100], repeat=2):
+                for ba, bb, wa, wb in itertools.product([True, False], repeat=4):
+                    expected = (la != ta) or (lb != tb) or (ba != wa) or (bb != wb)
+                    assert self.is_dirty(la, ta, lb, tb, ba, bb, wa, wb) is expected
+
+
+class TestStopSemantics:
+    """Coast and brake are physically different on a BTS7960.
+
+    With EN high, both inputs low turns the LOW-side FETs on and shorts the
+    motor — a brake, not a coast. Genuine free-wheeling needs the bridges
+    disabled, so the enable pins are part of the stop state.
+    """
+
+    def stop_state(self, brake: bool) -> dict:
+        """Mirror of doStop(): what the hardware ends up holding."""
+        if brake:
+            return {"enables": True, "rpwm": PWM_DUTY_MAX, "lpwm": PWM_DUTY_MAX}
+        return {"enables": False, "rpwm": 0, "lpwm": 0}
+
+    def test_brake_shorts_the_motor_with_bridges_enabled(self):
+        state = self.stop_state(brake=True)
+        assert state["enables"] is True
+        assert state["rpwm"] == state["lpwm"] == PWM_DUTY_MAX
+
+    def test_coast_disables_the_bridges(self):
+        state = self.stop_state(brake=False)
+        assert state["enables"] is False, "EN high + inputs low is a brake, not a coast"
+        assert state["rpwm"] == state["lpwm"] == 0
+
+    def test_the_two_stops_differ(self):
+        assert self.stop_state(True) != self.stop_state(False)
+
+
+class TestRawTestValidation:
+    """/test bypasses calibration, so a bad argument must never guess."""
+
+    def parse_dir(self, raw: str) -> int | None:
+        """Mirror of handleTest() after the validation fix."""
+        if raw not in ("forward", "backward"):
+            return None
+        return -1 if raw == "backward" else 1
+
+    @pytest.mark.parametrize("bogus", ["", "stop", "fwd", "FORWARD", "left", "brake", "back"])
+    def test_bad_direction_is_rejected_not_treated_as_forward(self, bogus):
+        assert self.parse_dir(bogus) is None
+
+    def test_valid_directions(self):
+        assert self.parse_dir("forward") == 1
+        assert self.parse_dir("backward") == -1
