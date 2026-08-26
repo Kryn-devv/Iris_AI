@@ -36,7 +36,7 @@ REGISTRY_FILENAME = "devices.json"
 
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9 _-]{0,31}$")
 
-DEVICE_KINDS = ("relay", "motor", "generic")
+DEVICE_KINDS = ("relay", "motor", "sensor", "generic")
 
 
 class DeviceError(ValueError):

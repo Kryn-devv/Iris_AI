@@ -378,6 +378,73 @@ class DeviceStatusTool(BaseTool):
         return {"devices": results, "speech": speech}
 
 
+class DeviceSensorsTool(BaseTool):
+    name = "device_sensors"
+    description = (
+        "Read live sensor values from a registered sensor node (ESP32 with motion, gas, "
+        "light, ultrasonic distance...). Answers 'is there motion', 'gas level', "
+        "'how far is the object'."
+    )
+    category = ToolCategory.AUTOMATION
+    permission_level = PermissionLevel.READ
+    aliases = ["read sensors", "sensor readings", "check motion", "gas level"]
+    network = True
+    input_schema = ToolParameterSchema(
+        properties={
+            "device": {"type": "string", "description": "Sensor node name (defaults to the first sensor device)"},
+            "sensor": {"type": "string", "enum": ["all", "motion", "gas", "light", "distance"],
+                        "description": "Which reading to report (default all)"},
+        },
+    )
+    examples = [
+        ToolExample(utterance="is there any motion", arguments={"sensor": "motion"}),
+        ToolExample(utterance="what's the gas level", arguments={"sensor": "gas"}),
+        ToolExample(utterance="how far is the object", arguments={"sensor": "distance"}),
+    ]
+
+    def __init__(self, registry: Optional[DeviceRegistry] = None):
+        self.registry = registry or default_device_registry
+
+    @staticmethod
+    def _summarize(data: Dict[str, Any], sensor: str) -> str:
+        parts: list[str] = []
+        if sensor in ("all", "motion") and "motion_recent" in data:
+            parts.append(
+                "Motion detected" if data.get("motion") or data.get("motion_recent")
+                else "No motion"
+            )
+        if sensor in ("all", "gas") and "gas_raw" in data:
+            if data.get("gas_alarm"):
+                parts.append(f"GAS ALARM — level {data['gas_raw']}")
+            else:
+                parts.append(f"gas level {data['gas_raw']} (normal)")
+        if sensor in ("all", "light") and "light_percent" in data:
+            parts.append(f"light {data['light_percent']}%")
+        if sensor in ("all", "distance") and "distance_cm" in data:
+            parts.append(f"nearest object {data['distance_cm']} cm away")
+        if not parts:
+            return "The node answered but reported no matching sensors."
+        return ", ".join(parts) + "."
+
+    async def _run(self, device: Optional[str] = None, sensor: str = "all") -> Dict[str, Any]:
+        target = self.registry.get(device) if device else self.registry.first_of_kind("sensor")
+        if target is None:
+            raise ToolError(
+                "No sensor node is registered. Flash firmware/esp32-s3-iris-sensors and say: "
+                "add device room sensor at 192.168.1.70 as sensor",
+                speech="I don't have a sensor node registered yet.",
+            )
+        sensor = (sensor or "all").strip().lower()
+        data = await _device_get(f"{target.base_url}/sensors")
+        summary = self._summarize(data, sensor)
+        return {
+            "device": target.name,
+            "readings": data,
+            "speech": summary,
+            "display": f"{target.name}: {summary}",
+        }
+
+
 def get_tools() -> list[BaseTool]:
     return [
         RegisterDeviceTool(),
@@ -387,4 +454,5 @@ def get_tools() -> list[BaseTool]:
         DeviceMotorTool(),
         DeviceCommandTool(),
         DeviceStatusTool(),
+        DeviceSensorsTool(),
     ]

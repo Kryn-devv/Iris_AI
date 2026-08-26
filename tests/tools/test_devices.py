@@ -209,3 +209,67 @@ class TestDeviceNLU:
         assert match and match.tool_name == "open_app"
         match2 = self.engine.match("youtube kholo")
         assert match2 and match2.tool_name == "open_website"
+
+
+# ---------------------------------------------------------------- sensors
+class TestSensorNode:
+    @pytest.mark.asyncio
+    async def test_sensor_readings_summarized(self, registry, monkeypatch):
+        from iris.app.tools.devices.esp32 import DeviceSensorsTool
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == "/sensors"
+            return httpx.Response(200, json={
+                "motion": False, "motion_recent": True,
+                "gas_raw": 900, "gas_alarm": False,
+                "light_raw": 2048, "light_percent": 50,
+                "distance_cm": 42, "uptime_s": 10,
+            })
+
+        transport = httpx.MockTransport(handler)
+        real_client = httpx.AsyncClient
+        monkeypatch.setattr(esp32_mod.httpx, "AsyncClient",
+                            lambda **kw: real_client(transport=transport, **{k: v for k, v in kw.items() if k != "transport"}))
+        registry.add(Device(name="room sensor", base_url="http://192.168.1.70", kind="sensor"))
+
+        res = await DeviceSensorsTool(registry).execute(sensor="all")
+        assert res.success
+        assert "Motion detected" in res.result["speech"]
+        assert "gas level 900 (normal)" in res.result["speech"]
+        assert "42 cm" in res.result["speech"]
+
+        res_gas = await DeviceSensorsTool(registry).execute(sensor="gas")
+        assert res_gas.result["speech"] == "gas level 900 (normal)."
+
+    @pytest.mark.asyncio
+    async def test_gas_alarm_is_loud(self, registry, monkeypatch):
+        from iris.app.tools.devices.esp32 import DeviceSensorsTool
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"gas_raw": 3000, "gas_alarm": True})
+
+        transport = httpx.MockTransport(handler)
+        real_client = httpx.AsyncClient
+        monkeypatch.setattr(esp32_mod.httpx, "AsyncClient",
+                            lambda **kw: real_client(transport=transport, **{k: v for k, v in kw.items() if k != "transport"}))
+        registry.add(Device(name="kitchen sensor", base_url="http://192.168.1.71", kind="sensor"))
+        res = await DeviceSensorsTool(registry).execute(sensor="gas")
+        assert "GAS ALARM" in res.result["speech"]
+
+    @pytest.mark.asyncio
+    async def test_no_sensor_node_explains(self, registry):
+        from iris.app.tools.devices.esp32 import DeviceSensorsTool
+        res = await DeviceSensorsTool(registry).execute()
+        assert not res.success and "No sensor node" in res.error
+
+    @pytest.mark.parametrize("utterance,sensor", [
+        ("is there any motion", "motion"),
+        ("koi hai kya", "motion"),
+        ("gas level kya hai", "gas"),
+        ("kitna door hai", "distance"),
+        ("check the sensors", "all"),
+    ])
+    def test_sensor_nlu(self, utterance, sensor):
+        match = IntentEngine().match(utterance)
+        assert match and match.tool_name == "device_sensors"
+        assert match.arguments.get("sensor") == sensor
