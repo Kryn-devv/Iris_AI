@@ -426,6 +426,46 @@ RULES: list[Rule] = [
         confidence=0.9,
     ),
     Rule(
+        name="hinglish_weather",
+        intent="web",
+        tool="weather",
+        pattern=_rx(r"^(?:(?P<q>.+?)\s+(?:ka|mein|me)\s+)?mausam(?:\s+kaisa\s+hai)?$|^weather\s+kaisa\s+hai$"),
+        builder=lambda m, c: (
+            {"location": m.group("q").strip()} if m.groupdict().get("q") else {}
+        ),
+        confidence=0.95,
+    ),
+    Rule(
+        name="hinglish_time",
+        intent="system",
+        tool="time",
+        pattern=_rx(r"^(?:kitne\s+baje(?:\s+(?:hain|hai))?|(?:samay|time)\s+kya\s+(?:hua|hai)(?:\s+hai)?|abhi\s+time\s+kya\s+hai)$"),
+        confidence=0.96,
+    ),
+    Rule(
+        name="hinglish_screenshot",
+        intent="desktop",
+        tool="take_screenshot",
+        pattern=_rx(r"^screenshot\s+(?:lo|le\s+lo|le|nikalo|kheecho)$"),
+        confidence=0.97,
+    ),
+    Rule(
+        name="hinglish_volume",
+        intent="media",
+        tool="volume",
+        pattern=_rx(r"^(?:awaa?z|volume|sound)\s+(?P<verb>badhao|badha\s+do|kam\s+karo|kam\s+kar\s+do|ghatao)$"),
+        builder=lambda m, c: {"action": "up" if "badha" in m.group("verb") else "down"},
+        confidence=0.96,
+    ),
+    Rule(
+        name="hinglish_play",
+        intent="entertainment",
+        tool="play_youtube",
+        pattern=_rx(r"^(?:(?P<q>.+?)\s+(?:bajao|baja\s+do|sunao|suna\s+do)|(?:gaana|music|song)\s+(?:chalao|bajao|lagao))$"),
+        builder=lambda m, c: {"query": (m.groupdict().get("q") or "music").strip()},
+        confidence=0.95,
+    ),
+    Rule(
         name="open_kholo_hinglish",
         intent="apps",
         tool="open_app",
