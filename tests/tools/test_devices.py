@@ -47,6 +47,9 @@ def fake_lan(monkeypatch):
                                              "state": request.url.params["state"]})
         if path == "/motor":
             return httpx.Response(200, json={"motor": request.url.params["dir"]})
+        if path == "/servo":
+            return httpx.Response(200, json={"servo": int(request.url.params["angle"]),
+                                             "hold": "hold" in request.url.params})
         if path == "/led/on":
             return httpx.Response(200, text="OK")
         return httpx.Response(404, json={"error": "unknown endpoint"})
@@ -262,17 +265,187 @@ class TestSensorNode:
         res = await DeviceSensorsTool(registry).execute()
         assert not res.success and "No sensor node" in res.error
 
+    @pytest.mark.asyncio
+    async def test_climate_and_two_ultrasonics(self, registry, monkeypatch):
+        """A node with the DHT and both HC-SR04s fitted.
+
+        The two distances have to read as one phrase — "82 cm ahead, 15 cm
+        behind" — because two bare numbers leave the listener to guess which
+        end of the robot each belongs to.
+        """
+        from iris.app.tools.devices.esp32 import DeviceSensorsTool
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={
+                "flame": False,
+                "distance_cm": 82, "distance_rear_cm": 15,
+                "temperature_c": 28.4, "humidity_pct": 61,
+            })
+
+        transport = httpx.MockTransport(handler)
+        real_client = httpx.AsyncClient
+        monkeypatch.setattr(esp32_mod.httpx, "AsyncClient",
+                            lambda **kw: real_client(transport=transport, **{k: v for k, v in kw.items() if k != "transport"}))
+        registry.add(Device(name="room sensor", base_url="http://192.168.1.72", kind="sensor"))
+
+        temp = await DeviceSensorsTool(registry).execute(sensor="temperature")
+        assert temp.success and temp.result["speech"] == "28.4 degrees."
+
+        hum = await DeviceSensorsTool(registry).execute(sensor="humidity")
+        assert hum.result["speech"] == "humidity 61%."
+
+        both = await DeviceSensorsTool(registry).execute(sensor="climate")
+        assert "28.4 degrees" in both.result["speech"]
+        assert "humidity 61%" in both.result["speech"]
+
+        dist = await DeviceSensorsTool(registry).execute(sensor="distance")
+        assert dist.result["speech"] == "82 cm ahead, 15 cm behind."
+
+    @pytest.mark.asyncio
+    async def test_single_ultrasonic_still_reads_naturally(self, registry, monkeypatch):
+        """The rear sensor is optional, so a one-sensor node must not say
+        "82 cm ahead" with nothing behind it."""
+        from iris.app.tools.devices.esp32 import DeviceSensorsTool
+
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"distance_cm": 82}))
+        real_client = httpx.AsyncClient
+        monkeypatch.setattr(esp32_mod.httpx, "AsyncClient",
+                            lambda **kw: real_client(transport=transport, **{k: v for k, v in kw.items() if k != "transport"}))
+        registry.add(Device(name="front sensor", base_url="http://192.168.1.73", kind="sensor"))
+
+        res = await DeviceSensorsTool(registry).execute(sensor="distance")
+        assert res.result["speech"] == "nearest object 82 cm away."
+
+    @pytest.mark.asyncio
+    async def test_missing_dht_does_not_invent_a_temperature(self, registry, monkeypatch):
+        from iris.app.tools.devices.esp32 import DeviceSensorsTool
+
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"motion": False, "motion_recent": False}))
+        real_client = httpx.AsyncClient
+        monkeypatch.setattr(esp32_mod.httpx, "AsyncClient",
+                            lambda **kw: real_client(transport=transport, **{k: v for k, v in kw.items() if k != "transport"}))
+        registry.add(Device(name="bare sensor", base_url="http://192.168.1.74", kind="sensor"))
+
+        res = await DeviceSensorsTool(registry).execute(sensor="temperature")
+        assert "no matching sensors" in res.result["speech"]
+
     @pytest.mark.parametrize("utterance,sensor", [
         ("is there any motion", "motion"),
         ("koi hai kya", "motion"),
         ("gas level kya hai", "gas"),
         ("kitna door hai", "distance"),
         ("check the sensors", "all"),
+        ("what's the temperature", "temperature"),
+        ("how hot is it", "temperature"),
+        ("kitna garam hai", "temperature"),
+        ("temperature batao", "temperature"),
+        ("room temperature", "temperature"),
+        ("what's the humidity", "humidity"),
+        ("how humid is it", "humidity"),
+        ("nami kitni hai", "humidity"),
     ])
     def test_sensor_nlu(self, utterance, sensor):
         match = IntentEngine().match(utterance)
         assert match and match.tool_name == "device_sensors"
         assert match.arguments.get("sensor") == sensor
+
+
+# ---------------------------------------------------------------- servo
+class TestServo:
+    engine = IntentEngine()
+
+    @pytest.mark.asyncio
+    async def test_named_positions_become_angles(self, registry, fake_lan):
+        from iris.app.tools.devices.esp32 import DeviceServoTool
+
+        registry.add(Device(name="curtain", base_url="http://192.168.1.80", kind="relay"))
+        tool = DeviceServoTool(registry)
+
+        opened = await tool.execute(position="open")
+        assert opened.success and opened.result["angle"] == 180
+        assert any("/servo" in url and "angle=180" in url for url in fake_lan)
+
+        closed = await tool.execute(position="close")
+        assert closed.result["angle"] == 0
+
+        half = await tool.execute(position="half")
+        assert half.result["angle"] == 90
+
+    @pytest.mark.asyncio
+    async def test_hold_is_opt_in(self, registry, fake_lan):
+        """A servo left powered fights its own gearbox, so holding is asked for
+        explicitly and never assumed."""
+        from iris.app.tools.devices.esp32 import DeviceServoTool
+
+        registry.add(Device(name="curtain", base_url="http://192.168.1.80", kind="relay"))
+        tool = DeviceServoTool(registry)
+
+        await tool.execute(angle=45)
+        assert not any("hold" in url for url in fake_lan)
+
+        fake_lan.clear()
+        await tool.execute(angle=45, hold=True)
+        assert any("hold=1" in url for url in fake_lan)
+
+    @pytest.mark.asyncio
+    async def test_out_of_range_angle_refuses_instead_of_clamping(self, registry, fake_lan):
+        """Clamping would park the horn against an end stop and let the servo
+        stall there — that is how the gears strip."""
+        from iris.app.tools.devices.esp32 import DeviceServoTool
+
+        registry.add(Device(name="curtain", base_url="http://192.168.1.80", kind="relay"))
+        res = await DeviceServoTool(registry).execute(angle=270)
+        assert not res.success and "0 to 180" in res.error
+        assert not fake_lan          # nothing was sent to the board
+
+    @pytest.mark.asyncio
+    async def test_angle_or_position_required(self, registry):
+        from iris.app.tools.devices.esp32 import DeviceServoTool
+        registry.add(Device(name="curtain", base_url="http://192.168.1.80", kind="relay"))
+        res = await DeviceServoTool(registry).execute()
+        assert not res.success
+
+    @pytest.mark.asyncio
+    async def test_no_node_explains_how_to_add_one(self, registry):
+        from iris.app.tools.devices.esp32 import DeviceServoTool
+        res = await DeviceServoTool(registry).execute(position="open")
+        assert not res.success and "add device" in res.error
+
+    @pytest.mark.parametrize("utterance,arguments", [
+        ("open the curtain", {"position": "open"}),
+        ("close the curtain", {"position": "close"}),
+        ("shut the blinds", {"position": "close"}),
+        ("open my curtains", {"position": "open"}),
+        ("curtain kholo", {"position": "open"}),
+        ("parda kholo", {"position": "open"}),
+        ("curtain band karo", {"position": "close"}),
+        ("open half the curtain", {"position": "half"}),
+        ("open the curtain halfway", {"position": "half"}),
+        ("set the servo to 45 degrees", {"angle": 45}),
+        ("servo 90", {"angle": 90}),
+        ("servo to 0", {"angle": 0}),
+    ])
+    def test_servo_nlu(self, utterance, arguments):
+        match = self.engine.match(utterance)
+        assert match and match.tool_name == "device_servo", utterance
+        assert match.arguments == arguments
+
+    @pytest.mark.parametrize("utterance", ["servo 181", "rotate servo 200", "servo 999"])
+    def test_impossible_angle_is_not_silently_clamped_by_nlu(self, utterance):
+        match = self.engine.match(utterance)
+        assert match is None or match.tool_name != "device_servo"
+
+    @pytest.mark.parametrize("utterance,tool", [
+        ("open youtube", "open_website"),
+        ("open notepad", "open_app"),
+        ("turn on the kitchen light", "device_switch"),
+        ("close chrome", "close_app"),
+    ])
+    def test_servo_rules_do_not_shadow_existing_commands(self, utterance, tool):
+        match = self.engine.match(utterance)
+        assert match and match.tool_name == tool
 
 
 # --------------------------------------------------------- custom firmware mapping

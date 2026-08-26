@@ -3,6 +3,7 @@
  *
  * One sketch, three jobs (enable what you wired):
  *   RELAYS : lights, fans, sockets via a relay module   -> /relay?ch=1&state=on|off|toggle
+ *   SERVO  : one hobby servo (curtain, door, latch)     -> /servo?angle=90
  *   MOTORS : robot base via an L298N dual H-bridge      -> /motor?dir=forward&speed=200&ms=1500
  *   STATUS : JSON self-description                      -> /status
  * Plus a built-in control page at /  so you can drive it from any browser.
@@ -37,6 +38,22 @@ const int  RELAY_COUNT       = sizeof(RELAY_PINS) / sizeof(RELAY_PINS[0]);
 /* Most relay boards are ACTIVE-LOW: the relay closes when the pin is LOW. */
 const bool RELAY_ACTIVE_LOW  = true;
 
+/* Servo. The SIGNAL wire goes to this GPIO. The servo's POWER does NOT come
+ * from any ESP32 pin — the onboard regulator cannot source a servo's stall
+ * current and trying it browns out the board mid-move. Feed the red wire from
+ * the 5V rail, and name the relay channel that switches it below.
+ *
+ * SERVO_POWER_CH is why an idle servo does not buzz or cook itself holding a
+ * position: after each move the channel opens and the servo goes properly
+ * dead instead of fighting its own gearbox. Set it to 0 if you wired the
+ * servo permanently to 5V; set PIN_SERVO to -1 if you have no servo. */
+const int  PIN_SERVO        = 19;
+const int  SERVO_POWER_CH   = 3;     // relay channel feeding servo +, 0 = always on
+const int  SERVO_MIN_US     = 500;   // pulse width at 0 deg   (per datasheet)
+const int  SERVO_MAX_US     = 2500;  // pulse width at 180 deg
+const int  SERVO_TRAVEL_MS  = 700;   // time to allow for a full sweep
+const int  SERVO_BOOT_ANGLE = 90;    // pulse held before the first command
+
 /* Motors (L298N):   ENA IN1 IN2  = left,   ENB IN3 IN4 = right  */
 const bool MOTORS_ENABLED = false;   // set true for the robot base build
 const int  PIN_ENA = 25, PIN_IN1 = 13, PIN_IN2 = 12;
@@ -49,6 +66,9 @@ WebServer server(80);
 bool relayState[16] = {false};
 unsigned long motorStopAt = 0;       // millis() deadline for timed moves
 unsigned long bootMillis  = 0;
+int  servoAngle = SERVO_BOOT_ANGLE;
+unsigned long servoPowerOffAt = 0;   // millis() deadline to drop servo power
+const int SERVO_LEDC_CH = 7;         // clear of the channels analogWrite() takes
 
 /* ─────────────────────────── HELPERS ────────────────────────── */
 
@@ -64,6 +84,37 @@ void motorsWrite(int in1, int in2, int in3, int in4, int speed) {
 }
 
 void motorsStop() { motorsWrite(LOW, LOW, LOW, LOW, 0); motorStopAt = 0; }
+
+bool servoPowered() {
+  if (SERVO_POWER_CH < 1 || SERVO_POWER_CH > RELAY_COUNT) return true;   // hard-wired
+  return relayState[SERVO_POWER_CH - 1];
+}
+
+/* A servo reads pulse WIDTH, not duty, so the duty has to be recomputed from
+ * microseconds: at 50 Hz one frame is 20000 us and 16-bit duty spans that. */
+void servoWriteAngle(int angle) {
+  if (PIN_SERVO < 0) return;
+  angle = constrain(angle, 0, 180);
+  servoAngle = angle;
+  const long us = SERVO_MIN_US + (long)(SERVO_MAX_US - SERVO_MIN_US) * angle / 180;
+  const uint32_t duty = (uint32_t)((us * 65535L) / 20000L);
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  ledcWrite(PIN_SERVO, duty);
+#else
+  ledcWrite(SERVO_LEDC_CH, duty);
+#endif
+}
+
+/* Order matters. The pulse is already correct before the relay closes, so the
+ * servo wakes up knowing where to go; powering first and commanding after
+ * makes it snap to whatever the last frame happened to say. */
+void servoMove(int angle, bool hold) {
+  servoWriteAngle(angle);
+  if (SERVO_POWER_CH >= 1 && SERVO_POWER_CH <= RELAY_COUNT) {
+    applyRelay(SERVO_POWER_CH - 1, true);
+    servoPowerOffAt = hold ? 0 : millis() + SERVO_TRAVEL_MS;
+  }
+}
 
 void sendJson(int code, const String& body) {
   server.sendHeader("Access-Control-Allow-Origin", "*");
@@ -82,7 +133,13 @@ void handleStatus() {
     json += relayState[i] ? "\"on\"" : "\"off\"";
     if (i < RELAY_COUNT - 1) json += ",";
   }
-  json += "],\"motors\":" + String(MOTORS_ENABLED ? "true" : "false") + "}";
+  json += "],\"motors\":" + String(MOTORS_ENABLED ? "true" : "false");
+  if (PIN_SERVO >= 0) {
+    json += ",\"servo\":{\"angle\":" + String(servoAngle) +
+            ",\"powered\":" + String(servoPowered() ? "true" : "false") +
+            ",\"power_channel\":" + String(SERVO_POWER_CH) + "}";
+  }
+  json += "}";
   sendJson(200, json);
 }
 
@@ -94,6 +151,22 @@ void handleRelay() {
   bool on = (state == "toggle") ? !relayState[idx] : (state == "on");
   applyRelay(idx, on);
   sendJson(200, "{\"ch\":" + String(ch) + ",\"state\":\"" + (on ? "on" : "off") + "\"}");
+}
+
+void handleServo() {
+  if (PIN_SERVO < 0) { sendJson(400, "{\"error\":\"no servo pin configured\"}"); return; }
+  if (!server.hasArg("angle")) { sendJson(400, "{\"error\":\"angle required (0-180)\"}"); return; }
+  const String raw = server.arg("angle");
+  /* toInt() answers 0 for "abc" and for "" — a silent slam to 0 degrees. */
+  for (unsigned i = 0; i < raw.length(); i++)
+    if (raw[i] < '0' || raw[i] > '9') { sendJson(400, "{\"error\":\"angle must be 0-180\"}"); return; }
+  const long angle = raw.toInt();
+  if (raw.length() == 0 || angle > 180) { sendJson(400, "{\"error\":\"angle must be 0-180\"}"); return; }
+
+  const bool hold = server.hasArg("hold") && server.arg("hold") != "0";
+  servoMove((int)angle, hold);
+  sendJson(200, "{\"servo\":" + String(servoAngle) + ",\"hold\":" +
+                String(hold ? "true" : "false") + "}");
 }
 
 void handleMotor() {
@@ -124,6 +197,12 @@ void handleRoot() {
   html += "<script>const R=" + String(RELAY_COUNT) + ";const d=document.getElementById('r');";
   html += "for(let i=1;i<=R;i++){const b=document.createElement('button');b.textContent='Relay '+i;"
           "b.onclick=()=>fetch('/relay?ch='+i+'&state=toggle');d.appendChild(b);}";
+  if (PIN_SERVO >= 0)
+    html += "d.appendChild(document.createElement('br'));const sl=document.createElement('input');"
+            "sl.type='range';sl.min=0;sl.max=180;sl.value=" + String(servoAngle) + ";sl.style.width='80%';"
+            "const lb=document.createElement('div');lb.textContent='servo '+sl.value+String.fromCharCode(176);"
+            "sl.oninput=()=>lb.textContent='servo '+sl.value+String.fromCharCode(176);"
+            "sl.onchange=()=>fetch('/servo?angle='+sl.value);d.appendChild(lb);d.appendChild(sl);";
   if (MOTORS_ENABLED)
     html += "['forward','left','stop','right','backward'].forEach(k=>{const b=document.createElement('button');"
             "b.textContent=k;b.onclick=()=>fetch('/motor?dir='+k);d.appendChild(b);});";
@@ -139,6 +218,19 @@ void setup() {
   bootMillis = millis();
 
   for (int i = 0; i < RELAY_COUNT; i++) { pinMode(RELAY_PINS[i], OUTPUT); applyRelay(i, false); }
+
+  /* The pulse is attached at boot but the power channel stays open, so the
+   * servo is silent and drawing nothing until the first command — and when
+   * that command arrives the signal is already valid. */
+  if (PIN_SERVO >= 0) {
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+    ledcAttach(PIN_SERVO, 50, 16);
+#else
+    ledcSetup(SERVO_LEDC_CH, 50, 16);
+    ledcAttachPin(PIN_SERVO, SERVO_LEDC_CH);
+#endif
+    servoWriteAngle(SERVO_BOOT_ANGLE);
+  }
   if (MOTORS_ENABLED) {
     pinMode(PIN_ENA, OUTPUT); pinMode(PIN_IN1, OUTPUT); pinMode(PIN_IN2, OUTPUT);
     pinMode(PIN_ENB, OUTPUT); pinMode(PIN_IN3, OUTPUT); pinMode(PIN_IN4, OUTPUT);
@@ -161,6 +253,7 @@ void setup() {
   server.on("/", handleRoot);
   server.on("/status", handleStatus);
   server.on("/relay", handleRelay);
+  server.on("/servo", handleServo);
   server.on("/motor", handleMotor);
   server.onNotFound([]() { sendJson(404, "{\"error\":\"unknown endpoint\"}"); });
   server.begin();
@@ -169,6 +262,11 @@ void setup() {
 void loop() {
   server.handleClient();
   if (motorStopAt && millis() > motorStopAt) motorsStop();   // timed-move safety
+  if (servoPowerOffAt && millis() > servoPowerOffAt) {       // move done: let go
+    servoPowerOffAt = 0;
+    if (SERVO_POWER_CH >= 1 && SERVO_POWER_CH <= RELAY_COUNT)
+      applyRelay(SERVO_POWER_CH - 1, false);
+  }
   if (WiFi.status() != WL_CONNECTED) {                        // WiFi self-heal
     WiFi.reconnect();
     delay(500);

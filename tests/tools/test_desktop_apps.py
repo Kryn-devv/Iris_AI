@@ -57,6 +57,12 @@ def fake_popen(monkeypatch):
 
 @pytest.fixture()
 def fake_browser(monkeypatch):
+    """A host with a desktop and a working browser.
+
+    ``has_display()`` has to be faked as well: on a headless box the tools now
+    skip the local browser entirely and hand the URL to the dashboard instead,
+    so patching ``webbrowser.open`` alone would never be reached.
+    """
     opened: list[str] = []
 
     def _open(url: str) -> bool:
@@ -64,7 +70,19 @@ def fake_browser(monkeypatch):
         return True
 
     monkeypatch.setattr(webbrowser, "open", _open)
+    monkeypatch.setattr(web_mod, "has_display", lambda: True)
     return opened
+
+
+@pytest.fixture()
+def headless(monkeypatch):
+    """A VPS: no desktop, so there is no local browser to open anything in."""
+    monkeypatch.setattr(web_mod, "has_display", lambda: False)
+
+    def _boom(url: str) -> bool:            # must never be called
+        raise AssertionError("tried to open a local browser on a headless host")
+
+    monkeypatch.setattr(webbrowser, "open", _boom)
 
 
 class FakeProc:
@@ -695,6 +713,55 @@ async def test_open_website_with_query_speaks_search(fake_browser):
     assert res.success is True
     assert fake_browser == ["https://www.youtube.com/results?search_query=lo-fi+beats"]
     assert res.speech == "Searching YouTube for lo-fi beats."
+
+
+async def test_open_website_on_a_vps_opens_in_the_dashboard(headless):
+    """IRIS on a cloud host has no desktop, so "open youtube" must open a tab
+    in whatever browser is showing the dashboard rather than fail."""
+    from iris.app.core.bus import Topics, default_event_bus
+
+    sub = default_event_bus.subscribe([Topics.UI_OPEN_URL])
+    try:
+        res = await OpenWebsiteTool().execute(site="youtube")
+        assert res.success is True
+        assert res.result["opened_in"] == "dashboard"
+        assert "in your browser" in res.speech.lower()
+
+        event = sub.queue.get_nowait()
+        assert event.payload["url"] == "https://www.youtube.com"
+        assert event.payload["label"] == "YouTube"
+    finally:
+        default_event_bus.unsubscribe(sub)
+
+
+async def test_play_youtube_on_a_vps_opens_in_the_dashboard(headless):
+    from iris.app.core.bus import Topics, default_event_bus
+
+    sub = default_event_bus.subscribe([Topics.UI_OPEN_URL])
+    try:
+        res = await PlayOnYouTubeTool().execute(query="lo-fi beats")
+        assert res.success is True
+        assert res.result["opened_in"] == "dashboard"
+        event = sub.queue.get_nowait()
+        assert "lo-fi+beats" in event.payload["url"]
+    finally:
+        default_event_bus.unsubscribe(sub)
+
+
+async def test_no_desktop_and_no_dashboard_is_an_honest_failure(headless):
+    """Nowhere to open it and nobody watching: say so instead of reporting a
+    success nobody can see."""
+    res = await OpenWebsiteTool().execute(site="youtube")
+    assert res.success is False
+    assert "dashboard" in res.error.lower()
+
+
+async def test_local_browser_is_preferred_when_there_is_a_desktop(fake_browser):
+    """A desktop install must not bounce the URL through the dashboard."""
+    res = await OpenWebsiteTool().execute(site="youtube")
+    assert res.result["opened_in"] == "local"
+    assert fake_browser == ["https://www.youtube.com"]
+    assert "in your browser" not in res.speech.lower()
 
 
 async def test_open_website_rejects_bad_scheme(fake_browser):

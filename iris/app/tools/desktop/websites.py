@@ -23,6 +23,12 @@ Resolution rules:
 
 Nothing here touches the network — ``webbrowser.open`` merely hands the URL
 to the local default browser, hence ``network=False``.
+
+On a headless host there is no local browser to hand it to. Rather than fail,
+the URL is published on the event bus and the open happens in whichever browser
+is showing the dashboard. That is the difference between "open youtube" being
+broken on a cloud install and it opening a tab on the machine the user is
+actually sitting at.
 """
 
 from __future__ import annotations
@@ -33,7 +39,9 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote, quote_plus, urlsplit
 
+from iris.app.core.bus import Topics, default_event_bus
 from iris.app.core.logging import get_logger
+from iris.app.core.platform_info import has_display
 from iris.app.core.security import PermissionLevel
 from iris.app.schemas.tools import ToolCategory, ToolExample, ToolParameterSchema
 from iris.app.tools.base import BaseTool, ToolError
@@ -46,6 +54,7 @@ __all__ = [
     "SITE_ALIASES",
     "resolve_site",
     "describe_site",
+    "open_url_somewhere",
     "OpenWebsiteTool",
     "PlayOnYouTubeTool",
     "get_tools",
@@ -297,6 +306,38 @@ def _open_in_browser(url: str) -> bool:
     return webbrowser.open(url)
 
 
+async def open_url_somewhere(tool: BaseTool, url: str, label: str) -> str:
+    """Open ``url`` wherever there is actually a browser, and say where.
+
+    A desktop install hands it to the local default browser. A headless install
+    — IRIS on a VPS, with the user watching from a laptop — has no local
+    browser, so the URL goes down the event bus and the dashboard opens it in
+    the browser the user is looking at. Returns "local" or "dashboard".
+
+    Raises :class:`ToolError` only when neither route exists, which means
+    nobody is watching and there is no desktop: a genuine dead end rather than
+    something to report as success.
+    """
+    if has_display() and await tool.to_thread(_open_in_browser, url):
+        return "local"
+
+    # The dashboard is the browser in a cloud install. Publishing is
+    # unconditional so a client that connects a moment later still sees it in
+    # the bus history rather than losing the request entirely.
+    default_event_bus.publish(
+        Topics.UI_OPEN_URL, {"url": url, "label": label},
+    )
+    # subscriber_count would also count the face service and anything else on
+    # the bus; only a client that wants ui.open_url can actually open a tab.
+    if default_event_bus.listener_count(Topics.UI_OPEN_URL) == 0:
+        raise ToolError(
+            f"There is no browser to open {url} in — no desktop on this machine, "
+            "and no dashboard connected. Open the IRIS dashboard and ask again.",
+            speech="I have nowhere to open that. Open the IRIS dashboard first.",
+        )
+    return "dashboard"
+
+
 # =============================================================================
 # Tools
 # =============================================================================
@@ -354,18 +395,16 @@ class OpenWebsiteTool(BaseTool):
             raise ToolError(str(exc), speech="I couldn't work out which site to open.") from exc
 
         label = describe_site(site)
-        opened = await self.to_thread(_open_in_browser, url)
-        if not opened:
-            raise ToolError(
-                f"No web browser was available to open {url}.",
-                speech="I couldn't find a web browser to use.",
-            )
+        where = await open_url_somewhere(self, url, label)
 
-        logger.info("Opened %s (%s)", label, url)
+        logger.info("Opened %s (%s) via %s", label, url, where)
         cleaned_query = (query or "").strip()
         speech = f"Searching {label} for {cleaned_query}." if cleaned_query else f"Opened {label}."
+        if where == "dashboard":
+            speech += " In your browser."
         return {
             "site": label,
+            "opened_in": where,
             "url": url,
             "query": cleaned_query or None,
             "speech": speech,
@@ -412,18 +451,15 @@ class PlayOnYouTubeTool(BaseTool):
             )
 
         url = f"https://www.youtube.com/results?search_query={quote_plus(cleaned)}"
-        opened = await self.to_thread(_open_in_browser, url)
-        if not opened:
-            raise ToolError(
-                f"No web browser was available to open {url}.",
-                speech="I couldn't find a web browser to use.",
-            )
+        where = await open_url_somewhere(self, url, f"YouTube — {cleaned}")
 
         logger.info("Playing on YouTube: %s", cleaned)
         return {
             "query": cleaned,
+            "opened_in": where,
             "url": url,
-            "speech": f"Playing {cleaned} on YouTube.",
+            "speech": f"Playing {cleaned} on YouTube."
+                      + (" In your browser." if where == "dashboard" else ""),
             "display": f"Opened YouTube results for '{cleaned}'.",
         }
 

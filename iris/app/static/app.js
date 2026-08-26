@@ -84,12 +84,21 @@
 
   function handleBusEvent(ev) {
     const p = ev.payload || {};
+    // Hand every event to the scene as well. It drives the sub-agent
+    // constellation from real tool activity and fills in the transitions this
+    // switch never covered — agent.completed and agent.failed, which is why the
+    // orb used to get stuck "thinking" after a voice or Telegram turn.
+    if (holo.handleBusEvent) holo.handleBusEvent(ev.topic, p);
     switch (ev.topic) {
       case "agent.started": setState("thinking", "thinking"); break;
       case "agent.thinking": setState("thinking", "thinking"); break;
       case "tool.started": tick(`${p.tool}`, "run"); setState("thinking", p.tool); break;
       case "tool.completed": tick(`${p.tool}`, "ok"); break;
       case "tool.failed": tick(`${p.tool} failed`, "fail"); break;
+      // A turn that came in over voice or Telegram never produced a WS
+      // "response" frame, so nothing ever moved the orb back out of thinking.
+      case "agent.completed": setState("idle", "ready"); break;
+      case "agent.failed": setState("error", "failed"); break;
       case "voice.speaking":
         if (shouldBrowserSpeak(p.engine)) speakBrowser(p.text, p.language);
         break;
@@ -108,6 +117,7 @@
       case "ui.state":
         if (p.action === "push_to_talk") (listening ? stopListening() : startListening());
         break;
+      case "ui.open_url": openInThisBrowser(p.url, p.label); break;
     }
   }
 
@@ -151,6 +161,29 @@
   }
 
   function scrollDown() { els.conversation.scrollTop = els.conversation.scrollHeight; }
+
+  /* IRIS on a server has no desktop, so "open youtube" arrives here instead:
+     this tab IS the browser. window.open without a user gesture is blocked by
+     most browsers, and a blocked popup returns null — so the link is always
+     offered in the conversation as well, and that one always works. */
+  function openInThisBrowser(url, label) {
+    if (!url || !/^https?:\/\//i.test(url)) return;
+    let opened = null;
+    try { opened = window.open(url, "_blank", "noopener,noreferrer"); } catch (e) { /* blocked */ }
+    const name = label || url;
+    /* addMessage renders through renderMarkdown, which escapes — escaping here
+       as well would turn an "&" in a search term into "&amp;". */
+    const div = addMessage("iris", opened
+      ? `Opened **${name}** in a new tab.`
+      : `Tap to open **${name}** — browsers only allow new tabs you click yourself.`);
+    const link = document.createElement("a");
+    link.className = "artifact-link";
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = `↗ ${name}`;
+    div.appendChild(link);
+  }
 
   async function send(text) {
     text = (text || "").trim();

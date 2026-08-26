@@ -29,6 +29,8 @@ from iris.app.database.database import init_db
 from iris.app.services.scheduler import default_scheduler_service
 from iris.app.services.hotkeys import default_hotkey_service
 from iris.app.services.telegram import default_telegram_bridge
+from iris.app.services.face_presence import default_face_presence_service
+from iris.app.services.node_events import default_node_event_service
 from iris.app.tools.loader import load_all_tools
 from iris.app.tools.registry import default_tool_registry
 
@@ -39,6 +41,7 @@ from iris.app.api.routes import (
     health,
     llm,
     memory,
+    nodes,
     projects,
     system,
     tasks,
@@ -122,6 +125,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if settings.HOTKEYS_ENABLED:
         default_hotkey_service.start()
 
+    if settings.FACE_AUTO_EXPRESSION:
+        await default_face_presence_service.start()
+
+    if settings.NODE_LINK_ENABLED:
+        await default_node_event_service.start()
+        if not (settings.NODE_LINK_TOKEN or "").strip():
+            logger.info(
+                "Node links idle: set NODE_LINK_TOKEN in .env to let ESP32 boards "
+                "dial in (needed when IRIS runs anywhere but your home network)."
+            )
+
     if auth_required():
         ensure_token()
         logger.info("Remote access enabled — bearer token enforced for non-local clients.")
@@ -139,6 +153,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Shutting down IRIS...")
     await default_scheduler_service.stop()
     await default_telegram_bridge.stop()
+    await default_face_presence_service.stop()
+    await default_node_event_service.stop()
     default_hotkey_service.stop()
     try:
         from iris.app.llm.gateway import default_model_gateway
@@ -170,9 +186,19 @@ app.add_middleware(
 #: makes is still token-checked individually).
 _PUBLIC_PATHS = {"/health", "/", "/chat", "/favicon.ico"}
 
+#: Paths that carry their OWN credential and so must not be gated on the IRIS
+#: user token as well. A node presents NODE_LINK_TOKEN, which its handler
+#: verifies before doing anything; making firmware carry two different tokens
+#: would be a worse design, not a safer one. These are never unauthenticated.
+_NODE_TOKEN_PATHS = {"/api/v1/nodes/voice"}
+
 
 def _is_public_path(path: str) -> bool:
-    return path in _PUBLIC_PATHS or path.startswith("/static/")
+    return (
+        path in _PUBLIC_PATHS
+        or path in _NODE_TOKEN_PATHS
+        or path.startswith("/static/")
+    )
 
 
 @app.middleware("http")
@@ -233,6 +259,7 @@ app.include_router(events.router)
 app.include_router(voice.router)
 app.include_router(system.router)
 app.include_router(devices.router)
+app.include_router(nodes.router)
 app.include_router(tasks.router)
 app.include_router(tools.router)
 app.include_router(memory.router)

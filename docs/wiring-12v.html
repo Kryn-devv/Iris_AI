@@ -1,0 +1,978 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Wiring one 12 V battery through a 4-channel relay to a 12 V light, a 3 V fan and a servo. No AC anywhere in it.">
+<style>*,*::before,*::after{box-sizing:border-box}html,body{margin:0}</style>
+<title>Twelve Volts, Three Loads</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+
+<style>
+  /* ── Light palette. Cool drafting-paper white, slate ink, and one saturated
+     hue per voltage rail — because "12 V red" landing where "5 V amber" belongs
+     is the actual failure mode this sheet exists to prevent. ─────────────── */
+  :root {
+    --paper:  #F6F7F9;
+    --panel:  #ECEFF3;
+    --panel-2:#E2E7ED;
+    --ink:    #16202B;
+    --ink-2:  #5A6875;
+    --ink-3:  #8A97A4;
+    --rule:   #C9D2DC;
+    --rule-2: #DDE3EA;
+
+    --v12: #D62828;
+    --v5:  #D97400;
+    --v3:  #A88700;
+    --sig: #1B5FBF;
+    --gnd: var(--ink);
+
+    --v12-wash: #D628281a;
+    --v5-wash:  #D974001a;
+    --v3-wash:  #A887001f;
+    --sig-wash: #1B5FBF14;
+
+    --shadow: 0 1px 2px #16202b0f, 0 8px 24px -16px #16202b26;
+
+    --verdict-bg: var(--ink);
+    --verdict-fg: var(--paper);
+    --verdict-fg-2: #ffffffc7;
+
+    --display: "Barlow Condensed", "Arial Narrow", system-ui, sans-serif;
+    --body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:  #10151B;
+      --panel:  #171E27;
+      --panel-2:#1E2731;
+      --ink:    #E6ECF2;
+      --ink-2:  #96A3B1;
+      --ink-3:  #6D7B89;
+      --rule:   #2C3742;
+      --rule-2: #222C36;
+
+      --v12: #FF6259;
+      --v5:  #FFA23D;
+      --v3:  #EBCE4A;
+      --sig: #6BA5FF;
+
+      --v12-wash: #FF62591f;
+      --v5-wash:  #FFA23D1f;
+      --v3-wash:  #EBCE4A1c;
+      --sig-wash: #6BA5FF1a;
+
+      --shadow: 0 1px 2px #0006, 0 10px 30px -18px #000a;
+
+      --verdict-bg: var(--ink);
+      --verdict-fg: var(--paper);
+      --verdict-fg-2: #10151bc9;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:  #10151B;
+    --panel:  #171E27;
+    --panel-2:#1E2731;
+    --ink:    #E6ECF2;
+    --ink-2:  #96A3B1;
+    --ink-3:  #6D7B89;
+    --rule:   #2C3742;
+    --rule-2: #222C36;
+
+    --v12: #FF6259;
+    --v5:  #FFA23D;
+    --v3:  #EBCE4A;
+    --sig: #6BA5FF;
+
+    --v12-wash: #FF62591f;
+    --v5-wash:  #FFA23D1f;
+    --v3-wash:  #EBCE4A1c;
+    --sig-wash: #6BA5FF1a;
+
+    --shadow: 0 1px 2px #0006, 0 10px 30px -18px #000a;
+
+    --verdict-bg: var(--ink);
+    --verdict-fg: var(--paper);
+    --verdict-fg-2: #10151bc9;
+  }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 16.5px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* One grid owns all horizontal space. Prose sits in `main`; figures and wide
+     tables break out to `full`. Nothing uses side margins, so nothing can
+     collapse or double against anything else. */
+  .sheet {
+    display: grid;
+    grid-template-columns:
+      [full-start] minmax(1.15rem, 1fr)
+      [main-start] min(69ch, calc(100% - 2.3rem))
+      [main-end] minmax(1.15rem, 1fr)
+      [full-end];
+    row-gap: 1.05rem;
+    padding: 0 0 5rem;
+  }
+  .sheet > * { grid-column: main; }
+  .sheet > .wide { grid-column: full; justify-self: center; width: min(100%, 1140px); }
+
+  /* ── Title block, borrowed from an engineering drawing ─────────────────── */
+  header.titleblock {
+    grid-column: full;
+    justify-self: center;
+    width: min(100%, 1140px);
+    margin: 3.2rem 0 1.6rem;
+    padding: 0 1.15rem;
+    box-sizing: border-box;
+  }
+  .titleblock .hair { border-top: 2px solid var(--ink); }
+  .titleblock .hair + .hair { border-top: 1px solid var(--ink); margin-top: 3px; }
+  h1 {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: clamp(2.6rem, 8vw, 4.5rem);
+    line-height: 0.95;
+    letter-spacing: -0.005em;
+    text-wrap: balance;
+    margin: 0.5rem 0 0.35rem;
+  }
+  .standfirst {
+    font-size: 1.09rem;
+    color: var(--ink-2);
+    max-width: 56ch;
+    margin: 0 0 1.15rem;
+  }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 2.1rem;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    padding: 0.5rem 0;
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+  }
+  .meta b { color: var(--ink-2); font-weight: 600; }
+
+  /* ── Type scale ────────────────────────────────────────────────────────── */
+  h2 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: clamp(1.7rem, 4vw, 2.15rem);
+    line-height: 1.08;
+    letter-spacing: 0.002em;
+    text-wrap: balance;
+    margin: 2.9rem 0 0.15rem;
+  }
+  h2 .num {
+    font-family: var(--mono);
+    font-size: 0.52em;
+    font-weight: 500;
+    color: var(--ink-3);
+    letter-spacing: 0.1em;
+    display: block;
+    margin-bottom: 0.35rem;
+  }
+  h3 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 1.34rem;
+    letter-spacing: 0.005em;
+    margin: 2rem 0 0.1rem;
+  }
+  p { margin: 0; }
+  .sheet > p + p { margin-top: 0.15rem; }
+  strong { font-weight: 600; }
+  code, .m {
+    font-family: var(--mono);
+    font-size: 0.87em;
+    background: var(--panel);
+    border: 1px solid var(--rule-2);
+    border-radius: 3px;
+    padding: 0.06em 0.34em;
+  }
+
+  /* ── The one emphatic answer ────────────────────────────────────────────── */
+  .verdict {
+    background: var(--verdict-bg);
+    color: var(--verdict-fg);
+    padding: 1.5rem 1.6rem;
+    border-radius: 2px;
+    margin-top: 0.6rem;
+  }
+  .verdict .lede {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: clamp(1.5rem, 4.4vw, 2rem);
+    line-height: 1.1;
+    margin: 0 0 0.55rem;
+    text-wrap: balance;
+  }
+  .verdict p { font-size: 1rem; color: var(--verdict-fg-2); }
+  .verdict em { color: var(--verdict-fg); font-style: italic; }
+  .verdict strong { color: var(--verdict-fg); }
+
+  /* ── Figures ───────────────────────────────────────────────────────────── */
+  figure {
+    margin: 1.5rem 0 0.4rem;
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  figure .canvas { overflow-x: auto; padding: 1.15rem 1.15rem 0.5rem; }
+  figure svg { display: block; max-width: 100%; height: auto; min-width: 560px; }
+  figure.narrow svg { min-width: 320px; max-width: 460px; margin: 0 auto; }
+  figcaption {
+    font-size: 0.9rem;
+    line-height: 1.5;
+    color: var(--ink-2);
+    padding: 0.75rem 1.15rem 1rem;
+    border-top: 1px solid var(--rule-2);
+    background: var(--paper);
+  }
+  figcaption b { color: var(--ink); font-weight: 600; }
+  .fignum {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    display: block;
+    margin-bottom: 0.2rem;
+  }
+
+  /* ── Tables ────────────────────────────────────────────────────────────── */
+  .tablewrap { overflow-x: auto; margin: 1.2rem 0 0.3rem; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 460px;
+    font-size: 0.95rem;
+  }
+  caption {
+    text-align: left;
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    padding-bottom: 0.45rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.5rem 0.85rem 0.5rem 0;
+    border-bottom: 1px solid var(--rule-2);
+    vertical-align: baseline;
+  }
+  thead th {
+    font-family: var(--mono);
+    font-weight: 500;
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: 1px solid var(--rule); }
+  td.n, th.n { font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.pin { font-family: var(--mono); font-weight: 500; white-space: nowrap; }
+
+  /* Rail identity travels with the voltage everywhere it appears. */
+  .chip {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    padding: 0.12em 0.45em;
+    border-radius: 2px;
+    white-space: nowrap;
+    border: 1px solid currentColor;
+  }
+  .r12 { color: var(--v12); background: var(--v12-wash); }
+  .r5  { color: var(--v5);  background: var(--v5-wash); }
+  .r3  { color: var(--v3);  background: var(--v3-wash); }
+  .rs  { color: var(--sig); background: var(--sig-wash); }
+  .rg  { color: var(--ink-2); background: var(--panel-2); }
+
+  /* ── The numbered assembly order. Numbering is earned here: two of the
+     steps are the ones where parts get destroyed by doing them late. ────── */
+  ol.steps { list-style: none; counter-reset: s; margin: 1.2rem 0 0.4rem; padding: 0; }
+  ol.steps > li {
+    counter-increment: s;
+    position: relative;
+    padding: 0 0 1.05rem 3.3rem;
+    border-left: 1px solid var(--rule);
+    margin-left: 1.05rem;
+  }
+  ol.steps > li:last-child { border-left-color: transparent; padding-bottom: 0.2rem; }
+  ol.steps > li::before {
+    content: counter(s);
+    position: absolute;
+    left: -1.05rem;
+    top: -0.1rem;
+    width: 2.1rem;
+    height: 2.1rem;
+    display: grid;
+    place-items: center;
+    font-family: var(--mono);
+    font-size: 0.86rem;
+    font-weight: 600;
+    color: var(--ink-2);
+    background: var(--paper);
+    border: 1px solid var(--rule);
+    border-radius: 50%;
+  }
+  ol.steps > li.critical::before {
+    background: var(--ink);
+    color: var(--paper);
+    border-color: var(--ink);
+  }
+  ol.steps > li h4 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 1.17rem;
+    margin: 0 0 0.1rem;
+    letter-spacing: 0.005em;
+  }
+  ol.steps > li p { font-size: 0.97rem; color: var(--ink-2); }
+  ol.steps > li p strong { color: var(--ink); }
+
+  .flag {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 0.63rem;
+    font-weight: 600;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    background: var(--ink);
+    color: var(--paper);
+    padding: 0.16em 0.44em;
+    border-radius: 2px;
+    vertical-align: 0.15em;
+    margin-left: 0.4rem;
+  }
+
+  /* ── Notes ─────────────────────────────────────────────────────────────── */
+  .note {
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--ink);
+    border-radius: 0 3px 3px 0;
+    padding: 1rem 1.15rem;
+    margin: 1.15rem 0 0.3rem;
+  }
+  .note h4 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 1.15rem;
+    margin: 0 0 0.15rem;
+  }
+  .note p { font-size: 0.97rem; color: var(--ink-2); }
+  .note p strong { color: var(--ink); }
+
+  pre.say {
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    line-height: 1.85;
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 1rem 1.15rem;
+    margin: 1.1rem 0 0.3rem;
+    overflow-x: auto;
+    color: var(--ink);
+  }
+  pre.say .hi { color: var(--sig); }
+
+  footer {
+    grid-column: full;
+    justify-self: center;
+    width: min(100%, 1140px);
+    box-sizing: border-box;
+    padding: 2.6rem 1.15rem 0;
+    margin-top: 3rem;
+    border-top: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+
+  a { color: var(--sig); text-underline-offset: 0.18em; }
+  a:focus-visible, [tabindex]:focus-visible {
+    outline: 2px solid var(--sig);
+    outline-offset: 2px;
+  }
+
+  /* SVG text inherits the sheet's ink and rail colours in both themes. */
+  svg text { font-family: var(--mono); fill: var(--ink); }
+  svg .lbl { font-size: 10.5px; letter-spacing: 0.04em; }
+  svg .lbl-sm { font-size: 9px; letter-spacing: 0.05em; fill: var(--ink-2); }
+  svg .lbl-dim { font-size: 9.5px; fill: var(--ink-2); }
+  svg .name { font-family: "Barlow Condensed", "Arial Narrow", sans-serif; font-size: 15px; font-weight: 600; letter-spacing: 0.02em; }
+  svg .big { font-family: "Barlow Condensed", "Arial Narrow", sans-serif; font-size: 20px; font-weight: 700; }
+  svg .box { fill: var(--paper); stroke: var(--ink); stroke-width: 1.6; }
+  svg .box-soft { fill: var(--paper); stroke: var(--rule); stroke-width: 1.4; }
+  svg .w { fill: none; stroke-width: 3.2; stroke-linecap: round; stroke-linejoin: round; }
+  svg .w12 { stroke: var(--v12); }
+  svg .w5  { stroke: var(--v5); }
+  svg .w3  { stroke: var(--v3); }
+  svg .wg  { stroke: var(--gnd); }
+  svg .ws  { stroke: var(--sig); }
+  svg .dead { stroke: var(--ink-3); }
+  svg .term { fill: var(--paper); stroke: var(--ink); stroke-width: 1.8; }
+  svg .dot12 { fill: var(--v12); }
+  svg .dot5  { fill: var(--v5); }
+  svg .dotg  { fill: var(--gnd); }
+  svg .blade { fill: none; stroke: var(--ink); stroke-width: 2.4; stroke-linecap: round; }
+  svg .gnd-bar { stroke: var(--gnd); stroke-width: 2.4; stroke-linecap: round; }
+  /* Fill/stroke utilities come last on purpose: a presentation attribute loses
+     to any CSS rule, so `fill="..."` on a classed element would be ignored. */
+  svg .thin { stroke-width: 2.4; }
+  svg .blade-live { stroke: var(--v12); }
+  svg .blade-off { stroke: var(--rule); }
+  svg .c12 { fill: var(--v12); }
+  svg .c5  { fill: var(--v5); }
+  svg .c3  { fill: var(--v3); }
+  svg .cs  { fill: var(--sig); }
+  svg .cq  { fill: var(--ink-2); }
+  svg .cf  { fill: var(--ink-3); }
+</style>
+</head>
+<body>
+<div class="sheet">
+
+  <header class="titleblock">
+    <div class="hair"></div>
+    <div class="hair"></div>
+    <h1>Twelve Volts, Three&nbsp;Loads</h1>
+    <p class="standfirst">Wiring one 12&nbsp;V battery through a 4-channel relay module to a
+      12&nbsp;V light, a 3&nbsp;V fan and a servo — and how the ESP32 switches all three.</p>
+    <div class="meta">
+      <span><b>Source</b> one 12 V battery</span>
+      <span><b>Loads</b> 12 V · 3 V · servo</span>
+      <span><b>Mains</b> none</span>
+      <span><b>Board</b> iris-node</span>
+    </div>
+  </header>
+
+  <div class="verdict">
+    <p class="lede">There is no AC in this build, so there is nothing to convert.</p>
+    <p>You asked how to get from AC to DC. You don't have to: your only power source is a
+      12&nbsp;V battery, and every load is 12&nbsp;V or lower. No plug, no mains, no live wiring.
+      A relay <em>can</em> switch AC — which is why every tutorial opens with a warning — but
+      switching a 12&nbsp;V strip and a 3&nbsp;V fan uses the same relay with none of the risk.
+      What you actually need is the opposite job: turning one 12&nbsp;V battery into the
+      <strong>three different DC voltages</strong> your three loads want.</p>
+  </div>
+
+  <h2><span class="num">01</span>One battery, three rails</h2>
+  <p>A “rail” is just a wire everything of that voltage shares. Two cheap buck converter
+    modules make the two lower rails, and each converter is a small board with a screw on it
+    you turn to set the output voltage.</p>
+
+  <figure class="wide">
+    <div class="canvas">
+      <svg viewBox="0 0 920 390" role="img"
+           aria-label="One 12 volt battery passes through a 5 amp fuse and a switch, then splits three ways: straight through as the 12 volt rail, through buck converter 1 to a 5 volt rail, and through buck converter 2 to a 3.2 volt rail. The battery negative becomes the single shared ground.">
+        <defs>
+          <marker id="ah12" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 1 L9 5 L0 9 z" fill="var(--v12)"/>
+          </marker>
+          <marker id="ah5" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 1 L9 5 L0 9 z" fill="var(--v5)"/>
+          </marker>
+          <marker id="ah3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 1 L9 5 L0 9 z" fill="var(--v3)"/>
+          </marker>
+          <marker id="ahg" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 1 L9 5 L0 9 z" fill="var(--gnd)"/>
+          </marker>
+        </defs>
+
+        <!-- battery -->
+        <rect class="box" x="24" y="112" width="104" height="66" rx="2"/>
+        <text class="big" x="76" y="144" text-anchor="middle">12 V</text>
+        <text class="lbl-sm" x="76" y="164" text-anchor="middle">BATTERY</text>
+        <text class="lbl c12" x="134" y="118">+</text>
+        <text class="lbl" x="88" y="198">−</text>
+
+        <!-- positive chain -->
+        <path class="w w12" d="M128 122 H168"/>
+        <rect class="box" x="168" y="108" width="62" height="28" rx="2"/>
+        <text class="lbl-sm" x="199" y="126" text-anchor="middle">5 A FUSE</text>
+        <path class="w w12" d="M230 122 H270"/>
+        <rect class="box" x="270" y="108" width="74" height="28" rx="2"/>
+        <text class="lbl-sm" x="307" y="126" text-anchor="middle">SWITCH</text>
+        <path class="w w12" d="M344 122 H392"/>
+
+        <!-- spine -->
+        <path class="w w12" d="M392 122 V60"/>
+        <path class="w w12" d="M392 122 V246"/>
+        <circle class="dot12" cx="392" cy="122" r="4.6"/>
+
+        <!-- 12 V branch, straight through -->
+        <path class="w w12" d="M392 60 H596" marker-end="url(#ah12)"/>
+        <circle class="dot12" cx="392" cy="60" r="4.6"/>
+        <text class="lbl c12" x="614" y="56">12 V RAIL</text>
+        <text class="lbl-dim" x="614" y="72">the 12 V light  ·  relay CH1</text>
+
+        <!-- 5 V branch -->
+        <path class="w w12" d="M392 122 H432"/>
+        <rect class="box" x="432" y="98" width="152" height="48" rx="2"/>
+        <text class="name" x="508" y="118" text-anchor="middle">BUCK #1</text>
+        <text class="lbl-sm" x="508" y="134" text-anchor="middle">12 V → 5.0 V</text>
+        <path class="w w5" d="M584 122 H596" marker-end="url(#ah5)"/>
+        <text class="lbl c5" x="614" y="118">5 V RAIL</text>
+        <text class="lbl-dim" x="614" y="134">ESP32 · relay VCC · servo</text>
+
+        <!-- 3 V branch -->
+        <path class="w w12" d="M392 246 H432"/>
+        <circle class="dot12" cx="392" cy="246" r="4.6"/>
+        <rect class="box" x="432" y="222" width="152" height="48" rx="2"/>
+        <text class="name" x="508" y="242" text-anchor="middle">BUCK #2</text>
+        <text class="lbl-sm" x="508" y="258" text-anchor="middle">12 V → 3.2 V</text>
+        <path class="w w3" d="M584 246 H596" marker-end="url(#ah3)"/>
+        <text class="lbl c3" x="614" y="242">3 V RAIL</text>
+        <text class="lbl-dim" x="614" y="258">the 3 V fan  ·  relay CH2</text>
+
+        <!-- ground -->
+        <path class="w wg" d="M76 178 V330 H596" marker-end="url(#ahg)"/>
+        <text class="lbl" x="614" y="326">GROUND</text>
+        <text class="lbl-dim" x="614" y="342">every − in the build — one point</text>
+
+        <text class="lbl-sm" x="24" y="372">RED = 12 V   ·   AMBER = 5 V   ·   YELLOW = 3 V   ·   BLACK = GROUND</text>
+      </svg>
+    </div>
+    <figcaption><span class="fignum">Figure 1 — the power tree</span>
+      One source becomes three rails. The fuse and the switch sit <b>before</b> the split, so
+      one fuse protects everything and one switch kills everything. Note that the wire from the
+      battery into each buck converter is still 12&nbsp;V red — the voltage only changes
+      <b>inside</b> the converter.</figcaption>
+  </figure>
+
+  <div class="tablewrap">
+    <table>
+      <caption>What you still need to buy</caption>
+      <thead><tr><th>Part</th><th>Why</th><th class="n">Roughly</th></tr></thead>
+      <tbody>
+        <tr><td class="pin">2 × LM2596 buck<br><span class="chip rg">3 A</span></td>
+            <td>The battery is 12&nbsp;V. The ESP32 and the relay coils want 5&nbsp;V; the fan wants 3&nbsp;V.</td>
+            <td class="n">£2 each</td></tr>
+        <tr><td class="pin">Inline fuse holder<br><span class="chip rg">5 A blade</span></td>
+            <td>A pinched wire otherwise puts a battery's full short-circuit current into a spark.</td>
+            <td class="n">£1</td></tr>
+        <tr><td class="pin">Rocker switch<br><span class="chip rg">12 V 5 A+</span></td>
+            <td>One thing that kills the whole system without unbolting a battery terminal.</td>
+            <td class="n">£1</td></tr>
+        <tr><td class="pin">1 × 1N4007 diode</td>
+            <td>The fan is a motor. See figure&nbsp;4.</td>
+            <td class="n">pennies</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>Buy the <strong>3&nbsp;A</strong> buck modules, not the 2&nbsp;A ones. Section&nbsp;05 has the
+    arithmetic, and the failure it prevents does not look like a power problem.</p>
+
+  <h2><span class="num">02</span>What a relay channel actually is</h2>
+  <p>This is the part that reads as confusing and isn't. A relay is a switch that a wire can
+    press. Each channel has three screw terminals — <span class="m">COM</span>,
+    <span class="m">NO</span>, <span class="m">NC</span> — and the whole of its behaviour is
+    which two of them are joined.</p>
+
+  <figure class="wide">
+    <div class="canvas">
+      <svg viewBox="0 0 780 452" role="img"
+           aria-label="One relay channel shown twice. When off, the internal blade rests on the NC terminal and the wire on to the light carries no voltage. When on, the blade presses against the NO terminal and 12 volts reaches the light. In both cases the light's negative wire runs straight to ground without passing through the relay.">
+        <defs>
+          <marker id="ah12b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 1 L9 5 L0 9 z" fill="var(--v12)"/>
+          </marker>
+          <marker id="ahdead" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 1 L9 5 L0 9 z" fill="var(--ink-3)"/>
+          </marker>
+        </defs>
+
+        <!-- ============ ROW 1 : OFF (centreline y = 118) ============ -->
+        <text class="lbl" x="24" y="48">CHANNEL OFF</text>
+        <line x1="24" y1="58" x2="198" y2="58" stroke="var(--rule)" stroke-width="1"/>
+
+        <rect x="24" y="104" width="104" height="28" rx="2" fill="var(--v12-wash)" stroke="var(--v12)" stroke-width="1.5"/>
+        <text class="lbl-sm c12" x="76" y="122" text-anchor="middle">12 V RAIL</text>
+        <path class="w w12" d="M128 118 H206"/>
+
+        <circle class="term" cx="212" cy="118" r="6"/>
+        <text class="lbl-sm" x="212" y="144" text-anchor="middle">COM</text>
+        <circle class="term" cx="352" cy="72" r="6"/>
+        <text class="lbl-sm" x="352" y="56" text-anchor="middle">NO</text>
+        <circle class="term" cx="352" cy="164" r="6"/>
+        <text class="lbl-sm" x="368" y="182" text-anchor="start">NC — leave empty</text>
+        <path class="blade" d="M212 118 L345 160"/>
+        <rect x="207" y="113" width="10" height="10" fill="var(--ink)"/>
+
+        <path class="w dead" d="M358 72 H440" marker-end="url(#ahdead)"/>
+        <rect class="box-soft" x="444" y="46" width="150" height="52" rx="2"/>
+        <text class="name cq" x="519" y="70" text-anchor="middle">12 V LIGHT</text>
+        <text class="lbl-sm" x="519" y="86" text-anchor="middle">dark</text>
+        <text class="lbl-sm c12" x="452" y="66">+</text>
+        <text class="lbl-sm" x="586" y="66" text-anchor="end">−</text>
+
+        <path class="w wg" d="M594 72 H640 V224 H150"/>
+        <line class="gnd-bar" x1="132" y1="217" x2="168" y2="217"/>
+        <line class="gnd-bar" x1="139" y1="224" x2="161" y2="224"/>
+        <line class="gnd-bar" x1="146" y1="231" x2="154" y2="231"/>
+        <text class="lbl-sm" x="150" y="206" text-anchor="middle">GROUND — never through the relay</text>
+
+        <text class="lbl-dim" x="660" y="112">COM joined to NC.</text>
+        <text class="lbl-dim" x="660" y="128">No voltage reaches</text>
+        <text class="lbl-dim" x="660" y="144">the light at all.</text>
+
+        <!-- ============ ROW 2 : ON (centreline y = 320) ============ -->
+        <text class="lbl c12" x="24" y="256">CHANNEL ON</text>
+        <line x1="24" y1="266" x2="198" y2="266" stroke="var(--rule)" stroke-width="1"/>
+
+        <rect x="24" y="306" width="104" height="28" rx="2" fill="var(--v12-wash)" stroke="var(--v12)" stroke-width="1.5"/>
+        <text class="lbl-sm c12" x="76" y="324" text-anchor="middle">12 V RAIL</text>
+        <path class="w w12" d="M128 320 H206"/>
+
+        <circle class="term" cx="212" cy="320" r="6"/>
+        <text class="lbl-sm" x="212" y="346" text-anchor="middle">COM</text>
+        <circle cx="352" cy="274" r="6" fill="var(--v12)" stroke="var(--v12)" stroke-width="1.8"/>
+        <text class="lbl-sm c12" x="352" y="258" text-anchor="middle">NO</text>
+        <circle class="term" cx="352" cy="366" r="6"/>
+        <text class="lbl-sm" x="368" y="384" text-anchor="start">NC — leave empty</text>
+        <path class="blade blade-live" d="M212 320 L347 277"/>
+        <rect x="207" y="315" width="10" height="10" fill="var(--ink)"/>
+
+        <path class="w w12" d="M358 274 H440" marker-end="url(#ah12b)"/>
+        <rect class="box" x="444" y="248" width="150" height="52" rx="2"/>
+        <text class="name" x="519" y="272" text-anchor="middle">12 V LIGHT</text>
+        <text class="lbl-sm c12" x="519" y="288" text-anchor="middle">lit</text>
+        <text class="lbl-sm c12" x="452" y="268">+</text>
+        <text class="lbl-sm" x="586" y="268" text-anchor="end">−</text>
+
+        <path class="w wg" d="M594 274 H640 V426 H150"/>
+        <line class="gnd-bar" x1="132" y1="419" x2="168" y2="419"/>
+        <line class="gnd-bar" x1="139" y1="426" x2="161" y2="426"/>
+        <line class="gnd-bar" x1="146" y1="433" x2="154" y2="433"/>
+        <text class="lbl-sm" x="150" y="408" text-anchor="middle">the same wire, unchanged</text>
+
+        <text class="lbl-dim" x="660" y="314">COM joined to NO.</text>
+        <text class="lbl-dim" x="660" y="330">12 V reaches the</text>
+        <text class="lbl-dim" x="660" y="346">light. It is on.</text>
+      </svg>
+    </div>
+    <figcaption><span class="fignum">Figure 2 — the only difference between off and on</span>
+      A grey wire is one with no voltage on it; the wire itself never moves. Two rules come
+      straight out of this picture. <b>The + wire from the rail goes to COM, and the + wire on to
+      the appliance goes to NO.</b> And <b>the appliance's − goes straight to ground — never
+      through the relay</b>, because the relay only ever interrupts the positive side. Leave NC
+      empty on all four channels: it is the terminal that is connected when the channel is
+      <em>off</em>, which is not what you want for any of these three loads.</figcaption>
+  </figure>
+
+  <h2><span class="num">03</span>All four channels at once</h2>
+  <p>Now it is just figure&nbsp;2, four times, with a different rail arriving at each COM. Each
+    channel is completely independent of the others — nothing is shared except the ground.</p>
+
+  <figure class="wide">
+    <div class="canvas">
+      <svg viewBox="0 0 990 444" role="img"
+           aria-label="Four independent relay lanes. Channel 3 takes the 5 volt rail into COM and its NO feeds the servo's red power wire, while the servo's signal wire runs from GPIO 19 directly to the servo, bypassing the relay entirely. Channel 1 takes the 12 volt rail to the light. Channel 2 takes the 3 volt rail to the fan. Channel 4 is unused. Every appliance negative joins one shared ground bus.">
+        <defs>
+          <marker id="ahL12" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 1 L9 5 L0 9 z" fill="var(--v12)"/>
+          </marker>
+          <marker id="ahL5" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 1 L9 5 L0 9 z" fill="var(--v5)"/>
+          </marker>
+          <marker id="ahL3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 1 L9 5 L0 9 z" fill="var(--v3)"/>
+          </marker>
+          <marker id="ahLs" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 1 L9 5 L0 9 z" fill="var(--sig)"/>
+          </marker>
+        </defs>
+
+        <!-- servo signal: over the top, touching nothing else -->
+        <text class="lbl-sm cs" x="258" y="16">GPIO 19 → SERVO SIGNAL · never through the relay</text>
+        <path class="w ws" d="M250 26 H790 V58" marker-end="url(#ahLs)"/>
+
+        <!-- relay module body -->
+        <rect x="252" y="42" width="306" height="352" rx="3" fill="var(--panel-2)" stroke="var(--ink)" stroke-width="1.6"/>
+        <text class="lbl-sm" x="405" y="36" text-anchor="middle">4-CHANNEL RELAY MODULE</text>
+
+        <!-- ---------- lane A : CH3 servo, y = 90 ---------- -->
+        <rect x="20" y="74" width="112" height="30" rx="2" fill="var(--v5-wash)" stroke="var(--v5)" stroke-width="1.5"/>
+        <text class="lbl-sm c5" x="76" y="93" text-anchor="middle">5 V RAIL</text>
+        <path class="w w5" d="M132 89 H346"/>
+        <text class="name" x="196" y="78" text-anchor="middle">CH3</text>
+        <circle class="term" cx="352" cy="89" r="5.5"/>
+        <text class="lbl-sm" x="352" y="110" text-anchor="middle">COM</text>
+        <path class="blade" d="M352 89 L440 76"/>
+        <circle class="term" cx="446" cy="72" r="5.5"/>
+        <text class="lbl-sm" x="446" y="56" text-anchor="middle">NO</text>
+        <path class="w w5" d="M452 72 H500 V89 H612" marker-end="url(#ahL5)"/>
+        <rect class="box" x="618" y="58" width="232" height="62" rx="2"/>
+        <text class="name" x="734" y="82" text-anchor="middle">SERVO</text>
+        <text class="lbl-sm" x="734" y="98" text-anchor="middle">red = power · orange = signal</text>
+        <text class="lbl-sm" x="624" y="54">+</text>
+        <text class="lbl-sm" x="838" y="54">−</text>
+        <path class="w wg" d="M850 108 H916"/>
+
+        <!-- ---------- lane B : CH1 light, y = 178 ---------- -->
+        <rect x="20" y="163" width="112" height="30" rx="2" fill="var(--v12-wash)" stroke="var(--v12)" stroke-width="1.5"/>
+        <text class="lbl-sm c12" x="76" y="182" text-anchor="middle">12 V RAIL</text>
+        <path class="w w12" d="M132 178 H346"/>
+        <text class="name" x="196" y="167" text-anchor="middle">CH1</text>
+        <circle class="term" cx="352" cy="178" r="5.5"/>
+        <text class="lbl-sm" x="352" y="199" text-anchor="middle">COM</text>
+        <path class="blade" d="M352 178 L440 165"/>
+        <circle class="term" cx="446" cy="161" r="5.5"/>
+        <text class="lbl-sm" x="446" y="147" text-anchor="middle">NO</text>
+        <path class="w w12" d="M452 161 H500 V178 H612" marker-end="url(#ahL12)"/>
+        <rect class="box" x="618" y="147" width="232" height="62" rx="2"/>
+        <text class="name" x="734" y="171" text-anchor="middle">12 V LIGHT</text>
+        <text class="lbl-sm" x="734" y="187" text-anchor="middle">a 5 W strip ≈ 0.4 A</text>
+        <text class="lbl-sm" x="624" y="143">+</text>
+        <text class="lbl-sm" x="838" y="143">−</text>
+        <path class="w wg" d="M850 197 H916"/>
+
+        <!-- ---------- lane C : CH2 fan, y = 266 ---------- -->
+        <rect x="20" y="251" width="112" height="30" rx="2" fill="var(--v3-wash)" stroke="var(--v3)" stroke-width="1.5"/>
+        <text class="lbl-sm c3" x="76" y="270" text-anchor="middle">3 V RAIL</text>
+        <path class="w w3" d="M132 266 H346"/>
+        <text class="name" x="196" y="255" text-anchor="middle">CH2</text>
+        <circle class="term" cx="352" cy="266" r="5.5"/>
+        <text class="lbl-sm" x="352" y="287" text-anchor="middle">COM</text>
+        <path class="blade" d="M352 266 L440 253"/>
+        <circle class="term" cx="446" cy="249" r="5.5"/>
+        <text class="lbl-sm" x="446" y="235" text-anchor="middle">NO</text>
+        <path class="w w3" d="M452 249 H500 V266 H612" marker-end="url(#ahL3)"/>
+        <rect class="box" x="618" y="235" width="232" height="62" rx="2"/>
+        <text class="name" x="734" y="259" text-anchor="middle">3 V FAN</text>
+        <text class="lbl-sm" x="734" y="275" text-anchor="middle">+ 1N4007 across it — fig. 4</text>
+        <text class="lbl-sm" x="624" y="231">+</text>
+        <text class="lbl-sm" x="838" y="231">−</text>
+        <path class="w wg" d="M850 285 H916"/>
+
+        <!-- ---------- lane D : CH4 spare, y = 354 ---------- -->
+        <rect x="20" y="339" width="112" height="30" rx="2" fill="none" stroke="var(--rule)" stroke-width="1.4" stroke-dasharray="4 4"/>
+        <text class="lbl-sm cf" x="76" y="358" text-anchor="middle">nothing yet</text>
+        <text class="name cf" x="196" y="343" text-anchor="middle">CH4</text>
+        <circle cx="352" cy="354" r="5.5" fill="var(--paper)" stroke="var(--rule)" stroke-width="1.6"/>
+        <text class="lbl-sm cf" x="352" y="375" text-anchor="middle">COM</text>
+        <path class="blade blade-off" d="M352 354 L440 341"/>
+        <circle cx="446" cy="337" r="5.5" fill="var(--paper)" stroke="var(--rule)" stroke-width="1.6"/>
+        <rect x="618" y="323" width="232" height="62" rx="2" fill="none" stroke="var(--rule)" stroke-width="1.4" stroke-dasharray="5 5"/>
+        <text class="name cf" x="734" y="352" text-anchor="middle">SPARE</text>
+        <text class="lbl-sm cf" x="734" y="368" text-anchor="middle">for the next appliance</text>
+
+        <!-- shared ground bus -->
+        <path class="w wg" d="M916 108 V396"/>
+        <circle class="dotg" cx="916" cy="108" r="4.4"/>
+        <circle class="dotg" cx="916" cy="197" r="4.4"/>
+        <circle class="dotg" cx="916" cy="285" r="4.4"/>
+        <line class="gnd-bar" x1="898" y1="396" x2="934" y2="396"/>
+        <line class="gnd-bar" x1="905" y1="403" x2="927" y2="403"/>
+        <line class="gnd-bar" x1="912" y1="410" x2="920" y2="410"/>
+        <text class="lbl-sm" x="916" y="432" text-anchor="middle">ONE GROUND</text>
+      </svg>
+    </div>
+    <figcaption><span class="fignum">Figure 3 — the four lanes</span>
+      The servo is the one that looks odd, and it is the important one. <b>Only the servo's red
+      wire goes through the relay</b> — CH3 decides whether the servo has power at all. Its
+      orange signal wire runs from <b>GPIO&nbsp;19 straight to the servo</b>, because a relay
+      cannot make a pulse: it can only join two terminals. Every appliance's − meets at the one
+      ground point on the right, along with the battery −, both converters' − and the ESP32's
+      GND.</figcaption>
+  </figure>
+
+  <div class="tablewrap">
+    <table>
+      <caption>The ESP32's side — seven thin wires, no power in them</caption>
+      <thead><tr><th>From the ESP32</th><th>To</th><th>What it does</th></tr></thead>
+      <tbody>
+        <tr><td class="pin">GPIO 26</td><td class="pin">IN1</td><td><span class="chip r12">CH1</span> the 12 V light</td></tr>
+        <tr><td class="pin">GPIO 27</td><td class="pin">IN2</td><td><span class="chip r3">CH2</span> the 3 V fan</td></tr>
+        <tr><td class="pin">GPIO 32</td><td class="pin">IN3</td><td><span class="chip r5">CH3</span> the servo's power</td></tr>
+        <tr><td class="pin">GPIO 33</td><td class="pin">IN4</td><td><span class="chip rg">CH4</span> spare</td></tr>
+        <tr><td class="pin">GPIO 19</td><td class="pin">servo, direct</td><td><span class="chip rs">SIGNAL</span> the angle pulse — bypasses the relay</td></tr>
+        <tr><td class="pin">5V / VIN</td><td class="pin">module VCC</td><td>powers the relay's own coils, from the 5 V rail</td></tr>
+        <tr><td class="pin">GND</td><td class="pin">module GND</td><td>joins the one shared ground</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2><span class="num">04</span>Build it in this order</h2>
+  <p>The order matters more than the wiring does, because two of these steps are where parts get
+    destroyed by being done late.</p>
+
+  <ol class="steps">
+    <li>
+      <h4>Wire the 12 V side, battery still disconnected</h4>
+      <p>Battery lead → fuse holder → switch → and on to the <em>inputs</em> of both buck
+        converters. Leave both converter <strong>outputs</strong> bare — nothing connected to
+        them yet.</p>
+    </li>
+    <li class="critical">
+      <h4>Set buck #1 to 5.0 V, with nothing attached to it<span class="flag">do not skip</span></h4>
+      <p>Battery on, switch on. Multimeter on buck&nbsp;#1's output. Turn the little brass screw
+        until it reads <strong>5.0&nbsp;V</strong>. Switch off. A converter out of the box can be
+        set anywhere from 1.25&nbsp;V to nearly its input voltage — <strong>you have no idea what
+        yours is set to until you measure it.</strong></p>
+    </li>
+    <li class="critical">
+      <h4>Set buck #2 to 3.2 V the same way<span class="flag">this is the one</span></h4>
+      <p>Same procedure, nothing attached. <strong>Connecting the 3&nbsp;V fan before you set this
+        screw is how a 3&nbsp;V fan dies in one second</strong> — if the converter happens to be
+        set near 12&nbsp;V, the fan gets four times its rated voltage the instant you switch on.
+        Switch off and disconnect the battery when both read right.</p>
+    </li>
+    <li>
+      <h4>Now wire the loads</h4>
+      <p>Rails into the four COM terminals, appliance + wires out of the NO terminals, NC left
+        empty — figure&nbsp;3. Put the 1N4007 across the fan while you are there
+        (figure&nbsp;4).</p>
+    </li>
+    <li>
+      <h4>Wire the ESP32 and the star ground</h4>
+      <p>The seven thin wires from the table above, then every − in the build to one point:
+        battery −, both converters' − out, ESP32 GND, module GND, and all three appliance −
+        wires.</p>
+    </li>
+    <li>
+      <h4>Battery on</h4>
+      <p>The relay module's power LED lights, the ESP32 prints its IP on the serial monitor, and
+        <strong>all four channels start off</strong> — the firmware forces them off before it
+        does anything else, so nothing twitches at power-up.</p>
+    </li>
+  </ol>
+
+  <h2><span class="num">05</span>Why the converters have to be 3 A</h2>
+
+  <div class="tablewrap">
+    <table>
+      <caption>Everything drawing from the 5 V rail</caption>
+      <thead><tr><th>Load</th><th class="n">Draw</th></tr></thead>
+      <tbody>
+        <tr><td>ESP32, WiFi transmitting</td><td class="n">≈ 250 mA in bursts</td></tr>
+        <tr><td>Relay module, all four coils closed</td><td class="n">≈ 280 mA</td></tr>
+        <tr><td>SG90 servo, moving</td><td class="n">≈ 400 mA</td></tr>
+        <tr><td>SG90 servo, stalled against a stop</td><td class="n">≈ 700 mA</td></tr>
+        <tr><td>MG996R servo, stalled</td><td class="n">up to 2.5 A</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>A 2&nbsp;A module survives the ordinary case and browns out the ESP32 halfway through a
+    servo move. That reads as <em>“the board keeps rebooting when the curtain moves”</em>, which
+    sends you looking at your code for a week. A 3&nbsp;A module has the headroom. The 12&nbsp;V
+    light and the 3&nbsp;V fan each sit on their own rail and are small, so a single 5&nbsp;A fuse
+    covers the whole system comfortably while still being far below what the wire can carry.</p>
+
+  <h2><span class="num">06</span>Three things to know before you switch it on</h2>
+
+  <figure class="narrow">
+    <div class="canvas">
+      <svg viewBox="0 0 420 204" role="img"
+           aria-label="A 1N4007 diode wired directly across the fan's own two terminals, with its striped end on the positive side, so it is reverse-biased and does nothing during normal running.">
+        <defs>
+          <marker id="ahF3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 1 L9 5 L0 9 z" fill="var(--v3)"/>
+          </marker>
+          <marker id="ahFg" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 1 L9 5 L0 9 z" fill="var(--gnd)"/>
+          </marker>
+        </defs>
+
+        <path class="w w3" d="M24 74 H140" marker-end="url(#ahF3)"/>
+        <text class="lbl-sm" x="24" y="60">from NO</text>
+        <rect class="box" x="146" y="48" width="128" height="52" rx="2"/>
+        <text class="name" x="210" y="72" text-anchor="middle">3 V FAN</text>
+        <text class="lbl-sm" x="210" y="88" text-anchor="middle">a small DC motor</text>
+        <text class="lbl-sm c3" x="154" y="70">+</text>
+        <text class="lbl-sm" x="266" y="70" text-anchor="end">−</text>
+        <path class="w wg" d="M274 74 H384" marker-end="url(#ahFg)"/>
+        <text class="lbl-sm" x="330" y="60">to ground</text>
+
+        <!-- the diode, across the fan, reverse-biased -->
+        <path class="w wg thin" d="M162 100 V140 H258 V100"/>
+        <circle class="dotg" cx="162" cy="100" r="3.8"/>
+        <circle class="dotg" cx="258" cy="100" r="3.8"/>
+        <polygon points="216,131 216,149 198,140" fill="var(--ink)"/>
+        <line x1="196" y1="129" x2="196" y2="151" stroke="var(--ink)" stroke-width="2.8"/>
+        <text class="lbl-sm" x="240" y="124" text-anchor="middle">1N4007</text>
+        <path d="M196 156 V172" stroke="var(--ink-2)" stroke-width="1"/>
+        <text class="lbl-sm" x="196" y="188" text-anchor="middle">the stripe goes on this end</text>
+      </svg>
+    </div>
+    <figcaption><span class="fignum">Figure 4 — the fan's flyback diode</span>
+      Wired this way round the diode does <b>nothing</b> in normal running. Its whole job is the
+      instant the relay opens.</figcaption>
+  </figure>
+
+  <div class="note">
+    <h4>The fan needs that diode</h4>
+    <p>A DC motor's magnetic field collapses when the relay opens and drives a reverse voltage
+      spike back down the wire. It arcs the relay contacts and can reset the ESP32. Put the
+      <strong>1N4007 across the fan's own two terminals, stripe on the + side</strong>. It sits
+      idle during normal running and absorbs the spike on switch-off.</p>
+  </div>
+
+  <div class="note">
+    <h4>Nothing motorised comes off an ESP32 pin</h4>
+    <p>Not the fan, not the servo. The 3.3&nbsp;V regulator on the board cannot source a motor's
+      current, and the <span class="m">5V</span> pin is just the incoming supply passed straight
+      through — hanging a servo on it drags the board's own supply down with it and the board
+      resets. <strong>Both get their power from the 5&nbsp;V rail, through the relay.</strong></p>
+  </div>
+
+  <div class="note">
+    <h4>A 3.3 V pin driving a 5 V relay usually works, and sometimes doesn't</h4>
+    <p>The relay module's opto-input is designed around 5&nbsp;V logic, and the ESP32's pins are
+      3.3&nbsp;V. Most modules trigger fine anyway. <strong>If one channel never clicks while the
+      others do, that is the cause — not your wiring.</strong> The fix is a module labelled
+      “3V3”, or a 4-channel level shifter. Don't go back over your soldering looking for it.</p>
+  </div>
+
+  <h2><span class="num">07</span>Once it's wired</h2>
+  <p>Flash <span class="m">firmware/esp32-iris-node/</span>, note the IP it prints, and tell
+    IRIS about it once:</p>
+
+  <pre class="say">add device home at 192.168.1.73 as relay
+
+turn on the light          <span class="hi">light chalu karo</span>
+switch off the fan         <span class="hi">fan band karo</span>
+open the curtain           <span class="hi">curtain kholo</span>
+close the curtain          <span class="hi">parda kholo</span>
+open the curtain halfway   <span class="hi">set the servo to 45 degrees</span></pre>
+
+  <p>The servo's power channel closes for the move and opens again when it finishes, so an idle
+    servo is genuinely off instead of buzzing against its own gearbox. Ask it to
+    <em>hold</em> only when you want it to keep pushing.</p>
+
+  <footer>IRIS · relay node wiring · all loads 12 V DC or below · no mains anywhere</footer>
+
+</div>
+</body>
+</html>

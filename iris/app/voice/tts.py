@@ -125,6 +125,31 @@ def _play_windows_blocking(path: Path) -> bool:
         return False
 
 
+def ensure_wav(path: Path) -> Optional[Path]:
+    """Return a 16-bit PCM WAV for ``path``, converting an mp3 when possible.
+
+    An ESP32 has no mp3 decoder, so audio bound for a speaker on a node has to
+    be WAV. The device reads the sample rate out of the header and configures
+    I2S to match, which is why no resampling happens here — whatever rate the
+    engine produced is fine.
+    """
+    if path.suffix.lower() == ".wav":
+        return path if path.exists() else None
+    if path.suffix.lower() == ".mp3" and shutil.which("ffmpeg"):
+        wav = path.with_suffix(".wav")
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "quiet", "-i", str(path),
+                 "-acodec", "pcm_s16le", str(wav)],
+                check=True, capture_output=True, timeout=60,
+            )
+            if wav.exists():
+                return wav
+        except (subprocess.SubprocessError, OSError) as exc:
+            logger.debug("ffmpeg conversion failed: %s", exc)
+    return None
+
+
 async def play_audio_file(path: Path) -> bool:
     """Play an audio file using whatever the host provides."""
     def _play_blocking() -> bool:

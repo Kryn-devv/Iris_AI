@@ -60,6 +60,25 @@ def test_unsubscribe_removes_listener():
     assert bus.subscriber_count == 0
 
 
+def test_listener_count_only_counts_matching_subscribers():
+    """A producer asking "is anyone listening for THIS?" must not be fooled by
+    an unrelated subscriber — the face service being on the bus does not mean a
+    browser is there to open a URL."""
+    bus = EventBus()
+    bus.subscribe(["voice.speaking", "agent.thinking"])
+    assert bus.subscriber_count == 1
+    assert bus.listener_count("ui.open_url") == 0
+
+    wildcard = bus.subscribe()                    # a UI client: all topics
+    assert bus.listener_count("ui.open_url") == 1
+
+    bus.subscribe(["ui.*"])                       # prefix match counts too
+    assert bus.listener_count("ui.open_url") == 2
+
+    bus.unsubscribe(wildcard)
+    assert bus.listener_count("ui.open_url") == 1
+
+
 # --------------------------------------------------------------------- auth
 def test_loopback_detection():
     assert is_loopback("127.0.0.1")

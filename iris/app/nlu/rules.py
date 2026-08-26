@@ -229,6 +229,33 @@ def _build_device_hinglish(m: Match[str], cleaned: str) -> Optional[Dict[str, An
     return {"device": device, "state": state}
 
 
+_SERVO_OPEN_WORDS = ("open", "kholo", "khol", "khol do", "utha do")
+
+
+def _build_servo_position(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
+    """A curtain is not an on/off appliance, so 'open' has to become an angle.
+
+    Halfway is a real request and the only one that needs a third position;
+    everything else is one end of the travel or the other.
+    """
+    verb = (m.group("verb") or "").strip().lower()
+    # "half" can land either side of the noun — "open half the curtain",
+    # "open the curtain halfway" — so read it off the cleaned text rather
+    # than carrying three optional groups through the pattern.
+    if re.search(r"\bhalf(?:way)?\b", cleaned):
+        return {"position": "half"}
+    if verb.startswith(_SERVO_OPEN_WORDS):
+        return {"position": "open"}
+    return {"position": "close"}
+
+
+def _build_servo_angle(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
+    angle = int(m.group("angle"))
+    if angle > 180:
+        return None            # let the LLM explain it rather than clamp silently
+    return {"angle": angle}
+
+
 def _build_motor(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
     action = (m.group("action") or "").strip().lower()
     aliases = {"back": "backward", "backwards": "backward", "ahead": "forward", "straight": "forward",
@@ -241,6 +268,51 @@ def _build_motor(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
     if speed:
         args["speed"] = max(0, min(255, int(speed)))
     return args
+
+
+#: Spoken words -> the firmware's emotion names. Hindi/Hinglish included
+#: because that is how this assistant gets talked to.
+_FACE_WORDS = {
+    "happy": "happy", "smile": "happy", "smiley": "happy", "glad": "happy",
+    "cheerful": "happy", "khush": "happy",
+    "sad": "sad", "upset": "sad", "unhappy": "sad", "udaas": "sad",
+    "angry": "angry", "mad": "angry", "cross": "angry", "gussa": "angry",
+    "excited": "excited", "hyped": "excited",
+    "love": "love", "loving": "love", "heart": "love", "hearts": "love", "pyaar": "love",
+    "surprised": "surprised", "shocked": "surprised", "shock": "surprised",
+    "hairaan": "surprised",
+    "sleepy": "sleepy", "tired": "sleepy", "neend": "sleepy",
+    "thinking": "thinking", "thoughtful": "thinking",
+    "confused": "confused", "puzzled": "confused",
+    "listening": "listening", "attentive": "listening",
+    "suspicious": "suspicious", "sus": "suspicious",
+    "dizzy": "dizzy",
+    "neutral": "neutral", "normal": "neutral", "calm": "neutral", "blank": "neutral",
+}
+
+_FACE_DIRECTIONS = {
+    "left": "left", "right": "right", "up": "up", "down": "down",
+    "away": "away", "centre": "centre", "center": "centre",
+    "ahead": "centre", "forward": "centre", "straight": "centre",
+    "me": "centre", "at me": "centre",
+}
+
+
+def _build_face_emotion(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
+    word = (m.groupdict().get("mood") or "").strip().lower()
+    emotion = _FACE_WORDS.get(word)
+    if emotion is None:
+        return None
+    return {"emotion": emotion}
+
+
+def _build_face_look(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
+    word = (m.groupdict().get("dir") or "").strip().lower()
+    direction = _FACE_DIRECTIONS.get(word)
+    if direction is None:
+        return None
+    # Aiming the eyes is not a mood change, so keep whatever face is showing.
+    return {"emotion": "neutral", "look": direction}
 
 
 def _build_site_search(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
@@ -375,6 +447,40 @@ RULES: list[Rule] = [
         confidence=0.98,
     ),
     Rule(
+        name="servo_position",
+        intent="devices",
+        tool="device_servo",
+        pattern=_rx(
+            r"^(?P<verb>open|close|shut|draw)\s+(?:the\s+|my\s+|half\s+|halfway\s+)*"
+            r"(?:curtain|curtains|blind|blinds|shutter|shutters|parda|pardah|latch|valve)"
+            r"(?:\s+half(?:way)?)?$"
+        ),
+        builder=_build_servo_position,
+        confidence=0.95,
+    ),
+    Rule(
+        name="servo_position_hinglish",
+        intent="devices",
+        tool="device_servo",
+        pattern=_rx(
+            r"^(?:curtain|curtains|blind|blinds|shutter|parda|pardah)\s+"
+            r"(?P<verb>kholo|khol\s+do|band\s+karo|band\s+kar\s+do|bandh\s+karo)$"
+        ),
+        builder=_build_servo_position,
+        confidence=0.95,
+    ),
+    Rule(
+        name="servo_angle_set",
+        intent="devices",
+        tool="device_servo",
+        pattern=_rx(
+            r"^(?:(?:set|move|turn|put|rotate)\s+)?(?:the\s+|my\s+)?servo\s+"
+            r"(?:to\s+|at\s+)?(?P<angle>\d{1,3})(?:\s*(?:degrees?|deg))?$"
+        ),
+        builder=_build_servo_angle,
+        confidence=0.96,
+    ),
+    Rule(
         name="device_switch_on_off",
         intent="devices",
         tool="device_switch",
@@ -454,12 +560,91 @@ RULES: list[Rule] = [
         confidence=0.95,
     ),
     Rule(
+        name="sensor_flame_query",
+        intent="devices",
+        tool="device_sensors",
+        pattern=_rx(
+            r"^(?:is\s+there\s+(?:a\s+|any\s+)?(?:fire|flame)|any\s+(?:fire|flame)"
+            r"|fire\s+(?:check|detected)|flame\s+(?:check|status)"
+            r"|aag\s+(?:lagi\s+hai|hai)(?:\s+kya)?|fire\s+check\s+karo)\??$"
+        ),
+        static_args={"sensor": "flame"},
+        confidence=0.97,
+    ),
+    Rule(
+        name="sensor_temperature_query",
+        intent="devices",
+        tool="device_sensors",
+        pattern=_rx(
+            r"^(?:what(?:'s|\s+is)\s+(?:the\s+)?(?:room\s+|current\s+)?temperature"
+            r"|how\s+(?:hot|cold|warm)\s+is\s+it(?:\s+in\s+(?:here|the\s+room))?"
+            r"|temperature\s+(?:check|reading|batao|kya\s+hai|bataiye)"
+            r"|kitna\s+(?:garam|thanda)\s+hai"
+            r"|room\s+temperature)\??$"
+        ),
+        static_args={"sensor": "temperature"},
+        confidence=0.96,
+    ),
+    Rule(
+        name="sensor_humidity_query",
+        intent="devices",
+        tool="device_sensors",
+        pattern=_rx(
+            r"^(?:what(?:'s|\s+is)\s+(?:the\s+)?humidity"
+            r"|how\s+humid\s+is\s+it(?:\s+in\s+(?:here|the\s+room))?"
+            r"|humidity\s+(?:check|reading|batao|kya\s+hai)"
+            r"|nami\s+kitni\s+hai)\??$"
+        ),
+        static_args={"sensor": "humidity"},
+        confidence=0.96,
+    ),
+    Rule(
         name="sensor_all_query",
         intent="devices",
         tool="device_sensors",
         pattern=_rx(r"^(?:check\s+(?:the\s+)?sensors?|sensor\s+readings?|read\s+(?:the\s+)?sensors?|what\s+do\s+the\s+sensors\s+(?:say|show))\??$"),
         static_args={"sensor": "all"},
         confidence=0.96,
+    ),
+    Rule(
+        name="face_emotion_set",
+        intent="devices",
+        tool="face_emotion",
+        pattern=_rx(
+            r"^(?:(?:show|make|set|be|act|look|do)\s+)?"
+            r"(?:me\s+|the\s+|your\s+|a\s+)?"
+            r"(?P<mood>[a-z]+)"
+            r"(?:\s+(?:eyes|face|expression|mood|ho\s+jao|dikhao))?$"
+        ),
+        builder=_build_face_emotion,
+        confidence=0.93,
+    ),
+    Rule(
+        name="face_wink",
+        intent="devices",
+        tool="face_emotion",
+        pattern=_rx(r"^(?:wink(?:\s+at\s+me)?|aankh\s+maaro|give\s+me\s+a\s+wink)$"),
+        static_args={"emotion": "wink", "seconds": 2},
+        confidence=0.97,
+    ),
+    Rule(
+        name="face_blink",
+        intent="devices",
+        tool="face_emotion",
+        pattern=_rx(r"^(?:blink(?:\s+(?:your\s+)?eyes)?|palak\s+jhapkao)$"),
+        static_args={"emotion": "neutral", "blink": True},
+        confidence=0.96,
+    ),
+    Rule(
+        name="face_look_direction",
+        intent="devices",
+        tool="face_emotion",
+        pattern=_rx(
+            r"^(?:look|glance|eyes)\s+(?:to\s+(?:the\s+)?|at\s+|towards\s+)?"
+            r"(?P<dir>left|right|up|down|away|centre|center|ahead|forward|straight|me|at me)$"
+        ),
+        builder=_build_face_look,
+        confidence=0.94,
     ),
     Rule(
         name="device_status_query",
