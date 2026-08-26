@@ -126,7 +126,15 @@ class CloudLLMProvider(LLMProvider):
     ):
         super().__init__(provider_name=provider_name, default_model=default_model)
         self.base_url = (base_url or "").rstrip("/")
-        self.api_key = api_key
+        #: One provider can hold SEVERAL keys (comma-separated in .env).
+        #: When a key rate-limits (429) the next one takes over instantly,
+        #: so the effective quota is the sum of all keys.
+        self.api_keys: List[str] = [
+            k for k in (part.strip() for part in (api_key or "").split(",")) if k
+        ]
+        self._key_index = 0
+        #: key -> monotonic time until which it is cooling down.
+        self._key_cooldowns: Dict[str, float] = {}
         self.timeout = timeout if timeout is not None else settings.LLM_TIMEOUT_SECONDS
         self.extra_headers = dict(extra_headers or {})
         self._client: Optional[httpx.AsyncClient] = None
@@ -137,7 +145,41 @@ class CloudLLMProvider(LLMProvider):
     @property
     def configured(self) -> bool:
         """True when this provider has enough configuration to be called."""
-        return bool(self.base_url and self.api_key)
+        return bool(self.base_url and self.api_keys)
+
+    @property
+    def api_key(self) -> Optional[str]:
+        """The currently active key (compatibility accessor)."""
+        if not self.api_keys:
+            return None
+        return self.api_keys[self._key_index % len(self.api_keys)]
+
+    def _usable_key_indices(self) -> List[int]:
+        """Indices of keys not currently cooling down."""
+        now = time.monotonic()
+        return [
+            i for i, key in enumerate(self.api_keys)
+            if self._key_cooldowns.get(key, 0.0) <= now
+        ]
+
+    def _cool_current_key(self, seconds: float) -> bool:
+        """Bench the active key and switch to the next usable one.
+
+        Returns True when another key is ready to take over right now.
+        """
+        if not self.api_keys:
+            return False
+        current = self.api_key
+        self._key_cooldowns[current] = time.monotonic() + max(1.0, seconds)
+        usable = self._usable_key_indices()
+        if not usable:
+            return False
+        self._key_index = usable[0]
+        logger.info(
+            "%s: switching to API key %d/%d (previous key cooling for %.0fs).",
+            self.provider_name, self._key_index + 1, len(self.api_keys), seconds,
+        )
+        return True
 
     def _headers(self) -> Dict[str, str]:
         headers = {
@@ -157,8 +199,9 @@ class CloudLLMProvider(LLMProvider):
             await self._client.aclose()
 
     def _redact(self, text: str) -> str:
-        if self.api_key and self.api_key in text:
-            return text.replace(self.api_key, "[REDACTED]")
+        for key in self.api_keys:
+            if key in text:
+                text = text.replace(key, "[REDACTED]")
         return text
 
     def _build_messages(
@@ -177,20 +220,38 @@ class CloudLLMProvider(LLMProvider):
         return messages
 
     async def _post_chat(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """POST /chat/completions, walking the key pool on per-key failures.
+
+        A 429 benches the limited key for exactly the provider-requested
+        time and the next key answers the same request immediately; a
+        401/403 benches a bad key for long. Errors surface only when every
+        key in the pool is unusable.
+        """
         client = self._client_or_create()
         url = f"{self.base_url}/chat/completions"
-        try:
-            response = await client.post(url, json=payload, headers=self._headers())
-        except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError) as exc:
-            raise LLMProviderError(
-                f"{self.provider_name}: connection failed ({type(exc).__name__})", retryable=True
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise LLMProviderError(
-                f"{self.provider_name}: transport error ({self._redact(str(exc))})", retryable=True
-            ) from exc
 
-        if response.status_code != 200:
+        attempts = max(1, len(self.api_keys))
+        last_error: Optional[LLMProviderError] = None
+        for _ in range(attempts):
+            try:
+                response = await client.post(url, json=payload, headers=self._headers())
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError) as exc:
+                raise LLMProviderError(
+                    f"{self.provider_name}: connection failed ({type(exc).__name__})", retryable=True
+                ) from exc
+            except httpx.HTTPError as exc:
+                raise LLMProviderError(
+                    f"{self.provider_name}: transport error ({self._redact(str(exc))})", retryable=True
+                ) from exc
+
+            if response.status_code == 200:
+                try:
+                    return response.json()
+                except json.JSONDecodeError as exc:
+                    raise LLMProviderError(
+                        f"{self.provider_name}: invalid JSON response", retryable=True
+                    ) from exc
+
             body_preview = self._redact(response.text[:400])
             retryable = response.status_code in _RETRYABLE_STATUS
             retry_after = None
@@ -202,19 +263,24 @@ class CloudLLMProvider(LLMProvider):
                     hinted = re.search(r"try again in ([0-9.]+)s", response.text)
                     if hinted:
                         retry_after = float(hinted.group(1))
-            raise LLMProviderError(
+            last_error = LLMProviderError(
                 f"{self.provider_name}: HTTP {response.status_code} — {body_preview}",
                 retryable=retryable,
                 status_code=response.status_code,
                 retry_after=retry_after,
             )
 
-        try:
-            return response.json()
-        except json.JSONDecodeError as exc:
-            raise LLMProviderError(
-                f"{self.provider_name}: invalid JSON response", retryable=True
-            ) from exc
+            # Per-KEY failures: hand the same request to the next key.
+            if response.status_code == 429 and len(self.api_keys) > 1:
+                if self._cool_current_key(retry_after or 60.0):
+                    continue
+            elif response.status_code in (401, 403) and len(self.api_keys) > 1:
+                if self._cool_current_key(900.0):
+                    continue
+            break
+
+        assert last_error is not None
+        raise last_error
 
     async def list_model_ids(self) -> List[str]:
         """Ids from the provider's live /models endpoint ([] on any failure)."""
@@ -503,10 +569,14 @@ def build_provider(name: str, credentials: Dict[str, Optional[str]]) -> CloudLLM
             "HTTP-Referer": settings.OPENROUTER_APP_URL,
             "X-Title": settings.OPENROUTER_APP_TITLE,
         }
+    raw_key = credentials.get("api_key") or ""
+    cleaned_keys = ",".join(
+        k for k in (clean_credential(part) for part in raw_key.split(",")) if k
+    )
     return CloudLLMProvider(
         provider_name=name,
         base_url=(clean_credential(credentials.get("base_url")) or ""),
-        api_key=clean_credential(credentials.get("api_key")),
+        api_key=cleaned_keys or None,
         default_model=clean_credential(credentials.get("model")) or "auto",
         extra_headers=extra_headers,
     )

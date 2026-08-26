@@ -270,6 +270,7 @@ class ModelGateway:
                 {
                     "name": name,
                     "configured": cloud.configured,
+                    "keys": len(cloud.api_keys),
                     "model": cloud.default_model,
                     "base_url": cloud.base_url,
                     "circuit_open": bool(circuit and circuit.is_open),
