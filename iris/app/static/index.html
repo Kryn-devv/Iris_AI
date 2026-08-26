@@ -8,7 +8,7 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='38' fill='none' stroke='%235eead4' stroke-width='6'/%3E%3Ccircle cx='50' cy='50' r='14' fill='%235eead4'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Space+Grotesk:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -36,6 +36,7 @@
 
     <!-- ═══════════ Hologram stage ═══════════ -->
     <section class="stage" id="stage">
+      <div class="halo"></div>
       <canvas id="holo"></canvas>
       <div class="stage-caption">
         <div class="state-label" id="stateLabel">ready</div>
@@ -46,14 +47,15 @@
     <!-- ═══════════ Conversation ═══════════ -->
     <main class="conversation" id="conversation">
       <div class="welcome" id="welcome">
-        <p class="welcome-hi">Hi, I'm <b>Iris</b> — your desktop assistant.</p>
+        <h2 class="welcome-title">How can I help?</h2>
+        <p class="welcome-hi">Talk to me in English, Hindi ya Hinglish — I run your desktop, files, web and devices.</p>
         <div class="chips-row">
-          <button class="suggest" data-q="open youtube">open youtube</button>
-          <button class="suggest" data-q="what's the weather">weather</button>
-          <button class="suggest" data-q="take a screenshot">screenshot</button>
-          <button class="suggest" data-q="set a timer for 5 minutes">5 min timer</button>
-          <button class="suggest" data-q="make a ppt about space exploration">make a ppt</button>
-          <button class="suggest" data-q="what can you do">what can you do?</button>
+          <button class="suggest" data-q="open youtube">▶ open youtube</button>
+          <button class="suggest" data-q="what's the weather">☁ weather</button>
+          <button class="suggest" data-q="take a screenshot">✦ screenshot</button>
+          <button class="suggest" data-q="make a ppt about space exploration">▤ make a ppt</button>
+          <button class="suggest" data-q="turn on the light">⏻ turn on the light</button>
+          <button class="suggest" data-q="what can you do">✧ what can you do?</button>
         </div>
       </div>
       <div class="messages" id="messages"></div>

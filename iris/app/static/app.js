@@ -91,7 +91,7 @@
       case "tool.completed": tick(`${p.tool}`, "ok"); break;
       case "tool.failed": tick(`${p.tool} failed`, "fail"); break;
       case "voice.speaking":
-        if (shouldBrowserSpeak(p.engine)) speakBrowser(p.text);
+        if (shouldBrowserSpeak(p.engine)) speakBrowser(p.text, p.language);
         break;
       case "reminder.due":
       case "routine.fired": {
@@ -207,7 +207,7 @@
     if (r.provider) els.chipProvider.textContent = r.provider;
     if (els.speakToggle.checked) {
       const sentence = r.speech || (r.response && r.response.length < 300 ? r.response : null);
-      if (sentence) speakBrowser(sentence);
+      if (sentence) speakBrowser(sentence, r.response_language);
     }
     setState("idle", "ready");
   }
@@ -245,7 +245,7 @@
     return els.speakToggle.checked && (engine === "browser" || !engine);
   }
 
-  function speakBrowser(text) {
+  function speakBrowser(text, lang) {
     if (!("speechSynthesis" in window) || !text) return;
     try {
       window.speechSynthesis.cancel();
@@ -253,7 +253,16 @@
       utter.rate = 1.02;
       utter.pitch = 1.0;
       const voices = window.speechSynthesis.getVoices();
-      const preferred = voices.find((v) => /female|aria|zira|samantha|google uk english female/i.test(v.name))
+      const female = /female|aria|zira|jenny|hazel|samantha|swara|heera|kalpana|lekha|veena/i;
+      const wantHindi = /^hi/.test(lang || "") || lang === "hinglish";
+      let preferred = null;
+      if (wantHindi) {
+        utter.lang = "hi-IN";
+        preferred = voices.find((v) => v.lang.startsWith("hi") && female.test(v.name))
+          || voices.find((v) => v.lang.startsWith("hi"));
+      }
+      preferred = preferred
+        || voices.find((v) => female.test(v.name))
         || voices.find((v) => v.lang.startsWith("en"));
       if (preferred) utter.voice = preferred;
       speaking = true;

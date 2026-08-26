@@ -32,6 +32,16 @@ class Hologram {
     this.time = 0;
     this.stateBlend = { expand: 0, swirl: 0, pulseAmt: 0 };
 
+    // Per-state hue: the sphere itself signals what IRIS is doing.
+    this.stateColors = {
+      idle: opts.accent || "#5eead4",       // teal
+      listening: "#67e8f9",                  // cyan
+      thinking: "#a78bfa",                   // violet
+      speaking: "#5eead4",                   // teal
+    };
+    this.rgb = this._hexToRGB(this.stateColors.idle);
+    this._spriteKey = "";
+
     // Mouse parallax (lerped toward the cursor, off for reduced motion).
     this.parX = 0; this.parY = 0;
     this.parTX = 0; this.parTY = 0;
@@ -165,6 +175,8 @@ class Hologram {
 
   setAccent(color) {
     this.accent = color;
+    this.stateColors.idle = color;
+    this.stateColors.speaking = color;
     this._buildSprites();
   }
 
@@ -175,7 +187,11 @@ class Hologram {
   }
 
   _accentRGB() {
-    const c = this.accent.replace("#", "");
+    return this.rgb.map(Math.round);
+  }
+
+  _hexToRGB(hex) {
+    const c = hex.replace("#", "");
     return [parseInt(c.slice(0, 2), 16), parseInt(c.slice(2, 4), 16), parseInt(c.slice(4, 6), 16)];
   }
 
@@ -200,6 +216,13 @@ class Hologram {
 
     const motionScale = this.reducedMotion ? 0.25 : 1;
     const b = this.stateBlend;
+
+    // Glide the palette toward the state colour; sprites are cached per
+    // rounded colour so the rebuild only happens a few times per transition.
+    const targetRGB = this._hexToRGB(this.stateColors[this.state] || this.accent);
+    for (let i = 0; i < 3; i++) this.rgb[i] += (targetRGB[i] - this.rgb[i]) * 0.05;
+    const key = this.rgb.map((v) => v >> 3).join(",");
+    if (key !== this._spriteKey) { this._spriteKey = key; this._buildSprites(); }
 
     // Parallax follows the pointer with heavy damping.
     this.parX += (this.parTX - this.parX) * 0.04;
