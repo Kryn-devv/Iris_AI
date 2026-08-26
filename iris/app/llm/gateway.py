@@ -10,6 +10,7 @@ provider is configured or reachable, the deterministic offline
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -55,6 +56,9 @@ class ModelGateway:
     def __init__(self) -> None:
         self.mock_provider = MockLLMProvider(default_model=settings.DEFAULT_MODEL)
         self.cloud_providers: Dict[str, CloudLLMProvider] = {}
+        #: Why the most recent request fell back to the offline engine
+        #: (cleared on the next cloud success). Surfaced in chat replies.
+        self.last_fallback_errors: List[str] = []
         self._circuits: Dict[str, _Circuit] = {}
         self._last_good: Optional[str] = None
         self.rebuild()
@@ -170,16 +174,38 @@ class ModelGateway:
         for provider in self._usable_chain():
             circuit = self._circuits[provider.provider_name]
             try:
-                response = await provider.generate(
-                    prompt,
-                    system_prompt=system_prompt,
-                    model=model or settings.capability_model(capability) or provider.default_model,
-                    temperature=temp,
-                    max_tokens=max_tokens,
-                    tools=tools,
-                    **kwargs,
-                )
+                try:
+                    response = await provider.generate(
+                        prompt,
+                        system_prompt=system_prompt,
+                        model=model or settings.capability_model(capability) or provider.default_model,
+                        temperature=temp,
+                        max_tokens=max_tokens,
+                        tools=tools,
+                        **kwargs,
+                    )
+                except LLMProviderError as exc:
+                    # A short rate-limit pause beats an offline fallback: honour
+                    # the provider's own "try again in Ns" once, then move on.
+                    wait = getattr(exc, "retry_after", None)
+                    if exc.status_code != 429 or wait is None or wait > 20.0:
+                        raise
+                    logger.info(
+                        "Provider '%s' rate-limited; waiting %.1fs as requested.",
+                        provider.provider_name, wait,
+                    )
+                    await asyncio.sleep(wait + 0.5)
+                    response = await provider.generate(
+                        prompt,
+                        system_prompt=system_prompt,
+                        model=model or settings.capability_model(capability) or provider.default_model,
+                        temperature=temp,
+                        max_tokens=max_tokens,
+                        tools=tools,
+                        **kwargs,
+                    )
                 circuit.record_success()
+                self.last_fallback_errors = []
                 if self._last_good != provider.provider_name:
                     self._last_good = provider.provider_name
                     default_event_bus.publish(
@@ -190,7 +216,13 @@ class ModelGateway:
             except LLMProviderError as exc:
                 errors.append(str(exc))
                 logger.warning("Provider '%s' failed: %s", provider.provider_name, exc)
-                if exc.retryable:
+                wait = getattr(exc, "retry_after", None)
+                if exc.status_code == 429:
+                    # Cool down for exactly as long as the provider asked —
+                    # a rate limit is a pause, not an outage.
+                    circuit.open_until = time.monotonic() + min(wait or 30.0, 120.0)
+                    circuit.last_error = str(exc)
+                elif exc.retryable:
                     circuit.record_failure(str(exc), settings.LLM_CIRCUIT_BREAK_SECONDS)
                 else:
                     # Bad key / misconfiguration: long cooldown to avoid spam.
@@ -198,6 +230,7 @@ class ModelGateway:
                 continue
 
         if errors:
+            self.last_fallback_errors = errors[-3:]
             default_event_bus.publish(Topics.LLM_FALLBACK, {"errors": errors[-3:]})
             logger.info("All cloud providers failed; falling back to offline engine.")
         return await self.mock_provider.generate(

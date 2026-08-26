@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -520,7 +521,8 @@ class AgentKernel:
         context_data = await self.context_assembler.assemble_context(state)
         messages: List[Dict[str, Any]] = list(context_data["messages"])
         available_tools = [
-            ToolSchemaAdapter.from_tool(t) for t in self.tool_registry.tools(available_only=True)
+            ToolSchemaAdapter.from_tool(t)
+            for t in self._select_tools_for(state.user_input)
         ]
 
         state.update_status(TaskStatus.RUNNING)
@@ -786,6 +788,41 @@ class AgentKernel:
             except Exception as exc:  # noqa: BLE001
                 logger.debug("Conversation memory store failed: %s", exc)
 
+    #: Tools attached to every agent call regardless of the message: the
+    #: conversation staples a model reaches for without obvious keywords.
+    _CORE_AGENT_TOOLS = frozenset({
+        "web_search", "quick_answer", "wikipedia", "weather", "news",
+        "time", "calculator", "set_reminder", "set_timer", "quick_note",
+    })
+
+    #: Ceiling on tools per request. Free tiers meter tokens per minute
+    #: (Groq: 8k TPM) and the FULL 61-tool catalogue alone is ~6k tokens,
+    #: so shipping everything made every second request rate-limit into
+    #: the offline fallback.
+    _MAX_AGENT_TOOLS = 24
+
+    def _select_tools_for(self, message: str) -> list:
+        """Core tools plus the ones whose name/alias/description matches the message."""
+        available = self.tool_registry.tools(available_only=True)
+        words = {w for w in re.findall(r"[a-z0-9]+", message.lower()) if len(w) >= 3}
+
+        core, matched = [], []
+        for tool in available:
+            meta = tool.get_metadata()
+            if meta.name in self._CORE_AGENT_TOOLS:
+                core.append(tool)
+                continue
+            haystack = " ".join(
+                [meta.name.replace("_", " "), " ".join(meta.aliases), meta.description.lower()]
+            ).lower()
+            if any(word in haystack for word in words):
+                matched.append(tool)
+
+        selected = core + matched
+        if len(selected) > self._MAX_AGENT_TOOLS:
+            selected = selected[: self._MAX_AGENT_TOOLS]
+        return selected
+
     def _response(
         self,
         state: AgentState,
@@ -808,10 +845,26 @@ class AgentKernel:
         det_lang_val = det_lang_code.value if hasattr(det_lang_code, "value") else str(det_lang_code or "en")
         resp_lang_val = state.metadata.get("target_response_language", det_lang_val)
 
+        notice = None
+        effective_provider = provider or state.provider or "iris"
+        if (
+            handler == "agent"
+            and effective_provider in ("mock", "iris")
+            and settings.LLM_MODE not in ("off", "mock")
+            and settings.configured_providers()
+        ):
+            errors = getattr(self.model_gateway, "last_fallback_errors", None)
+            detail = f" Last error: {errors[-1][:220]}" if errors else ""
+            notice = (
+                "Cloud AI unreachable — this reply came from the offline engine."
+                + detail
+            )
+
         return ChatResponse(
             task_id=state.task_id,
             correlation_id=state.correlation_id,
             response=text,
+            notice=notice,
             speech=speech or None,
             intent_detected=intent,
             handler=handler,

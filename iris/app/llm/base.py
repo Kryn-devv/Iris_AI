@@ -38,10 +38,19 @@ class LLMHealthStatus(BaseModel):
 class LLMProviderError(RuntimeError):
     """Raised when a provider call fails; carries retryability information."""
 
-    def __init__(self, message: str, *, retryable: bool = True, status_code: Optional[int] = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = True,
+        status_code: Optional[int] = None,
+        retry_after: Optional[float] = None,
+    ):
         super().__init__(message)
         self.retryable = retryable
         self.status_code = status_code
+        #: Seconds the provider asked us to wait (parsed from a 429), if any.
+        self.retry_after = retry_after
 
 
 class LLMProvider(ABC):

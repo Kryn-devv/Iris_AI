@@ -49,6 +49,8 @@ class ChatResponse(BaseModel):
     ui: Dict[str, Any] = Field(default_factory=dict)
     status: str = "COMPLETED"
     provider: Optional[str] = None
+    #: User-facing warning, e.g. why the reply came from the offline engine.
+    notice: Optional[str] = None
     model: Optional[str] = None
     mode: Optional[str] = None
     language: Optional[str] = None
