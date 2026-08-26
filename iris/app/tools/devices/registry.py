@@ -178,6 +178,27 @@ class DeviceRegistry:
         logger.info("Registered device '%s' (%s) at %s", device.name, device.kind, device.base_url)
         return device
 
+    def set_command(self, name: str, command: str, path: str) -> Device:
+        """Map a named command ('on', 'off', a custom name) to a relative path
+        on an already-registered device — how existing custom firmware gets
+        wired up without ever touching devices.json by hand."""
+        device = self.get(name)
+        if device is None:
+            raise DeviceError(f"No device named '{name}' is registered.")
+        command_key = command.strip().lower()
+        if not command_key:
+            raise DeviceError("Command name is empty.")
+        clean_path = path.strip()
+        if not clean_path.startswith("/"):
+            clean_path = "/" + clean_path
+        if ".." in clean_path or "://" in clean_path:
+            raise DeviceError("Command paths must be simple relative paths on the device.")
+        with self._lock:
+            device.commands[command_key] = clean_path
+            self._save()
+        logger.info("Mapped '%s' command '%s' -> %s", device.name, command_key, clean_path)
+        return device
+
     def remove(self, name: str) -> bool:
         key = normalize_name(name)
         with self._lock:

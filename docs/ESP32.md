@@ -78,33 +78,49 @@ is the light online              list my devices
 
 ---
 
-## Path B — keep your existing firmware
+## Path B — keep your existing firmware (recommended if you already coded it)
 
-Your current boards (relay + web page on their own IP) keep working as-is.
-Register the board, then map its existing URLs as named commands by editing
-the registry file `devices.json` (Windows: `%APPDATA%\IrisAI`, Linux:
-`~/.local/share/IrisAI`, macOS: `~/Library/Application Support/IrisAI`):
+**Do not reflash anything.** IRIS doesn't care what code is on the board —
+only that it answers a plain HTTP GET request at some URL. If your ESP32s
+already run their own web server (a "Friday"-style smart home system, motor
+control, whatever), keep it exactly as it is.
 
-```json
-{
-  "devices": [
-    {
-      "name": "bedroom light",
-      "base_url": "http://192.168.1.80",
-      "kind": "relay",
-      "commands": {
-        "on":  "/led/on",
-        "off": "/led/off",
-        "toggle": "/led/toggle"
-      }
-    }
-  ]
-}
+### 1. Register each board with the IP you already have
+
+```
+add device hall light at 192.168.1.40 as relay
+add device robot at 192.168.1.41 as motor
+add device room sensor at 192.168.1.42 as sensor
 ```
 
-Whatever paths your firmware already answers (`/on`, `/relay1on`,
-`/gpio?pin=5&val=1`, …) — put them in `commands` and "turn on the bedroom
-light" will call them. For anything unusual:
+If your firmware has no `/status` endpoint (most custom sketches don't),
+IRIS will say it "did not answer yet" — that's fine, it still registers.
+
+### 2. Map each command to the real URL your firmware already answers — by voice, no file editing
+
+```
+map hall light on command to /relay1on
+map hall light off command to /relay1off
+map robot forward command to /move?dir=fwd
+map robot stop command to /move?dir=stop
+```
+
+Whatever paths your sketch responds to — check your own Arduino code for
+the exact strings passed to `server.on(...)`, or open `http://<ip>/` in a
+browser and click around your existing control page to see the URLs it
+calls (browser dev tools → Network tab shows every request).
+
+### 3. Just talk normally — IRIS now calls YOUR firmware's real endpoints
+
+```
+turn on the hall light         ·  hall light chalu karo
+robot forward                  ·  robot stop
+```
+
+No JSON, no reflashing. (Advanced: `devices.json` in the data directory
+holds the same mapping if you ever want to edit it directly, but the voice
+commands above do the same thing.) For a one-off call that has no permanent
+command name:
 
 ```
 device_command bedroom light /servo?angle=90

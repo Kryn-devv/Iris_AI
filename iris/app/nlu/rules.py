@@ -329,6 +329,21 @@ def _passthrough_query(key: str) -> Builder:
 RULES: list[Rule] = [
     # ------------------------------------------------- devices / home automation
     Rule(
+        name="map_device_command",
+        intent="devices",
+        tool="map_device_command",
+        pattern=_rx(
+            r"^(?:map|set)\s+(?:device\s+)?(?P<device>.+?)\s+(?P<command>on|off|toggle|[a-z0-9_-]+)"
+            r"\s+(?:command\s+)?(?:to|as|=)\s+(?P<path>/\S+)$"
+        ),
+        builder=lambda m, c: {
+            "device": m.group("device").strip(),
+            "command": m.group("command").strip(),
+            "path": m.group("path").strip(),
+        },
+        confidence=0.97,
+    ),
+    Rule(
         name="device_register",
         intent="devices",
         tool="register_device",

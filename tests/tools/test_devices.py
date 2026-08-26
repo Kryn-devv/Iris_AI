@@ -273,3 +273,48 @@ class TestSensorNode:
         match = IntentEngine().match(utterance)
         assert match and match.tool_name == "device_sensors"
         assert match.arguments.get("sensor") == sensor
+
+
+# --------------------------------------------------------- custom firmware mapping
+class TestMapDeviceCommand:
+    @pytest.mark.asyncio
+    async def test_map_and_use_custom_command(self, registry, fake_lan):
+        from iris.app.tools.devices.esp32 import MapDeviceCommandTool
+
+        registry.add(Device(name="hall light", base_url="http://192.168.1.40", kind="relay"))
+        res = await MapDeviceCommandTool(registry).execute(device="hall light", command="on", path="led/on")
+        assert res.success
+        assert registry.get("hall light").commands["on"] == "/led/on"
+
+        switch_res = await DeviceSwitchTool(registry).execute(device="hall light", state="on")
+        assert switch_res.success
+        assert any(url.endswith("/led/on") for url in fake_lan)
+
+    @pytest.mark.asyncio
+    async def test_map_unknown_device_explains(self, registry):
+        from iris.app.tools.devices.esp32 import MapDeviceCommandTool
+        res = await MapDeviceCommandTool(registry).execute(device="ghost", command="on", path="/x")
+        assert not res.success and "No device named" in res.error
+
+    @pytest.mark.asyncio
+    async def test_map_rejects_path_traversal(self, registry):
+        from iris.app.tools.devices.esp32 import MapDeviceCommandTool
+        registry.add(Device(name="fan", base_url="http://192.168.1.9"))
+        res = await MapDeviceCommandTool(registry).execute(device="fan", command="on", path="/../etc")
+        assert not res.success
+
+    def test_map_command_nlu(self):
+        cases = [
+            ("map kitchen light on command to /led/on", "kitchen light", "on", "/led/on"),
+            ("set fan off to /relay1/off", "fan", "off", "/relay1/off"),
+        ]
+        for utterance, device, command, path in cases:
+            match = IntentEngine().match(utterance)
+            assert match and match.tool_name == "map_device_command"
+            assert match.arguments["device"] == device
+            assert match.arguments["command"] == command
+            assert match.arguments["path"] == path
+
+    def test_map_command_does_not_collide_with_switch(self):
+        match = IntentEngine().match("turn on the kitchen light")
+        assert match and match.tool_name == "device_switch"

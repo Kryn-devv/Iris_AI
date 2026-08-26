@@ -445,9 +445,63 @@ class DeviceSensorsTool(BaseTool):
         }
 
 
+class MapDeviceCommandTool(BaseTool):
+    """Map a named command to a URL path on a device running its OWN custom
+    firmware, so an existing sketch works with IRIS without reflashing.
+
+    Example: if a homemade board already answers a GET to '/led/on' to turn a
+    light on, this tool records "on -> /led/on" for that device, and from then
+    on 'turn on the kitchen light' calls that exact path instead of the
+    uniform IRIS-node relay API.
+    """
+
+    name = "map_device_command"
+    description = (
+        "Map a named command (on, off, toggle, or any custom name) to a URL path on a "
+        "registered device that runs its own custom firmware — for existing boards, not "
+        "ones flashed with the IRIS node firmware."
+    )
+    category = ToolCategory.AUTOMATION
+    permission_level = PermissionLevel.LOW_RISK_ACTION
+    aliases = ["map command", "set device command", "map device"]
+    input_schema = ToolParameterSchema(
+        properties={
+            "device": {"type": "string", "description": "Registered device name"},
+            "command": {"type": "string", "description": "Command name: on, off, toggle, or custom"},
+            "path": {"type": "string", "description": "URL path on the device, e.g. /led/on"},
+        },
+        required=["device", "command", "path"],
+    )
+    examples = [
+        ToolExample(
+            utterance="map kitchen light on command to /led/on",
+            arguments={"device": "kitchen light", "command": "on", "path": "/led/on"},
+        ),
+        ToolExample(
+            utterance="set fan off to /relay1/off",
+            arguments={"device": "fan", "command": "off", "path": "/relay1/off"},
+        ),
+    ]
+
+    def __init__(self, registry: Optional[DeviceRegistry] = None):
+        self.registry = registry or default_device_registry
+
+    async def _run(self, device: str, command: str, path: str) -> Dict[str, Any]:
+        try:
+            target = self.registry.set_command(device, command, path)
+        except DeviceError as exc:
+            raise ToolError(str(exc)) from exc
+        return {
+            "device": target.name,
+            "commands": target.commands,
+            "speech": f"Got it — {target.name} {command} now calls {target.command_path(command)}.",
+        }
+
+
 def get_tools() -> list[BaseTool]:
     return [
         RegisterDeviceTool(),
+        MapDeviceCommandTool(),
         ListDevicesTool(),
         RemoveDeviceTool(),
         DeviceSwitchTool(),
