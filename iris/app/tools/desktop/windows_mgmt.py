@@ -4,8 +4,9 @@ No tool here declares ``required_capabilities`` — window control has several
 viable providers per platform, so availability is decided at call time by a
 small strategy object instead of an import-time gate:
 
-* :class:`PyGetWindowBackend` — the ``pygetwindow`` package (fully functional
-  on Windows; its import fails cleanly elsewhere, so ``try_import`` skips it).
+* :class:`PyGetWindowBackend` — the ``pygetwindow`` package, consulted on
+  Windows only (its non-Windows ports are broken or read-only, so other
+  platforms never use it even when it imports).
 * :class:`WmctrlBackend` — the ``wmctrl`` binary on Linux/X11, addressing
   windows by id from ``wmctrl -l`` (with ``xdotool windowminimize`` as the
   minimize helper when present, since wmctrl cannot iconify).
@@ -394,16 +395,19 @@ def _no_backend_message() -> str:
 def select_backend() -> WindowBackend:
     """Pick the best available window-control backend for this machine.
 
-    Order: pygetwindow (imports successfully on Windows only), then the Linux
-    binaries wmctrl / xdotool, then macOS AppleScript. Tests monkeypatch this
+    Order: pygetwindow on Windows, the Linux binaries wmctrl / xdotool, then
+    macOS AppleScript. pygetwindow is only consulted on Windows — its macOS
+    port is broken/read-only, so macOS must always get the AppleScript
+    backend even when the package is importable. Tests monkeypatch this
     function to inject a fake backend.
 
     Raises:
         ToolError: with an install hint when no backend is available.
     """
-    gw = try_import("pygetwindow")
-    if gw is not None and hasattr(gw, "getAllTitles"):
-        return PyGetWindowBackend(gw)
+    if is_windows():
+        gw = try_import("pygetwindow")
+        if gw is not None and hasattr(gw, "getAllTitles"):
+            return PyGetWindowBackend(gw)
 
     if is_linux():
         if shutil.which("wmctrl"):

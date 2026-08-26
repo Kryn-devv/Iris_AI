@@ -13,8 +13,10 @@ Two tools live here:
   - **macOS** — ``osascript`` with ``set volume output volume N``.
 
 * :class:`MediaControlTool` — play/pause, next, previous and stop, using
-  ``playerctl`` on Linux when present, ``osascript`` media key codes on
-  macOS, and pyautogui's media keys everywhere pyautogui is usable.
+  ``playerctl`` on Linux when present, player-targeted AppleScript on macOS
+  (``tell application "Spotify"/"Music" to playpause`` — key-code injection
+  does nothing there), and pyautogui's media keys everywhere pyautogui is
+  usable.
 
 Neither tool declares hard ``required_capabilities`` because every backend
 has runtime fallbacks; unusable machines get a clean :class:`ToolError`
@@ -511,13 +513,14 @@ PYAUTOGUI_MEDIA_KEYS: Dict[str, str] = {
     "stop": "stop",
 }
 
-#: macOS virtual key codes for the media keys (F7/F8/F9 row). macOS has no
-#: discrete "stop" media key, so stop falls back to the play/pause toggle.
-MACOS_MEDIA_KEY_CODES: Dict[str, int] = {
-    "play_pause": 100,
-    "next": 101,
-    "previous": 98,
-    "stop": 100,
+#: AppleScript playback verb per canonical action, sent to the running player
+#: application ("Spotify" or "Music" — both speak the same verbs). Neither
+#: player has a discrete "stop", so stop maps to pause.
+MACOS_PLAYER_COMMANDS: Dict[str, str] = {
+    "play_pause": "playpause",
+    "next": "next track",
+    "previous": "previous track",
+    "stop": "pause",
 }
 
 
@@ -540,14 +543,36 @@ def _media_linux(action: str) -> Dict[str, Any]:
     )
 
 
+def _macos_running_player() -> str:
+    """Name of the music player to script: Spotify when running, else Music.
+
+    ``application "X" is running`` never launches X, so the probe is safe.
+    """
+    try:
+        completed = _run_command(
+            ["osascript", "-e", 'application "Spotify" is running']
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "Music"
+    if completed.returncode == 0 and (completed.stdout or "").strip() == "true":
+        return "Spotify"
+    return "Music"
+
+
 def _media_macos(action: str) -> Dict[str, Any]:
-    """macOS playback control by sending the media key's virtual key code."""
-    code = MACOS_MEDIA_KEY_CODES[action]
+    """macOS playback control by scripting the running player directly.
+
+    Sending the media keys' F-row key codes through System Events does
+    nothing, so the player application itself is told to play/pause or
+    change track instead.
+    """
+    player = _macos_running_player()
+    command = MACOS_PLAYER_COMMANDS[action]
     _checked_run(
-        ["osascript", "-e", f'tell application "System Events" to key code {code}'],
+        ["osascript", "-e", f'tell application "{player}" to {command}'],
         what="control playback",
     )
-    return {"backend": "osascript", "key_code": code}
+    return {"backend": "osascript", "player": player}
 
 
 def _media_windows(action: str) -> Dict[str, Any]:

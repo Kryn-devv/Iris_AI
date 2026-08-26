@@ -501,19 +501,51 @@ async def test_media_linux_helpful_error_without_backends(monkeypatch, media_run
     assert "pyautogui" in result.error
 
 
-async def test_media_macos_key_codes(monkeypatch, media_run):
+async def test_media_macos_targets_spotify_when_running(monkeypatch):
     fake_os(monkeypatch, media_module, "macos")
+    recorder = CommandRecorder(responses=[(0, "true\n", "")])  # Spotify is running
+    monkeypatch.setattr(media_module, "_run_command", recorder)
+
     result = await MediaControlTool()._run(action="next")
-    assert media_run.calls == [
-        ["osascript", "-e", 'tell application "System Events" to key code 101']
+    assert recorder.calls == [
+        ["osascript", "-e", 'application "Spotify" is running'],
+        ["osascript", "-e", 'tell application "Spotify" to next track'],
     ]
     assert result["backend"] == "osascript"
-    assert result["key_code"] == 101
+    assert result["player"] == "Spotify"
 
+
+async def test_media_macos_falls_back_to_music_app(monkeypatch):
+    fake_os(monkeypatch, media_module, "macos")
+    recorder = CommandRecorder(responses=[(0, "false\n", "")])  # Spotify not running
+    monkeypatch.setattr(media_module, "_run_command", recorder)
+
+    result = await MediaControlTool()._run(action="play_pause")
+    assert recorder.calls[-1] == ["osascript", "-e", 'tell application "Music" to playpause']
+    assert result["player"] == "Music"
+
+
+async def test_media_macos_player_verbs(monkeypatch, media_run):
+    fake_os(monkeypatch, media_module, "macos")
+    # Default recorder response is (0, "", "") -> Spotify probe says "not running".
     await MediaControlTool()._run(action="previous")
-    assert media_run.calls[-1][-1].endswith("key code 98")
-    await MediaControlTool()._run(action="play_pause")
-    assert media_run.calls[-1][-1].endswith("key code 100")
+    assert media_run.calls[-1][-1] == 'tell application "Music" to previous track'
+    await MediaControlTool()._run(action="stop")  # no discrete stop -> pause
+    assert media_run.calls[-1][-1] == 'tell application "Music" to pause'
+
+
+async def test_media_macos_probe_failure_defaults_to_music(monkeypatch, media_run):
+    fake_os(monkeypatch, media_module, "macos")
+
+    def _boom(argv, **kwargs):
+        if "is running" in argv[-1]:
+            raise OSError("osascript exploded")
+        return media_run(argv, **kwargs)
+
+    monkeypatch.setattr(media_module, "_run_command", _boom)
+    result = await MediaControlTool()._run(action="next")
+    assert result["player"] == "Music"
+    assert media_run.calls == [["osascript", "-e", 'tell application "Music" to next track']]
 
 
 async def test_media_windows_uses_pyautogui(monkeypatch):
@@ -574,10 +606,43 @@ async def test_lock_screen_windows(monkeypatch, power_run):
     assert result["command"] == "rundll32 user32.dll,LockWorkStation"
 
 
-async def test_lock_screen_macos(monkeypatch, power_run):
+_MAC_LOCK_KEYSTROKE = (
+    'tell application "System Events" to keystroke "q" '
+    "using {control down, command down}"
+)
+
+
+async def test_lock_screen_macos_keystroke_first(monkeypatch, power_run):
     fake_os(monkeypatch, power_module, "macos")
-    await LockScreenTool()._run()
-    assert power_run.calls == [["pmset", "displaysleepnow"]]
+    result = await LockScreenTool()._run()
+    assert power_run.calls == [["osascript", "-e", _MAC_LOCK_KEYSTROKE]]
+    assert result["speech"] == "Locked the screen."
+
+
+async def test_lock_screen_macos_falls_back_to_screensaver(monkeypatch):
+    fake_os(monkeypatch, power_module, "macos")
+    recorder = CommandRecorder(responses=[(1, "", "not allowed assistive access")])
+    monkeypatch.setattr(power_module, "_run_command", recorder)
+
+    result = await LockScreenTool()._run()
+    assert recorder.calls == [
+        ["osascript", "-e", _MAC_LOCK_KEYSTROKE],
+        ["open", "-a", "ScreenSaverEngine"],
+    ]
+    assert result["command"] == "open -a ScreenSaverEngine"
+    assert result["speech"] == "Locked the screen."
+
+
+async def test_lock_screen_macos_last_resort_pmset(monkeypatch):
+    fake_os(monkeypatch, power_module, "macos")
+    recorder = CommandRecorder(responses=[(1, "", "no accessibility"), (1, "", "no engine")])
+    monkeypatch.setattr(power_module, "_run_command", recorder)
+
+    result = await LockScreenTool()._run()
+    assert recorder.calls[-1] == ["pmset", "displaysleepnow"]
+    assert result["command"] == "pmset displaysleepnow"
+    # The speech warns that this only locks with password-on-wake enabled.
+    assert "password" in result["speech"].lower()
 
 
 async def test_lock_screen_linux_fallback_order(monkeypatch):
@@ -670,7 +735,8 @@ async def test_shutdown_macos_detached_osascript(monkeypatch, power_run, power_e
 
     result = await ShutdownTool()._run(delay_seconds=30)
     assert spawned == [
-        ["osascript", "-e", "delay 30", "-e", 'tell application "System Events" to shut down']
+        ["osascript", "-e", "delay 30 -- iris-power",
+         "-e", 'tell application "System Events" to shut down']
     ]
     assert power_run.calls == []  # detached, not run-and-wait
     assert result["delay_seconds"] == 30
@@ -692,7 +758,8 @@ async def test_restart_argv_per_os(monkeypatch, power_run, power_enabled):
     fake_os(monkeypatch, power_module, "macos")
     await RestartTool()._run(delay_seconds=10)
     assert spawned == [
-        ["osascript", "-e", "delay 10", "-e", 'tell application "System Events" to restart']
+        ["osascript", "-e", "delay 10 -- iris-power",
+         "-e", 'tell application "System Events" to restart']
     ]
 
 
@@ -710,7 +777,10 @@ async def test_cancel_shutdown_argv_per_os(monkeypatch, power_run, power_enabled
     power_run.calls.clear()
     fake_os(monkeypatch, power_module, "macos")
     await CancelShutdownTool()._run()
-    assert power_run.calls == [["pkill", "-f", 'tell application "System Events" to']]
+    # The pattern is the unique marker embedded in the scheduled osascript,
+    # and must not start with '-' (pkill would parse it as an option).
+    assert power_run.calls == [["pkill", "-f", "iris-power"]]
+    assert not power_run.calls[0][-1].startswith("-")
 
 
 async def test_cancel_shutdown_reports_nothing_pending(monkeypatch, power_enabled):

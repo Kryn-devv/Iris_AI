@@ -4,7 +4,8 @@ The tool declares no ``required_capabilities`` — notifications have many
 viable providers, so :func:`send_notification` walks a fallback chain at
 call time:
 
-1. ``plyer`` when importable (it picks the best native backend itself).
+1. ``plyer`` when importable (it picks the best native backend itself) —
+   skipped on macOS, where its backend needs pyobjus and typically fails.
 2. ``notify-send`` on Linux (libnotify; ships with most desktops).
 3. ``osascript -e 'display notification ...'`` on macOS (built in).
 4. PowerShell on Windows: ``New-BurntToastNotification`` when the BurntToast
@@ -68,7 +69,11 @@ def _install_hint() -> str:
             "A desktop session with a notification daemon must be running."
         )
     if is_macos():
-        return "Install plyer with 'pip install plyer' (osascript should normally exist)."
+        return (
+            "osascript was not found or failed; it normally ships with macOS. "
+            "Also check that notifications are allowed for your terminal in "
+            "System Settings > Notifications."
+        )
     if is_windows():
         return (
             "Install plyer with 'pip install plyer', or the BurntToast PowerShell module "
@@ -123,16 +128,19 @@ def send_notification(title: str, message: str) -> str:
     """
     errors: List[str] = []
 
-    plyer = try_import("plyer")
-    if plyer is not None:
-        try:
-            plyer.notification.notify(
-                title=title, message=message, app_name="IRIS", timeout=_TOAST_SECONDS
-            )
-            return "plyer"
-        except Exception as exc:  # noqa: BLE001 - fall through to platform tools
-            errors.append(f"plyer: {exc}")
-            logger.debug("plyer notification failed (%s); trying platform tools.", exc)
+    # plyer's macOS backend needs pyobjus and usually fails or crashes there,
+    # while osascript is built in — skip straight to it on a Mac.
+    if not is_macos():
+        plyer = try_import("plyer")
+        if plyer is not None:
+            try:
+                plyer.notification.notify(
+                    title=title, message=message, app_name="IRIS", timeout=_TOAST_SECONDS
+                )
+                return "plyer"
+            except Exception as exc:  # noqa: BLE001 - fall through to platform tools
+                errors.append(f"plyer: {exc}")
+                logger.debug("plyer notification failed (%s); trying platform tools.", exc)
 
     if is_linux() and shutil.which("notify-send"):
         argv = ["notify-send", "--app-name=IRIS", "--", title, message]
