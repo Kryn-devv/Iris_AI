@@ -103,39 +103,78 @@ is the light online              list my devices
 
 ## Robot with BTS7960 drivers (2 boards, 4-wheel-drive)
 
-If your robot uses **two BTS7960 modules** — one driving both left motors,
-one driving both right motors (the standard skid-steer 4WD wiring) — use
-`firmware/esp32-iris-node-bts7960/esp32-iris-node-bts7960.ino`, **not** the
-plain `esp32-iris-node.ino` (that one is wired for L298N and won't drive a
+For a skid-steer robot where **two BTS7960 modules** each drive one side's
+motors, flash `firmware/esp32-iris-node-bts7960/` — **not** the plain
+`esp32-iris-node.ino` (that one is wired for an L298N and cannot drive a
 BTS7960 correctly).
 
-### Wiring — per BTS7960 board
+### You only edit two lines
+
+```cpp
+const char* WIFI_SSID = "your wifi name";
+const char* WIFI_PASS = "your wifi password";
+```
+
+Pins, which side is which, which way is forward, and per-side speed are all
+**calibrated from the board's own web page and saved to flash** — no
+re-wiring and no re-flashing to fix a robot that turns the wrong way.
+
+### Wiring — per BTS7960 module
 
 | BTS7960 pin | Connect to |
 |---|---|
-| RPWM | an ESP32 GPIO (forward speed) |
-| LPWM | an ESP32 GPIO (reverse speed) |
-| R_EN **and** L_EN | tied together, to one more ESP32 GPIO |
-| B+ / B− | your motor battery — **never** the ESP32's own 5V pin |
-| GND | shared with the ESP32 **and** the battery **and** the other BTS7960 |
+| RPWM | an ESP32 GPIO (PWM) |
+| LPWM | an ESP32 GPIO (PWM) |
+| R_EN **and** L_EN | **tied together**, to one more GPIO (or straight to 3.3V) |
+| VCC | **5V — required.** The logic side *consumes* 5V, it does not make it. A module with VCC unconnected looks completely dead. |
+| GND | ESP32 GND **and** battery minus — all grounds common |
+| B+ / B− | motor battery — never the ESP32's 5V pin |
 
-Default pins in the sketch (edit if your wiring differs):
+Default pins (changeable live from the page):
 
 | Side | RPWM | LPWM | EN |
 |---|---|---|---|
-| Left  | GPIO 25 | GPIO 26 | GPIO 27 |
-| Right | GPIO 32 | GPIO 33 | GPIO 14 |
+| A | GPIO 25 | GPIO 26 | GPIO 27 |
+| B | GPIO 32 | GPIO 33 | GPIO 14 |
 
-If a wheel spins the wrong way, swap that side's RPWM/LPWM wires — don't
-edit the code for it.
+### Calibrate it (this is the part that fixes wrong directions)
 
-### Flash it
-1. Open the `.ino`, fill in `WIFI_SSID` / `WIFI_PASS`
-2. Board: **ESP32 Dev Module** (or whatever your board's label says — S3
-   boards need "ESP32S3 Dev Module" instead)
-3. Upload → open **Serial Monitor at 115200** → it prints an IP address
-4. Tell IRIS: `add device robot at <that IP> as motor`
-5. Test: `robot forward`, `robot stop`, `move the robot left`
+Flash, read the IP from Serial Monitor @115200, then **open that IP in a
+browser**. The page walks three steps:
+
+1. **Find your sides.** Press `A fwd` / `A rev` / `B fwd` / `B rev` and watch
+   which wheels move. These bypass all calibration, so they show the raw
+   hardware. If a module never responds to either of its buttons, that is
+   wiring — check its **VCC has 5V** and its **R_EN+L_EN are tied to the EN
+   pin**. (`run full self-test` cycles all six moves automatically.)
+2. **Fix directions.** Press `forward`. Wrong? Flip **swap sides** /
+   **invert A** / **invert B** until forward is forward and left is left.
+   Exactly one combination is correct for any given wiring.
+3. **Drive straight.** If it veers, trim the faster side down.
+
+Press **SAVE** and it persists across reboots. Arrow keys drive it from the
+keyboard; space stops.
+
+Then in IRIS: `add device robot at <IP> as motor`, and
+`robot forward` · `move the robot left` · `stop the robot` · `robot peeche`.
+
+### Safety behaviour
+
+- Motion stops automatically if no command arrives for 10 s (configurable),
+  so a dropped WiFi link can never leave the motors running.
+- Motion stops immediately if WiFi drops.
+- Speed ramps instead of stepping, so four motors starting at once cannot
+  brown-out the board.
+
+### Extra endpoints (beyond what IRIS uses)
+
+| Endpoint | Purpose |
+|---|---|
+| `/tank?left=-255..255&right=-255..255` | direct per-side control |
+| `/drive?y=…&x=…` | arcade/joystick mixing |
+| `/test?side=a\|b&dir=forward\|backward` | raw single-side test |
+| `/selftest` | timed A/B sequence; poll `/status` |
+| `/config?...` · `/save` · `/reset` | live calibration |
 
 ## Path B — keep your existing firmware (recommended if you already coded it)
 
