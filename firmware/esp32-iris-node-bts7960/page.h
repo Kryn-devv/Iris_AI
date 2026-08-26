@@ -96,7 +96,7 @@ async function load(){const j=await api('/status');if(!j)return;const c=j.config
 async function tick(){try{const j=await(await fetch('/status')).json();
  $('out').textContent='state   '+j.last_direction+(j.moving?'  (moving)':'  (idle)')
  +'\nside A  '+j.live.a+' -> '+j.target.a+'\nside B  '+j.live.b+' -> '+j.target.b
- +'\nselftest '+j.selftest_label+'\npins    A '+j.config.pins.a_rpwm+'/'+j.config.pins.a_lpwm+'/'+j.config.pins.a_en
+ +'\nselftest '+j.selftest_label+(j.raw_mode?'   [RAW: calibration bypassed]':'')+'\npins    A '+j.config.pins.a_rpwm+'/'+j.config.pins.a_lpwm+'/'+j.config.pins.a_en
  +'   B '+j.config.pins.b_rpwm+'/'+j.config.pins.b_lpwm+'/'+j.config.pins.b_en
  +'\nswap '+j.config.swap_sides+'  invA '+j.config.invert_a+'  invB '+j.config.invert_b
  +'\ntrim '+j.config.trim_a+'% / '+j.config.trim_b+'%   pwm '+j.config.pwm_freq+'Hz'

@@ -383,7 +383,7 @@ static void selfTestApply(int step) {
 
 static void selfTestTick() {
   if (selfStep < 0) return;
-  if (millis() < selfStepAt) return;
+  if ((long)(millis() - selfStepAt) < 0) return;   /* rollover-safe */
   selfStep++;
   if (selfStep >= SELF_STEPS) { selfStep = -1; doStop(false); return; }
   selfTestApply(selfStep);
@@ -441,6 +441,7 @@ static void handleStatus() {
   j += ",\"target\":{\"a\":" + String(targetA) + ",\"b\":" + String(targetB) + "}";
   j += ",\"moving\":" + String((liveA || liveB) ? "true" : "false");
   j += ",\"failsafe_tripped\":" + String(failsafeTripped ? "true" : "false");
+  j += ",\"raw_mode\":" + String(rawMode ? "true" : "false");
   j += ",\"selftest_step\":" + String(selfStep);
   j += ",\"selftest_label\":\"" + String(selfStep >= 0 && selfStep < SELF_STEPS ? SELF_LABELS[selfStep] : "idle") + "\"";
   j += ",\"arduino_core\":" + String(ESP_ARDUINO_VERSION_MAJOR);
@@ -696,7 +697,8 @@ void loop() {
   rampTick();
 
   /* timed move finished */
-  if (autoStopAt && millis() >= autoStopAt) doStop(cfg.brakeOnStop);
+  if (autoStopAt && (long)(millis() - autoStopAt) >= 0)   /* rollover-safe */
+    doStop(cfg.brakeOnStop);
 
   /* failsafe: never keep driving into the unknown */
   const bool moving = (targetA != 0 || targetB != 0);

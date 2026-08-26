@@ -450,3 +450,51 @@ class TestFailsafeTiming:
     def test_selftest_is_exempt(self):
         cfg = Config(failsafe_ms=1000)
         assert not self._tripped(cfg, moving=True, since_command_ms=5000, selftest=True)
+
+
+class TestRolloverSafeDeadlines:
+    """millis() wraps every ~49.7 days; deadline maths must survive it.
+
+    The firmware compares `(long)(millis() - deadline) >= 0` rather than
+    `millis() >= deadline`. These tests pin the difference, because the naive
+    form silently stops firing across the wrap — a pending timed stop would
+    never arrive and a moving robot would keep moving.
+    """
+
+    UINT32 = 1 << 32
+    INT32_MIN = -(1 << 31)
+
+    def naive_elapsed(self, now: int, deadline: int) -> bool:
+        return now >= deadline
+
+    def safe_elapsed(self, now: int, deadline: int) -> bool:
+        """Mirror of the firmware: signed 32-bit difference >= 0."""
+        diff = (now - deadline) % self.UINT32
+        if diff >= 1 << 31:
+            diff += self.INT32_MIN * 2
+        return diff >= 0
+
+    def test_agrees_with_naive_away_from_the_wrap(self):
+        for now in range(0, 100_000, 997):
+            for offset in (-5000, -1, 0, 1, 5000):
+                deadline = now + offset
+                if 0 <= deadline < self.UINT32:
+                    assert self.safe_elapsed(now, deadline) == self.naive_elapsed(now, deadline)
+
+    def test_survives_the_wrap_where_naive_fails(self):
+        deadline = (self.UINT32 - 500) % self.UINT32   # deadline just before wrap
+        now = 200                                       # clock has wrapped past it
+        assert self.safe_elapsed(now, deadline) is True
+        assert self.naive_elapsed(now, deadline) is False   # the bug being avoided
+
+    def test_not_yet_due_across_the_wrap(self):
+        deadline = 200                    # just after the wrap
+        now = self.UINT32 - 500           # still before it
+        assert self.safe_elapsed(now, deadline) is False
+
+    def test_exhaustive_around_the_wrap_boundary(self):
+        for deadline_offset in range(-2000, 2001, 7):
+            deadline = deadline_offset % self.UINT32
+            for delta in range(-1500, 1501, 11):
+                now = (deadline + delta) % self.UINT32
+                assert self.safe_elapsed(now, deadline) == (delta >= 0)
