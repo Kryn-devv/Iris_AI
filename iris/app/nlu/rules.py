@@ -166,6 +166,52 @@ def _build_open_target(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
     return {"__tool__": "open_app", "app": target}
 
 
+#: Words after "turn on/off" that are NOT smart devices — those phrasings
+#: belong to other tools or to the agent, never to device_switch.
+_NON_DEVICE_WORDS = frozenset({
+    "volume", "sound", "audio", "music", "screen", "display", "monitor",
+    "wifi", "wi-fi", "bluetooth", "mic", "microphone", "camera", "pc",
+    "computer", "laptop", "notifications", "dark mode", "it", "that",
+    "the tv show", "captions",
+})
+
+
+def _build_device_switch(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
+    """'turn on the kitchen light' -> device_switch, skipping non-device nouns."""
+    device = (m.group("dev") or "").strip().rstrip(".")
+    state = (m.group("state") or "").strip().lower()
+    if not device or len(device) < 2 or state not in ("on", "off"):
+        return None
+    lowered = device.lower()
+    if lowered in _NON_DEVICE_WORDS or any(w in _NON_DEVICE_WORDS for w in (lowered.split()[-1],)):
+        return None
+    return {"device": device, "state": state}
+
+
+def _build_device_hinglish(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
+    """'light chalu karo' / 'fan band kar do' -> device_switch."""
+    device = (m.group("dev") or "").strip()
+    verb = (m.group("verb") or "").strip().lower()
+    if not device or device.lower() in _NON_DEVICE_WORDS:
+        return None
+    state = "off" if verb in ("band", "bandh") else "on"
+    return {"device": device, "state": state}
+
+
+def _build_motor(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
+    action = (m.group("action") or "").strip().lower()
+    aliases = {"back": "backward", "backwards": "backward", "ahead": "forward", "straight": "forward",
+               "ruko": "stop", "chalo": "forward", "aage": "forward", "peeche": "backward"}
+    action = aliases.get(action, action)
+    if action not in ("forward", "backward", "left", "right", "stop"):
+        return None
+    args: Dict[str, Any] = {"action": action}
+    speed = m.groupdict().get("speed")
+    if speed:
+        args["speed"] = max(0, min(255, int(speed)))
+    return args
+
+
 def _build_site_search(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
     query = (m.group("query") or "").strip()
     site = (m.group("site") or "").strip()
@@ -250,6 +296,113 @@ def _passthrough_query(key: str) -> Builder:
 # ---------------------------------------------------------------------------
 
 RULES: list[Rule] = [
+    # ------------------------------------------------- devices / home automation
+    Rule(
+        name="device_register",
+        intent="devices",
+        tool="register_device",
+        pattern=_rx(
+            r"^(?:add|register|pair|connect)\s+(?:a\s+|new\s+|my\s+)?(?:device|esp32|board|node)\s+"
+            r"(?P<name>.+?)\s+(?:at|@|on)\s+(?P<addr>[a-z0-9.:_-]+)"
+            r"(?:\s+as\s+(?:a\s+)?(?P<kind>relay|motor|generic))?$"
+        ),
+        builder=lambda m, c: {
+            "name": m.group("name").strip(),
+            "address": m.group("addr").strip(),
+            **({"kind": m.group("kind")} if m.group("kind") else {}),
+        },
+        confidence=0.98,
+    ),
+    Rule(
+        name="device_list",
+        intent="devices",
+        tool="list_devices",
+        pattern=_rx(r"^(?:list|show)(?:\s+(?:my|all))?\s+devices$|^what\s+devices\s+do\s+i\s+have$"),
+        confidence=0.98,
+    ),
+    Rule(
+        name="device_remove",
+        intent="devices",
+        tool="remove_device",
+        pattern=_rx(r"^(?:remove|forget|delete|unpair)\s+(?:the\s+)?device\s+(?P<name>.+)$"),
+        builder=lambda m, c: {"name": m.group("name").strip()},
+        confidence=0.98,
+    ),
+    Rule(
+        name="device_switch_on_off",
+        intent="devices",
+        tool="device_switch",
+        pattern=_rx(r"^(?:turn|switch|power)\s+(?P<state>on|off)\s+(?:the\s+|my\s+)?(?P<dev>.+)$"),
+        builder=_build_device_switch,
+        confidence=0.95,
+    ),
+    Rule(
+        name="device_switch_suffix",
+        intent="devices",
+        tool="device_switch",
+        pattern=_rx(r"^(?:turn|switch|power)\s+(?:the\s+|my\s+)?(?P<dev>.+?)\s+(?P<state>on|off)$"),
+        builder=_build_device_switch,
+        confidence=0.94,
+    ),
+    Rule(
+        name="device_switch_hinglish",
+        intent="devices",
+        tool="device_switch",
+        pattern=_rx(r"^(?P<dev>.+?)\s+(?:ko\s+)?(?P<verb>chalu|shuru|on|band|bandh|off)\s+kar(?:o|do|\s+do|\s+dijiye|na)?$"),
+        builder=_build_device_hinglish,
+        confidence=0.95,
+    ),
+    Rule(
+        name="device_toggle",
+        intent="devices",
+        tool="device_switch",
+        pattern=_rx(r"^toggle\s+(?:the\s+|my\s+)?(?P<dev>.+)$"),
+        builder=lambda m, c: (
+            {"device": m.group("dev").strip(), "state": "toggle"}
+            if m.group("dev").strip().lower() not in _NON_DEVICE_WORDS else None
+        ),
+        confidence=0.93,
+    ),
+    Rule(
+        name="robot_move",
+        intent="devices",
+        tool="device_motor",
+        pattern=_rx(
+            r"^(?:move|drive|make)?\s*(?:the\s+|my\s+)?robot\s*,?\s*"
+            r"(?:go\s+|move\s+|turn\s+)?(?P<action>forward|forwards|ahead|straight|back|backward|backwards|left|right|stop|ruko|chalo|aage|peeche)"
+            r"(?:\s+at\s+speed\s+(?P<speed>\d{1,3}))?$"
+        ),
+        builder=_build_motor,
+        confidence=0.96,
+    ),
+    Rule(
+        name="robot_stop_short",
+        intent="devices",
+        tool="device_motor",
+        pattern=_rx(r"^(?:stop(?:\s+the)?\s+robot|robot\s+stop|emergency\s+stop)$"),
+        static_args={"action": "stop"},
+        confidence=0.98,
+    ),
+    Rule(
+        name="device_status_query",
+        intent="devices",
+        tool="device_status",
+        pattern=_rx(r"^(?:is\s+(?:the\s+|my\s+)?(?P<dev>.+?)\s+(?:on(?:line)?|working|connected|alive)|check\s+(?:the\s+)?devices?|ping\s+(?:the\s+)?(?P<dev2>.+))$"),
+        builder=lambda m, c: (
+            {"device": (m.group("dev") or m.group("dev2")).strip()}
+            if (m.group("dev") or m.group("dev2")) else {}
+        ),
+        confidence=0.9,
+    ),
+    Rule(
+        name="open_kholo_hinglish",
+        intent="apps",
+        tool="open_app",
+        pattern=_rx(r"^(?P<target>.+?)\s+(?:kholo|khol\s+do|open\s+karo|chalao)$"),
+        builder=_build_open_target,
+        confidence=0.94,
+    ),
+
     # ------------------------------------------------------------- media/site
     Rule(
         name="play_on_youtube",
