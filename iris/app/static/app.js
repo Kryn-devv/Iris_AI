@@ -421,10 +421,11 @@
         const state = p.active ? '<span class="ok">active</span>'
           : p.configured ? (p.circuit_open ? '<span class="bad">cooling down</span>' : "ready")
           : '<span class="muted">no key</span>';
+        const pool = p.keys > 1 ? ` <span class="muted">(${p.keys} keys)</span>` : "";
         const err = p.configured && p.last_error
           ? `<div class="prov-err" title="${escapeHtml(p.last_error)}">${escapeHtml(String(p.last_error).slice(0, 160))}</div>`
           : "";
-        return `<div>${p.name} — ${state}${err}</div>`;
+        return `<div>${p.name} — ${state}${pool}${err}</div>`;
       }).join("");
       els.llmStatus.innerHTML =
         `<div>mode: <b>${llm.mode}</b> · active: <b>${llm.provider}</b></div>${rows}` +

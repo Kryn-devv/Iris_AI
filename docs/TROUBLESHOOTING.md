@@ -112,7 +112,7 @@ What the errors mean:
   so re-copy it from the provider's console.
 - **HTTP 404** on OpenRouter free models — enable *"Free endpoints that may
   train on inputs"* at <https://openrouter.ai/settings/privacy>.
-- **HTTP 429** — free-tier rate limit; wait a minute or add a second provider.
+- **HTTP 429** — free-tier rate limit; IRIS already waits out short limits automatically. To effectively multiply your quota, put several keys in one variable, comma-separated: `GROQ_API_KEY=gsk_key1,gsk_key2,gsk_key3` — the moment one key is limited the next takes over. Works for every provider.
 - **connection failed (ConnectError / CERTIFICATE_VERIFY_FAILED)** — an
   antivirus suite or a school/corporate proxy is intercepting TLS. Browsers
   trust it via the OS certificate store; Python doesn't by default. IRIS ships
