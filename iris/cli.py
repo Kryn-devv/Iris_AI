@@ -154,7 +154,52 @@ def _doctor() -> int:
         cap = report["capabilities"][name]
         hint = f" — {cap['install_hint']}" if cap.get("install_hint") else ""
         print(f"  ✗ {name}{hint}")
+
+    _doctor_cloud()
     return 0
+
+
+def _doctor_cloud() -> None:
+    """Live-fire each configured AI provider with a tiny request.
+
+    This answers "why is IRIS answering offline?" in one command: every key in
+    .env gets a real 4-token call and the exact provider error is printed
+    verbatim instead of hiding in the server log.
+    """
+    import asyncio
+
+    from iris.app.core.tls import use_system_trust_store
+    use_system_trust_store()
+
+    from iris.app.core import paths
+    from iris.app.core.config import loaded_env_files, settings
+    from iris.app.llm.gateway import default_model_gateway as gateway
+
+    env_files = loaded_env_files()
+    print()
+    print(f"Config loaded from: {', '.join(env_files) if env_files else '(no .env found — looked in ' + str(paths.project_root() / '.env') + ')'}")
+
+    names = settings.configured_providers()
+    if not names:
+        print("Cloud providers: none configured. Commands work offline; add a key to .env for conversations.")
+        return
+
+    print("Cloud provider live check:")
+
+    async def probe() -> None:
+        for name in names:
+            provider = gateway.cloud_providers.get(name)
+            if provider is None:
+                continue
+            try:
+                res = await provider.generate("Reply with the single word: ok", max_tokens=4)
+                latency = f"{res.latency_ms:.0f}ms" if res.latency_ms is not None else "ok"
+                print(f"  ✓ {name} — model {res.model_name} answered in {latency}")
+            except Exception as exc:  # noqa: BLE001 - report every failure verbatim
+                print(f"  ✗ {name} — {exc}")
+        await gateway.close()
+
+    asyncio.run(probe())
 
 
 def main(argv: list[str] | None = None) -> int:

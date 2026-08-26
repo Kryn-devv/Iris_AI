@@ -596,6 +596,16 @@ html, body {
 .kv .ok { color: var(--ok); }
 .kv .bad { color: var(--danger); }
 
+.prov-err {
+  font-size: 10.5px;
+  font-family: var(--mono);
+  color: var(--danger);
+  opacity: 0.85;
+  margin: 2px 0 6px 10px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
 .tool-grid { display: flex; flex-wrap: wrap; gap: 6px; }
 .tool-pill {
   font-size: 10px;

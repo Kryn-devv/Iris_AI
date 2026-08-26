@@ -403,7 +403,10 @@
         const state = p.active ? '<span class="ok">active</span>'
           : p.configured ? (p.circuit_open ? '<span class="bad">cooling down</span>' : "ready")
           : '<span class="muted">no key</span>';
-        return `<div>${p.name} — ${state}</div>`;
+        const err = p.configured && p.last_error
+          ? `<div class="prov-err" title="${escapeHtml(p.last_error)}">${escapeHtml(String(p.last_error).slice(0, 160))}</div>`
+          : "";
+        return `<div>${p.name} — ${state}${err}</div>`;
       }).join("");
       els.llmStatus.innerHTML =
         `<div>mode: <b>${llm.mode}</b> · active: <b>${llm.provider}</b></div>${rows}` +

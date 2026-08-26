@@ -99,19 +99,19 @@ class Settings(BaseSettings):
     # OpenRouter (https://openrouter.ai) - large catalogue of ':free' models
     OPENROUTER_API_KEY: Optional[str] = None
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
-    OPENROUTER_MODEL: str = "deepseek/deepseek-chat-v3-0324:free"
+    OPENROUTER_MODEL: str = "z-ai/glm-5.2:free"
     OPENROUTER_APP_URL: str = "https://github.com/Kryn-devv/Iris_AI"
     OPENROUTER_APP_TITLE: str = "IRIS Desktop Assistant"
 
     # Groq (very fast free tier)
     GROQ_API_KEY: Optional[str] = None
     GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
-    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_MODEL: str = "openai/gpt-oss-120b"
 
     # Google AI Studio (free tier, OpenAI-compatible endpoint)
     GEMINI_API_KEY: Optional[str] = None
     GEMINI_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta/openai"
-    GEMINI_MODEL: str = "gemini-2.0-flash"
+    GEMINI_MODEL: str = "gemini-flash-latest"
 
     # Cerebras inference (free tier)
     CEREBRAS_API_KEY: Optional[str] = None

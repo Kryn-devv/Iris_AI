@@ -91,6 +91,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     configure_from_settings()
     logger.info("Initializing IRIS...")
 
+    from iris.app.core.tls import use_system_trust_store
+    use_system_trust_store()
+
     resolved = paths.ensure_dirs()
     logger.info("Data directory: %s", resolved["data"])
 

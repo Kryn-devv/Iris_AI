@@ -87,6 +87,44 @@ The exact paths checked on your machine:
 python -m iris doctor
 ```
 
+## Every provider fails while the browser works fine
+
+Run the one-command diagnosis:
+
+```
+python -m iris doctor
+```
+
+It live-fires every configured provider and prints the exact error, e.g.:
+
+```
+Cloud provider live check:
+  ✗ groq — groq: HTTP 401 — {"error":{"message":"Invalid API Key"...
+```
+
+The settings drawer in the UI shows the same `last error` under each provider
+after a failed call — no terminal digging required.
+
+What the errors mean:
+
+- **HTTP 401 / "Invalid API Key"** — the key is wrong, revoked, or picked up
+  a stray character. Keys are auto-trimmed of whitespace and wrapping quotes,
+  so re-copy it from the provider's console.
+- **HTTP 404** on OpenRouter free models — enable *"Free endpoints that may
+  train on inputs"* at <https://openrouter.ai/settings/privacy>.
+- **HTTP 429** — free-tier rate limit; wait a minute or add a second provider.
+- **connection failed (ConnectError / CERTIFICATE_VERIFY_FAILED)** — an
+  antivirus suite or a school/corporate proxy is intercepting TLS. Browsers
+  trust it via the OS certificate store; Python doesn't by default. IRIS ships
+  `truststore` and switches to the OS store automatically — make sure
+  dependencies are up to date (`pip install -r requirements.txt`) and restart.
+  Verification stays ON; never work around this by disabling TLS checks.
+- **Gemini: 400/401 "Invalid Auth key" with an `AQ.` key** — a known
+  Google-side issue with their new auth-key rollout (mid-2026): AI Studio
+  issues `AQ.` keys that the Generative Language API rejects. Use Groq or
+  OpenRouter until Google resolves it; keep the Gemini line in `.env` and it
+  will start working when they do.
+
 ## Commands work but conversation doesn't
 
 That's the intended fallback. Deterministic commands (`open youtube`,
