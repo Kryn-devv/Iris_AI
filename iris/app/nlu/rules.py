@@ -229,6 +229,33 @@ def _build_device_hinglish(m: Match[str], cleaned: str) -> Optional[Dict[str, An
     return {"device": device, "state": state}
 
 
+_SERVO_OPEN_WORDS = ("open", "kholo", "khol", "khol do", "utha do")
+
+
+def _build_servo_position(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
+    """A curtain is not an on/off appliance, so 'open' has to become an angle.
+
+    Halfway is a real request and the only one that needs a third position;
+    everything else is one end of the travel or the other.
+    """
+    verb = (m.group("verb") or "").strip().lower()
+    # "half" can land either side of the noun — "open half the curtain",
+    # "open the curtain halfway" — so read it off the cleaned text rather
+    # than carrying three optional groups through the pattern.
+    if re.search(r"\bhalf(?:way)?\b", cleaned):
+        return {"position": "half"}
+    if verb.startswith(_SERVO_OPEN_WORDS):
+        return {"position": "open"}
+    return {"position": "close"}
+
+
+def _build_servo_angle(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
+    angle = int(m.group("angle"))
+    if angle > 180:
+        return None            # let the LLM explain it rather than clamp silently
+    return {"angle": angle}
+
+
 def _build_motor(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
     action = (m.group("action") or "").strip().lower()
     aliases = {"back": "backward", "backwards": "backward", "ahead": "forward", "straight": "forward",
@@ -418,6 +445,40 @@ RULES: list[Rule] = [
         pattern=_rx(r"^(?:remove|forget|delete|unpair)\s+(?:the\s+)?device\s+(?P<name>.+)$"),
         builder=lambda m, c: {"name": m.group("name").strip()},
         confidence=0.98,
+    ),
+    Rule(
+        name="servo_position",
+        intent="devices",
+        tool="device_servo",
+        pattern=_rx(
+            r"^(?P<verb>open|close|shut|draw)\s+(?:the\s+|my\s+|half\s+|halfway\s+)*"
+            r"(?:curtain|curtains|blind|blinds|shutter|shutters|parda|pardah|latch|valve)"
+            r"(?:\s+half(?:way)?)?$"
+        ),
+        builder=_build_servo_position,
+        confidence=0.95,
+    ),
+    Rule(
+        name="servo_position_hinglish",
+        intent="devices",
+        tool="device_servo",
+        pattern=_rx(
+            r"^(?:curtain|curtains|blind|blinds|shutter|parda|pardah)\s+"
+            r"(?P<verb>kholo|khol\s+do|band\s+karo|band\s+kar\s+do|bandh\s+karo)$"
+        ),
+        builder=_build_servo_position,
+        confidence=0.95,
+    ),
+    Rule(
+        name="servo_angle_set",
+        intent="devices",
+        tool="device_servo",
+        pattern=_rx(
+            r"^(?:(?:set|move|turn|put|rotate)\s+)?(?:the\s+|my\s+)?servo\s+"
+            r"(?:to\s+|at\s+)?(?P<angle>\d{1,3})(?:\s*(?:degrees?|deg))?$"
+        ),
+        builder=_build_servo_angle,
+        confidence=0.96,
     ),
     Rule(
         name="device_switch_on_off",

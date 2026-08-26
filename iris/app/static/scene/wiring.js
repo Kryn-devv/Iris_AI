@@ -43,7 +43,7 @@
     relay: [
       /* automation: timers, routines, and everything on the far side of WiFi */
       "cancel_reminder", "device_command", "device_motor", "device_sensors",
-      "device_status", "device_switch", "face_emotion", "list_devices",
+      "device_servo", "device_status", "device_switch", "face_emotion", "list_devices",
       "list_reminders", "map_device_command", "register_device", "remove_device",
       "set_reminder", "set_routine", "set_timer",
     ],

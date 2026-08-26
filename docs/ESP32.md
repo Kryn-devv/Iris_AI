@@ -48,11 +48,39 @@ Open the `.ino` and edit the CONFIG block:
 | `RELAY_PINS` | the GPIOs your relay module IN pins connect to (default 26, 27, 32, 33) |
 | `RELAY_ACTIVE_LOW` | keep `true` for the common blue relay modules |
 | `MOTORS_ENABLED` | `true` on the robot board (L298N pins are in the sketch) |
+| `PIN_SERVO` | GPIO for the servo's **signal** wire (default 19); `-1` if no servo |
+| `SERVO_POWER_CH` | relay channel that switches the servo's **+** (default 3); `0` if it is hard-wired to 5V |
 
 ### 3. Wiring (typical)
 **Relay module:** ESP32 `5V/VIN → VCC`, `GND → GND`, `GPIO26 → IN1`,
-`GPIO27 → IN2`, … Mains wiring goes through the relay's COM/NO terminals —
-be careful with mains voltage; if unsure, switch a 12V strip or use a smart-plug-style low-voltage load.
+`GPIO27 → IN2`, …
+
+**A relay is a switch, nothing more.** Each channel has three screw terminals:
+COM, NO and NC. The **+ wire coming from the power rail goes to COM**, the
+**+ wire going on to the appliance goes to NO**, and the appliance's **− goes
+straight to the shared ground — never through the relay.** NC is the terminal
+that is connected when the channel is off; leave it empty for a normally-off
+appliance. That is the whole of it: the relay interrupts the positive wire, and
+the negative is always joined.
+
+Because the relay only opens and closes a contact, it does not care what
+voltage runs through it. Switching a 12V strip or a 5V servo needs no AC
+anywhere in the build. If you *do* put mains through the COM/NO terminals,
+that is a live-mains job with real shock risk — a low-voltage DC load is the
+safer build and the one the rest of these docs assume.
+
+**Servo:** the **signal** (orange/yellow) wire goes to `PIN_SERVO`. The
+**power** (red) wire does **not** come from any ESP32 pin — the onboard
+regulator cannot source a servo's stall current and trying it browns out the
+board halfway through a move. Feed the red wire from the 5V rail through the
+relay channel named in `SERVO_POWER_CH`, and the brown/black wire to the shared
+ground.
+
+That relay channel is what stops an idle servo buzzing. After each move the
+firmware opens the channel, so the servo goes properly dead instead of fighting
+its own gearbox and cooking itself holding position. Ask for `hold` when you
+actually want it to keep pushing. On each command the pulse is set *before* the
+channel closes, so the servo wakes up already knowing where to go.
 
 **L298N motor driver:** `GPIO25 → ENA`, `GPIO13 → IN1`, `GPIO12 → IN2`,
 `GPIO14 → ENB`, `GPIO21 → IN3`, `GPIO22 → IN4`, common GND between ESP32 and
@@ -94,6 +122,9 @@ switch off the fan               fan band karo
 toggle the socket                robot forward
 move the robot left              stop the robot
 is the light online              list my devices
+open the curtain                 curtain kholo
+close the curtain                parda kholo
+open the curtain halfway         set the servo to 45 degrees
 ```
 
 > Tip: give your router a DHCP reservation for each board (or use the
@@ -261,6 +292,7 @@ device_command bedroom light /servo?angle=90
 |---|---|---|
 | `GET /status` | `/status` | JSON: name, kind, ip, rssi, relay states |
 | `GET /relay` | `/relay?ch=1&state=on` | channel 1 on / off / toggle |
+| `GET /servo` | `/servo?angle=90` | point the servo; add `&hold=1` to keep it powered |
 | `GET /motor` | `/motor?dir=forward&speed=200&ms=1500` | drive; auto-stops after `ms` |
 
 Timed moves auto-stop even if WiFi drops mid-command (the deadline runs on the
