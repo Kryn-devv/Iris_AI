@@ -93,7 +93,7 @@ class Settings(BaseSettings):
     LLM_MAX_RETRIES: int = 2
     LLM_CIRCUIT_BREAK_SECONDS: float = 120.0
     LLM_TEMPERATURE: float = 0.6
-    LLM_MAX_TOKENS: int = 2048
+    LLM_MAX_TOKENS: int = 1024
     LLM_STREAM: bool = True
 
     # OpenRouter (https://openrouter.ai) - large catalogue of ':free' models

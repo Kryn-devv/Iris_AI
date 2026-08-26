@@ -102,6 +102,9 @@
         break;
       }
       case "llm.route": els.chipProvider.textContent = p.provider || "local"; break;
+      case "llm.fallback":
+        tick("cloud AI failed — open settings for details", "fail");
+        break;
       case "ui.state":
         if (p.action === "push_to_talk") (listening ? stopListening() : startListening());
         break;
@@ -193,7 +196,13 @@
     const meta = [];
     if (r.handler) meta.push(r.handler);
     if (r.provider && r.provider !== "iris") meta.push(r.provider);
-    addMessage("iris", r.response || "…", { error: failed, artifacts: r.artifacts, meta });
+    const msgEl = addMessage("iris", r.response || "…", { error: failed, artifacts: r.artifacts, meta });
+    if (r.notice) {
+      const note = document.createElement("div");
+      note.className = "msg-notice";
+      note.textContent = r.notice;
+      msgEl.appendChild(note);
+    }
 
     if (r.provider) els.chipProvider.textContent = r.provider;
     if (els.speakToggle.checked) {

@@ -193,10 +193,20 @@ class CloudLLMProvider(LLMProvider):
         if response.status_code != 200:
             body_preview = self._redact(response.text[:400])
             retryable = response.status_code in _RETRYABLE_STATUS
+            retry_after = None
+            if response.status_code == 429:
+                header = response.headers.get("retry-after")
+                if header and header.replace(".", "", 1).isdigit():
+                    retry_after = float(header)
+                else:
+                    hinted = re.search(r"try again in ([0-9.]+)s", response.text)
+                    if hinted:
+                        retry_after = float(hinted.group(1))
             raise LLMProviderError(
                 f"{self.provider_name}: HTTP {response.status_code} — {body_preview}",
                 retryable=retryable,
                 status_code=response.status_code,
+                retry_after=retry_after,
             )
 
         try:

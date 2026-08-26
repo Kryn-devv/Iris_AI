@@ -1,5 +1,15 @@
 """Pytest configuration and shared fixtures for IRIS tests."""
 
+# Force hermetic tests: a developer's real .env (API keys, custom ports)
+# must never leak into the suite. Set before any iris import creates Settings.
+import os
+
+os.environ["LLM_MODE"] = "mock"
+os.environ.pop("GROQ_API_KEY", None)
+os.environ.pop("OPENROUTER_API_KEY", None)
+os.environ.pop("GEMINI_API_KEY", None)
+
+
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
