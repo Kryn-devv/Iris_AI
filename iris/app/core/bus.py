@@ -135,6 +135,17 @@ class EventBus:
     def subscriber_count(self) -> int:
         return len([s for s in self._subscribers if not s.closed])
 
+    def listener_count(self, topic: str) -> int:
+        """How many live subscribers would actually receive ``topic``.
+
+        Distinct from :attr:`subscriber_count`, which counts everything on the
+        bus. A producer that only makes sense when somebody is listening — a
+        request to open a URL in the user's browser, say — needs to know
+        whether a matching consumer exists, not whether the voice service
+        happens to be subscribed to something unrelated.
+        """
+        return len([s for s in self._subscribers if not s.closed and s.matches(topic)])
+
     def clear(self) -> None:
         self._history.clear()
 
@@ -177,6 +188,7 @@ class Topics:
     REMINDER_DUE = "reminder.due"
 
     UI_STATE = "ui.state"
+    UI_OPEN_URL = "ui.open_url"
 
 
 default_event_bus = EventBus()

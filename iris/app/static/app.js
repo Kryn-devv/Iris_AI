@@ -117,6 +117,7 @@
       case "ui.state":
         if (p.action === "push_to_talk") (listening ? stopListening() : startListening());
         break;
+      case "ui.open_url": openInThisBrowser(p.url, p.label); break;
     }
   }
 
@@ -160,6 +161,29 @@
   }
 
   function scrollDown() { els.conversation.scrollTop = els.conversation.scrollHeight; }
+
+  /* IRIS on a server has no desktop, so "open youtube" arrives here instead:
+     this tab IS the browser. window.open without a user gesture is blocked by
+     most browsers, and a blocked popup returns null — so the link is always
+     offered in the conversation as well, and that one always works. */
+  function openInThisBrowser(url, label) {
+    if (!url || !/^https?:\/\//i.test(url)) return;
+    let opened = null;
+    try { opened = window.open(url, "_blank", "noopener,noreferrer"); } catch (e) { /* blocked */ }
+    const name = label || url;
+    /* addMessage renders through renderMarkdown, which escapes — escaping here
+       as well would turn an "&" in a search term into "&amp;". */
+    const div = addMessage("iris", opened
+      ? `Opened **${name}** in a new tab.`
+      : `Tap to open **${name}** — browsers only allow new tabs you click yourself.`);
+    const link = document.createElement("a");
+    link.className = "artifact-link";
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = `↗ ${name}`;
+    div.appendChild(link);
+  }
 
   async function send(text) {
     text = (text || "").trim();

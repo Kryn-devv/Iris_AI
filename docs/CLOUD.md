@@ -192,18 +192,47 @@ Nginx + certbot works too), so the boards can connect with `wss://` and
 Without TLS the node token travels the internet in clear text. The firmware
 prints a warning at boot if you do that, and it means what it says.
 
-### 3.7 One honest consequence of moving to the cloud
+### 3.7 What changes when the brain moves to the cloud
 
-IRIS's desktop tools — "open notepad", "take a screenshot", "move the mouse" —
-act on **the machine IRIS is running on**. In the cloud that is the VPS, which
-has no desktop. Those commands will fail or do nothing useful there.
+**Almost nothing does.** Of 79 tools, about 24 need a real screen and keyboard,
+and those are the only ones affected. Everything else runs identically — often
+better, because a VPS is awake when your laptop is not.
 
-What still works perfectly from the cloud: every device command (robot, relays,
-face, sensors), the voice loop, the LLM conversation, memory, reminders, the
-scheduler, Telegram, and content creation (documents, presentations, code).
+**These keep working, unchanged:**
 
-If you want desktop automation *and* a cloud brain, run IRIS at home and reach
-it from outside with a tunnel instead (`TUNNEL_PROVIDER=cloudflared`).
+| | |
+|---|---|
+| **Presentations, documents, spreadsheets, code** | `create_presentation` uses python-pptx, `write_document` python-docx, `create_spreadsheet` openpyxl. All pure Python, no screen involved. The file appears as a **download link in the conversation** — click it and it lands on your laptop |
+| Every device command | robot, relays, servo, face, sensors |
+| The voice loop | speech-to-text, the LLM, text-to-speech |
+| Conversation, memory, reminders, routines, the scheduler | |
+| Web search, page fetch, Wikipedia, weather, news | |
+| Reading and writing files, searching them | inside the sandbox, on the VPS |
+| Telegram | |
+| **Opening a website** | see below — this one used to break and no longer does |
+
+**"Open youtube" opens a tab on YOUR machine.** There is no desktop on the
+VPS, so instead of failing, IRIS pushes the URL down the WebSocket and the
+dashboard opens it in the browser you are actually looking at. Browsers only
+allow new tabs from a click, so the dashboard also puts the link in the
+conversation as a button — that path always works.
+
+**These genuinely cannot work from the cloud**, because they act on a physical
+screen that isn't there:
+
+- `open_app` / `close_app` / `list_apps` — launching programs
+- `take_screenshot`, `list_windows`, `focus_window`, `minimize/maximize_window`
+- `type_text`, `press_keys`, `mouse_click`, `mouse_move`, `scroll`
+- `clipboard_read` / `clipboard_write`
+- `volume`, `media_control`
+- `lock_screen`, `sleep_pc`, `shutdown_pc`, `restart_pc`
+- `notify` (a desktop notification popup)
+- `open_path` / `find_and_open` — opening a file in its native app
+
+They will report a clear failure rather than pretending to have worked. If you
+want those **and** a cloud brain, run IRIS at home and reach it from outside
+with a tunnel instead (`TUNNEL_PROVIDER=cloudflared`) — same UI, same URL from
+anywhere, but the desktop it drives is your own PC.
 
 ### 3.8 Using a laptop as a display only — nothing installed on it
 
@@ -249,10 +278,18 @@ that is more than you want on the laptop, don't grant the permission: put the
 I2S microphone and speaker on the S3 board (§6) and talk to the robot instead.
 The laptop then shows the conversation happening without taking any part in it.
 
-**A guarantee you get for free.** IRIS's desktop tools act on the machine IRIS
-runs on, which here is the VPS (§3.7). "Open notepad" cannot reach the laptop
-even if you ask for it, because the laptop is not where IRIS is. A browser tab
-has no way to launch a program on the computer showing it.
+**You do not lose the features, only the screen-poking ones.** Presentations,
+documents, spreadsheets and code are built by pure-Python libraries on the VPS
+and arrive as a **download link in the conversation** — click it and the .pptx
+is on your laptop. Roughly 24 of 79 tools need a physical screen (launching
+programs, screenshots, mouse and keyboard, volume, shutdown); §3.7 lists them
+precisely. Everything else is unaffected.
+
+**A guarantee you get for free.** Those screen-poking tools act on the machine
+IRIS runs on, which here is the VPS. "Open notepad" cannot reach the laptop
+even if you ask for it, because the laptop is not where IRIS is — a browser tab
+has no way to launch a program on the computer showing it. If that is the rule
+you have to satisfy, this setup satisfies it by construction.
 
 > Sharing the dashboard on a LAN instead of the internet works identically:
 > the same three settings, and the address is the machine's LAN IP
