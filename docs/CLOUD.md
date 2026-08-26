@@ -107,41 +107,49 @@ one process that listens on one port, which is what the panel expects.
 3. Give it as much RAM as you can spare. **1 GB is the realistic minimum**;
    2 GB is comfortable. Speech-to-text is the memory-hungry part (see 3.5).
 
-### 3.2 Upload the code
+### 3.2 Fill in the egg's variables — the panel clones the code for you
 
-In the panel's file manager, or over SFTP into `/home/container`:
+Use a **generic Python egg** (any "Python App" / "Python Generic"). Docker
+image: **Python 3.11**. Do not edit the startup command; the repository has a
+top-level `app.py` precisely so the egg's defaults work unchanged.
 
-```
-git clone https://github.com/Kryn-devv/Iris_AI.git .
-```
+| Egg variable | Value |
+|---|---|
+| **Git Repo Address** | `https://github.com/Kryn-devv/Iris_AI.git` |
+| **Git Branch** | `main` |
+| **App py file** | `app.py` *(the default — leave it)* |
+| **Requirements file** | `requirements.txt` *(the default — leave it)* |
+| **Auto Update** | `1` — pulls the latest code on every start |
+| **Additional Python packages** | leave empty; see §3.5 if you want voice |
+| **Git Username / Access Token** | leave empty (the repo is public) |
+| **User Uploaded Files** | `0` |
 
-(or upload a zip and extract it). `/home/container` is the persistent volume,
-so anything there survives a restart.
+Press install. The egg clones the repo into `/home/container`, installs
+`requirements.txt`, and runs `python /home/container/app.py`.
 
-### 3.3 Startup command
+`app.py` is a thin shim over `python -m iris --headless`. It does the two
+things a container knows and a laptop does not: it turns off the tray icon and
+the open-a-browser step before anything reaches for a desktop that isn't there,
+and it binds `0.0.0.0` on **the port the panel assigned** (`SERVER_PORT`), so a
+changed allocation does not need `.env` edited to match. An explicit `PORT` in
+`.env` still wins.
 
-Set the egg's startup command to:
+### 3.3 Why not edit the startup command
 
-```
-pip install --user -r requirements.txt && python -m iris --headless
-```
-
-`--headless` matters: it skips the tray icon, which has no desktop to live in.
+You can, but there is nothing to gain and one thing to lose: a hand-edited
+startup command is invisible to anyone reading the repository, so the next
+person to debug the deployment is reading a command you wrote and they cannot
+see. `app.py` keeps that decision in version control.
 
 ### 3.4 The `.env` file
 
 Create `/home/container/.env`:
 
 ```ini
-# Pterodactyl gives you a port — IRIS must bind to it, on all interfaces
-HOST=0.0.0.0
-PORT=25580              # <- your allocated port
-ALLOW_LAN_ACCESS=true   # also switches ON token auth for non-local clients
+# You do NOT need HOST, PORT, ALLOW_LAN_ACCESS, OPEN_BROWSER_ON_START or
+# TRAY_ENABLED here — app.py sets all five for you, and reads the port from
+# the panel's own allocation. Set PORT only to override that deliberately.
 API_TOKEN=pick-a-long-random-string
-
-# no desktop on a server
-OPEN_BROWSER_ON_START=false
-TRAY_ENABLED=false
 
 # let your boards dial in — REQUIRED for Mode B
 NODE_LINK_TOKEN=another-long-random-string
