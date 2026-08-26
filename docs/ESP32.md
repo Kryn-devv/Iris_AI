@@ -123,6 +123,51 @@ device_command bedroom light /servo?angle=90
 Timed moves auto-stop even if WiFi drops mid-command (the deadline runs on the
 board), and the board reconnects to WiFi by itself.
 
+## Sensor node (ESP32-S3 with PIR / gas / light / ultrasonic)
+
+Flash `firmware/esp32-s3-iris-sensors/esp32-s3-iris-sensors.ino` on the S3
+(board: **ESP32S3 Dev Module**). Default pins — change them in CONFIG:
+
+| Sensor | Pin | Note |
+|---|---|---|
+| PIR HC-SR501 OUT | GPIO 4 | 3.3V output, connect directly |
+| MQ-2 gas AO | GPIO 5 | ⚠ through a 1k/2k voltage divider (AO can reach ~4V) |
+| LDR divider midpoint | GPIO 6 | LDR + 10k resistor from 3.3V |
+| HC-SR04 TRIG | GPIO 7 | direct |
+| HC-SR04 ECHO | GPIO 8 | ⚠ through a 1k/2k divider (ECHO is 5V) |
+
+**The S3's pins are NOT 5V tolerant** — skipping the two dividers can kill
+inputs. Power PIR/MQ-2/HC-SR04 from the 5V pin, the LDR from 3.3V. Set any
+unused sensor's pin to `-1`.
+
+Register and ask:
+
+```
+add device room sensor at 192.168.1.70 as sensor
+is there any motion       ·  koi hai kya
+what's the gas level      ·  gas level kya hai
+how far is the object     ·  kitna door hai
+check the sensors
+```
+
+## One brain, many bodies (the recommended 3-board setup)
+
+```
+                 your PC (IRIS = the only brain: voice, AI, decisions)
+                          │  WiFi / HTTP
+      ┌───────────────────┼───────────────────────┐
+      ▼                   ▼                       ▼
+ ESP32-S3            ESP32 "robot"           ESP32 "relays"
+ sensor node         L298N motors            lights/fans/sockets
+ (this firmware)     (esp32-iris-node,       (esp32-iris-node, or your
+                      MOTORS_ENABLED=true)    existing sketch + command map)
+```
+
+If a board currently runs its **own** voice/AI code (mic + STT on the ESP):
+remove it. Two listening brains fight over commands and the ESP's speech
+recognition is far weaker than IRIS's. Keep the boards as simple HTTP bodies —
+IRIS hears, thinks, and calls them.
+
 ## Many boards
 
 Register as many as you want — each is just a name + IP:
