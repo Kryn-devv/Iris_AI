@@ -94,6 +94,12 @@ driver, motor battery to the driver's 12V input.
 
 ### One 12V battery, three appliances — the whole power tree
 
+> **There is a drawn version of everything below** in
+> **[`wiring-12v.html`](wiring-12v.html)** — open it in any browser (no server
+> needed) for the four diagrams: the power tree, what a relay channel actually
+> is, all four channels at once, and the fan's flyback diode. Print it and take
+> it to the bench.
+
 This is the build most people end up with: a 12V battery, a 4-channel relay
 module, and three things to switch — a **12V DC light**, a **3V DC fan** and a
 **servo**.
