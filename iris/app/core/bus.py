@@ -165,6 +165,11 @@ class Topics:
     LLM_ROUTE = "llm.route"
     LLM_FALLBACK = "llm.fallback"
 
+    NODE_LINKED = "node.linked"
+    NODE_UNLINKED = "node.unlinked"
+    NODE_TELEMETRY = "node.telemetry"
+    NODE_ALERT = "node.alert"
+
     SYSTEM_NOTICE = "system.notice"
     SYSTEM_METRICS = "system.metrics"
 

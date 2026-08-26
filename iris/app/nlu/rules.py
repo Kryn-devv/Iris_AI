@@ -499,6 +499,18 @@ RULES: list[Rule] = [
         confidence=0.95,
     ),
     Rule(
+        name="sensor_flame_query",
+        intent="devices",
+        tool="device_sensors",
+        pattern=_rx(
+            r"^(?:is\s+there\s+(?:a\s+|any\s+)?(?:fire|flame)|any\s+(?:fire|flame)"
+            r"|fire\s+(?:check|detected)|flame\s+(?:check|status)"
+            r"|aag\s+(?:lagi\s+hai|hai)(?:\s+kya)?|fire\s+check\s+karo)\??$"
+        ),
+        static_args={"sensor": "flame"},
+        confidence=0.97,
+    ),
+    Rule(
         name="sensor_all_query",
         intent="devices",
         tool="device_sensors",

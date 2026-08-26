@@ -215,6 +215,18 @@ class Settings(BaseSettings):
     MIC_SAMPLE_RATE: int = 16000
     SPEAK_RESPONSES: bool = True
 
+    # ----------------------------------------------------------- node links
+    #: Shared secret a node presents when it dials in. REQUIRED for node links
+    #: to work at all: this channel switches mains relays and drives motors, so
+    #: an unset token refuses every connection rather than accepting anonymous
+    #: ones. Use a long random string and put the same value in the firmware.
+    NODE_LINK_TOKEN: Optional[str] = None
+    NODE_LINK_ENABLED: bool = True
+    #: Accept microphone recordings from nodes and answer with speech audio.
+    NODE_VOICE_ENABLED: bool = True
+    #: Speak a warning out loud the moment a node reports flame or gas.
+    NODE_ALERTS_SPOKEN: bool = True
+
     # ------------------------------------------------------------ automation
     #: Match the robot's OLED eyes to what IRIS is saying, with no extra
     #: commands. Harmless with no face node registered — it simply does nothing.

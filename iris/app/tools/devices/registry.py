@@ -13,8 +13,16 @@ Two firmware styles are supported:
   built; mapped through the per-device ``commands`` table, e.g.
   ``{"on": "/led/on", "off": "/led/off"}``.
 
-Only private/LAN addresses are accepted: these tools drive hardware relays,
-so requests must never be steerable to arbitrary internet hosts.
+And two **transports**:
+
+* ``lan`` (the default) — IRIS calls the device's IP. Requires IRIS and the
+  device to be on the same network. Only private/LAN addresses are accepted:
+  these tools drive hardware relays, so requests must never be steerable to
+  arbitrary internet hosts.
+* ``link`` — the device dials out to IRIS and holds a WebSocket open;
+  commands travel back down it. This is what makes a cloud-hosted IRIS able
+  to reach hardware behind a home router, with no port-forwarding and no
+  address to store at all. See ``iris/app/nodes/link.py``.
 """
 
 from __future__ import annotations
@@ -37,6 +45,8 @@ REGISTRY_FILENAME = "devices.json"
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9 _-]{0,31}$")
 
 DEVICE_KINDS = ("relay", "motor", "sensor", "face", "generic")
+
+TRANSPORTS = ("lan", "link")
 
 
 class DeviceError(ValueError):
@@ -98,8 +108,11 @@ class Device:
     """One registered network device."""
 
     name: str
-    base_url: str
+    base_url: str = ""
     kind: str = "generic"          # relay | motor | sensor | face | generic
+    #: "lan" — IRIS calls base_url. "link" — the device dials in and holds a
+    #: socket open, so there is no address to call and none is stored.
+    transport: str = "lan"
     #: Named custom commands -> relative paths on the device
     #: (for user-built firmware), e.g. {"on": "/led/on", "off": "/led/off"}.
     commands: Dict[str, str] = field(default_factory=dict)
@@ -107,11 +120,17 @@ class Device:
     default_channel: int = 1
     notes: str = ""
 
+    @property
+    def linked(self) -> bool:
+        """True when this device reaches IRIS rather than the other way round."""
+        return self.transport == "link"
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "name": self.name,
             "base_url": self.base_url,
             "kind": self.kind,
+            "transport": self.transport,
             "commands": dict(self.commands),
             "default_channel": self.default_channel,
             "notes": self.notes,
@@ -119,9 +138,19 @@ class Device:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Device":
+        transport = data.get("transport", "lan")
+        if transport not in TRANSPORTS:
+            transport = "lan"
+        raw_url = data.get("base_url") or ""
+        # A linked device has no address by design; a stored one is kept only
+        # so a device can be switched back to the LAN transport later.
+        base_url = normalize_base_url(raw_url) if raw_url else ""
+        if transport == "lan" and not base_url:
+            raise DeviceError(f"Device '{data.get('name')}' has no address.")
         return cls(
             name=normalize_name(data["name"]),
-            base_url=normalize_base_url(data["base_url"]),
+            base_url=base_url,
+            transport=transport,
             kind=data.get("kind", "generic") if data.get("kind") in DEVICE_KINDS else "generic",
             commands={str(k).lower(): str(v) for k, v in (data.get("commands") or {}).items()},
             default_channel=int(data.get("default_channel", 1)),
@@ -230,6 +259,9 @@ class DeviceRegistry:
             if device.kind == kind:
                 return device
         return None
+
+    def all_of_kind(self, kind: str) -> List[Device]:
+        return [d for d in self.list() if d.kind == kind]
 
     def clear(self) -> None:
         with self._lock:

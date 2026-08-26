@@ -276,6 +276,12 @@ One board does both jobs: two OLED eyes and all the sensors. Flash
 > and it runs on your PC. The S3 has 512 KB of RAM; it is the robot's face and
 > senses, not its brain. One brain, many bodies.
 
+> **Running IRIS on a VPS instead of your PC?** Then IRIS cannot call your
+> boards — they are behind your router's NAT. They dial *out* to IRIS instead,
+> over a WebSocket, with no port-forwarding and nothing exposed. That plus the
+> microphone/speaker wiring, Pterodactyl deployment and the whole end-to-end
+> mechanism is in **[CLOUD.md](CLOUD.md)**.
+
 ### Sensor pins — change them in CONFIG:
 
 | Sensor | Pin | Note |
@@ -285,6 +291,7 @@ One board does both jobs: two OLED eyes and all the sensors. Flash
 | LDR divider midpoint | GPIO 6 | LDR + 10k resistor from 3.3V |
 | HC-SR04 TRIG | GPIO 7 | direct |
 | HC-SR04 ECHO | GPIO 8 | ⚠ through a 1k/2k divider (ECHO is 5V) |
+| Flame module DO | GPIO 13 | 3.3V output, direct. Use **DO**, not AO. Most modules are active-LOW — the default matches |
 
 **The S3's pins are NOT 5V tolerant** — skipping the two dividers can kill
 inputs. Power PIR/MQ-2/HC-SR04 from the 5V pin, the LDR from 3.3V. Set any
@@ -361,11 +368,24 @@ All 14: `neutral`, `happy`, `excited`, `love`, `sad`, `angry`, `surprised`,
 ### Ask about the sensors
 
 ```
+is there a fire           ·  aag lagi hai kya
 is there any motion       ·  koi hai kya
 what's the gas level      ·  gas level kya hai
 how far is the object     ·  kitna door hai
 check the sensors
 ```
+
+Flame and gas do not wait to be asked: the board reports them the instant it
+sees them, and IRIS says so out loud with the eyes going wide. Repeats are
+suppressed for 90 seconds so a sensor flickering on its threshold cannot turn
+into a voice that will not stop.
+
+### Give it a microphone and a speaker
+
+Wire an **INMP441** I2S microphone and a **MAX98357A** I2S amplifier and you can
+just talk to the robot: it uploads what you said, IRIS answers, and the reply
+plays through the speaker while the eyes bounce along with it. Pins and the
+tuning knobs are in **[CLOUD.md](CLOUD.md#6-wiring-the-microphone-and-speaker)**.
 
 ### Test it with no software at all
 

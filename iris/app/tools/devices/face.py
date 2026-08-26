@@ -24,8 +24,8 @@ from iris.app.core.logging import get_logger
 from iris.app.core.security import PermissionLevel
 from iris.app.schemas.tools import ToolCategory, ToolExample, ToolParameterSchema
 from iris.app.tools.base import BaseTool, ToolError
-from iris.app.tools.devices.esp32 import _device_get
-from iris.app.tools.devices.registry import DeviceRegistry, default_device_registry
+from iris.app.tools.devices.transport import device_request
+from iris.app.tools.devices.registry import Device, DeviceRegistry, default_device_registry
 
 logger = get_logger("tools.devices.face")
 
@@ -163,7 +163,7 @@ def infer_emotion(text: str, default: str = "neutral") -> str:
 
 
 async def push_face(
-    base_url: str,
+    device: "Device",
     *,
     emotion: Optional[str] = None,
     speak_ms: Optional[int] = None,
@@ -174,7 +174,8 @@ async def push_face(
     """Send one combined /face request — mood, gaze, speech and blink at once.
 
     One round trip rather than four: the eyes should change with the voice, not
-    a beat behind it.
+    a beat behind it. Works over either transport, so the face reacts the same
+    whether IRIS is on the same WiFi or on a VPS.
     """
     params: Dict[str, Any] = {}
     if emotion:
@@ -188,7 +189,7 @@ async def push_face(
         params["look_y"] = max(-100, min(100, int(look[1])))
     if blink:
         params["blink"] = max(1, min(5, int(blink)))
-    return await _device_get(f"{base_url}/face", params=params)
+    return await device_request(device, "/face", params)
 
 
 class FaceEmotionTool(BaseTool):
@@ -273,7 +274,7 @@ class FaceEmotionTool(BaseTool):
         hold_ms = int(max(0.0, float(seconds)) * 1000) if seconds else 0
 
         data = await push_face(
-            target.base_url,
+            target,
             emotion=canonical,
             hold_ms=hold_ms,
             look=gaze,

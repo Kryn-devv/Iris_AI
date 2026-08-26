@@ -34,7 +34,7 @@ from iris.app.core.bus import EventBus, Subscription, Topics, default_event_bus
 from iris.app.core.config import settings
 from iris.app.core.logging import get_logger
 from iris.app.tools.devices.face import estimate_speech_ms, infer_emotion, push_face
-from iris.app.tools.devices.registry import DeviceRegistry, default_device_registry
+from iris.app.tools.devices.registry import Device, DeviceRegistry, default_device_registry
 
 logger = get_logger("services.face")
 
@@ -137,14 +137,14 @@ class FacePresenceService:
         device = self._registry.first_of_kind("face")
         if device is None:
             return
-        task = asyncio.create_task(self._push(device.base_url, emotion, speak_ms))
+        task = asyncio.create_task(self._push(device, emotion, speak_ms))
         self._pending.add(task)
         task.add_done_callback(self._pending.discard)
 
-    async def _push(self, base_url: str, emotion: str, speak_ms: int) -> None:
+    async def _push(self, device: Device, emotion: str, speak_ms: int) -> None:
         try:
             await asyncio.wait_for(
-                push_face(base_url, emotion=emotion, speak_ms=speak_ms or None),
+                push_face(device, emotion=emotion, speak_ms=speak_ms or None),
                 timeout=PUSH_TIMEOUT_S,
             )
             self._failures = 0

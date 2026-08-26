@@ -11,6 +11,7 @@ custom firmware through per-device command maps. See ``docs/ESP32.md``.
 
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, Optional
 
 import httpx
@@ -19,6 +20,8 @@ from iris.app.core.logging import get_logger
 from iris.app.core.security import PermissionLevel
 from iris.app.schemas.tools import ToolCategory, ToolExample, ToolParameterSchema
 from iris.app.tools.base import BaseTool, ToolError
+from iris.app.nodes.link import default_node_hub
+from iris.app.tools.devices.transport import device_request, lan_get
 from iris.app.tools.devices.registry import (
     DEVICE_KINDS,
     Device,
@@ -31,33 +34,20 @@ from iris.app.tools.devices.registry import (
 
 logger = get_logger("tools.devices.esp32")
 
-#: ESP32 web servers answer in well under a second on a healthy LAN.
-_TIMEOUT = httpx.Timeout(6.0, connect=3.0)
-
 _MOTOR_ACTIONS = ("forward", "backward", "left", "right", "stop")
+
+#: Pushed telemetry older than this is not worth trusting for a direct
+#: question; ask the node instead.
+TELEMETRY_MAX_AGE_S = 12.0
 
 
 async def _device_get(url: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """GET a device endpoint, tolerating non-JSON bodies from custom firmware."""
-    try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            response = await client.get(url, params=params)
-    except httpx.ConnectError as exc:
-        raise ToolError(
-            f"Could not reach the device at {url.split('/', 3)[2]} — is it powered on and on the same WiFi?"
-        ) from exc
-    except httpx.TimeoutException as exc:
-        raise ToolError(f"The device at {url.split('/', 3)[2]} did not answer in time.") from exc
-    except httpx.HTTPError as exc:
-        raise ToolError(f"Device request failed: {exc}") from exc
+    """GET a device endpoint by absolute URL (LAN transport only).
 
-    if response.status_code >= 400:
-        raise ToolError(f"The device answered HTTP {response.status_code}: {response.text[:120]}")
-    try:
-        data = response.json()
-        return data if isinstance(data, dict) else {"response": data}
-    except ValueError:
-        return {"response": response.text[:400]}
+    Kept for the few places that already hold a URL. Prefer
+    :func:`device_request`, which also works for a device that dials in.
+    """
+    return await lan_get(url, params)
 
 
 def _require_device(registry: DeviceRegistry, name: str) -> Device:
@@ -116,7 +106,7 @@ class RegisterDeviceTool(BaseTool):
         # Best-effort probe: register either way, but tell the user what we saw.
         reachable, status = True, {}
         try:
-            status = await _device_get(f"{device.base_url}/status")
+            status = await device_request(device, "/status")
             if device.kind == "generic" and isinstance(status.get("kind"), str) and status["kind"] in DEVICE_KINDS:
                 device.kind = status["kind"]
         except ToolError:
@@ -210,12 +200,10 @@ class DeviceSwitchTool(BaseTool):
 
         custom = target.command_path(state)
         if custom:
-            data = await _device_get(f"{target.base_url}{custom}")
+            data = await device_request(target, custom)
         else:
             ch = channel or target.default_channel
-            data = await _device_get(
-                f"{target.base_url}/relay", params={"ch": ch, "state": state}
-            )
+            data = await device_request(target, "/relay", {"ch": ch, "state": state})
 
         spoken_state = data.get("state", state) if isinstance(data, dict) else state
         return {
@@ -275,14 +263,14 @@ class DeviceMotorTool(BaseTool):
 
         custom = target.command_path(action)
         if custom:
-            data = await _device_get(f"{target.base_url}{custom}")
+            data = await device_request(target, custom)
         else:
             params: Dict[str, Any] = {"dir": action}
             if speed is not None:
                 params["speed"] = max(0, min(255, int(speed)))
             if duration_ms:
                 params["ms"] = max(0, int(duration_ms))
-            data = await _device_get(f"{target.base_url}/motor", params=params)
+            data = await device_request(target, "/motor", params)
 
         return {
             "device": target.name,
@@ -332,7 +320,7 @@ class DeviceCommandTool(BaseTool):
         if any(seq in path for seq in ("..", "://", "\\\\")):
             raise ToolError("Command paths must be simple relative paths on the device.")
 
-        data = await _device_get(f"{target.base_url}{path}")
+        data = await device_request(target, path)
         return {
             "device": target.name,
             "path": path,
@@ -364,7 +352,7 @@ class DeviceStatusTool(BaseTool):
         online = 0
         for target in targets:
             try:
-                status = await _device_get(f"{target.base_url}/status")
+                status = await device_request(target, "/status")
                 online += 1
                 results.append({"name": target.name, "online": True, "status": status})
             except ToolError as exc:
@@ -392,7 +380,7 @@ class DeviceSensorsTool(BaseTool):
     input_schema = ToolParameterSchema(
         properties={
             "device": {"type": "string", "description": "Sensor node name (defaults to the first sensor device)"},
-            "sensor": {"type": "string", "enum": ["all", "motion", "gas", "light", "distance"],
+            "sensor": {"type": "string", "enum": ["all", "motion", "gas", "light", "distance", "flame"],
                         "description": "Which reading to report (default all)"},
         },
     )
@@ -400,6 +388,7 @@ class DeviceSensorsTool(BaseTool):
         ToolExample(utterance="is there any motion", arguments={"sensor": "motion"}),
         ToolExample(utterance="what's the gas level", arguments={"sensor": "gas"}),
         ToolExample(utterance="how far is the object", arguments={"sensor": "distance"}),
+        ToolExample(utterance="is there a fire", arguments={"sensor": "flame"}),
     ]
 
     def __init__(self, registry: Optional[DeviceRegistry] = None):
@@ -408,16 +397,20 @@ class DeviceSensorsTool(BaseTool):
     @staticmethod
     def _summarize(data: Dict[str, Any], sensor: str) -> str:
         parts: list[str] = []
-        if sensor in ("all", "motion") and "motion_recent" in data:
-            parts.append(
-                "Motion detected" if data.get("motion") or data.get("motion_recent")
-                else "No motion"
-            )
+        # Danger first: a flame reading must lead the sentence, not be buried
+        # after the light level.
+        if sensor in ("all", "flame") and "flame" in data:
+            parts.append("FIRE DETECTED" if data.get("flame") else "no flame")
         if sensor in ("all", "gas") and "gas_raw" in data:
             if data.get("gas_alarm"):
                 parts.append(f"GAS ALARM — level {data['gas_raw']}")
             else:
                 parts.append(f"gas level {data['gas_raw']} (normal)")
+        if sensor in ("all", "motion") and "motion_recent" in data:
+            parts.append(
+                "Motion detected" if data.get("motion") or data.get("motion_recent")
+                else "No motion"
+            )
         if sensor in ("all", "light") and "light_percent" in data:
             parts.append(f"light {data['light_percent']}%")
         if sensor in ("all", "distance") and "distance_cm" in data:
@@ -427,7 +420,7 @@ class DeviceSensorsTool(BaseTool):
         return ", ".join(parts) + "."
 
     async def _run(self, device: Optional[str] = None, sensor: str = "all") -> Dict[str, Any]:
-        target = self.registry.get(device) if device else self.registry.first_of_kind("sensor")
+        target = self.registry.get(device) if device else self._pick_sensor_device()
         if target is None:
             raise ToolError(
                 "No sensor node is registered. Flash firmware/esp32-s3-iris-sensors and say: "
@@ -435,14 +428,40 @@ class DeviceSensorsTool(BaseTool):
                 speech="I don't have a sensor node registered yet.",
             )
         sensor = (sensor or "all").strip().lower()
-        data = await _device_get(f"{target.base_url}/sensors")
+
+        # A linked node pushes readings continuously, so the newest one is
+        # already here. Using it means an instant answer instead of a round
+        # trip to a board on the other side of the internet — and it still
+        # works during the seconds a node spends reconnecting.
+        data, source = self._cached(target), "telemetry"
+        if data is None:
+            data, source = await device_request(target, "/sensors"), "live"
+
         summary = self._summarize(data, sensor)
         return {
             "device": target.name,
+            "source": source,
             "readings": data,
             "speech": summary,
             "display": f"{target.name}: {summary}",
         }
+
+    def _pick_sensor_device(self) -> Optional[Device]:
+        """A face node carries the sensors too, so fall back to it."""
+        return (self.registry.first_of_kind("sensor")
+                or self.registry.first_of_kind("face"))
+
+    @staticmethod
+    def _cached(target: Device) -> Optional[Dict[str, Any]]:
+        if not target.linked:
+            return None
+        link = default_node_hub.get(target.name)
+        if link is None or not link.telemetry:
+            return None
+        age = time.monotonic() - link.telemetry_at
+        if age > TELEMETRY_MAX_AGE_S:
+            return None        # stale enough that a fresh read is worth the wait
+        return dict(link.telemetry)
 
 
 class MapDeviceCommandTool(BaseTool):

@@ -637,7 +637,28 @@ class TestIdleBehaviour:
         """A face frozen at boot looks broken, and boot is when it is watched."""
         ino = (FIRMWARE_DIR / "esp32-s3-iris-sensors.ino").read_text(encoding="utf-8")
         join_loop = ino.split("const unsigned long joinDeadline")[1].split("if (WiFi.status()")[0]
-        assert "face.tick(" in join_loop and "drawFace(" in join_loop
+        assert "animateOnce()" in join_loop
+
+        # ...and that helper really is what advances and draws the face, so the
+        # call above is not just a name that happens to look right.
+        helper = ino.split("static void animateOnce()")[1].split("\n}")[0]
+        assert "face.tick(" in helper and "drawFace(" in helper
+
+    def test_the_face_keeps_animating_while_the_board_is_talking(self):
+        """Uploading a phrase and playing a reply both block for seconds. The
+        eyes are pumped throughout, which is what makes the talking bounce
+        visible at all rather than a frozen frame."""
+        ino = (FIRMWARE_DIR / "esp32-s3-iris-sensors.ino").read_text(encoding="utf-8")
+        assert "voice.onTick(animateOnce)" in ino
+        voice_h = (FIRMWARE_DIR / "voice.h").read_text(encoding="utf-8")
+        assert "if (tickCb_) tickCb_();" in voice_h
+
+    def test_a_reply_drives_the_talking_bounce_for_its_own_length(self):
+        """Bounded by the firmware, so a lost packet cannot leave it bouncing."""
+        ino = (FIRMWARE_DIR / "esp32-s3-iris-sensors.ino").read_text(encoding="utf-8")
+        assert "voice.onSpeaking(onReplyStarting)" in ino
+        handler = ino.split("static void onReplyStarting(uint32_t ms)")[1].split("\n}")[0]
+        assert "face.setSpeaking(ms" in handler
 
 
 # ---------------------------------------------------------------------------
