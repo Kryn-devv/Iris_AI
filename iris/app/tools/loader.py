@@ -50,6 +50,7 @@ TOOL_MODULES: tuple[str, ...] = (
     "iris.app.tools.automation.reminders",
     # Devices (ESP32 / home automation / robot)
     "iris.app.tools.devices.esp32",
+    "iris.app.tools.devices.face",
     # Desktop shell
     "iris.app.desktop.tools",
     # Voice

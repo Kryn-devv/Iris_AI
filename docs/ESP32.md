@@ -266,10 +266,17 @@ device_command bedroom light /servo?angle=90
 Timed moves auto-stop even if WiFi drops mid-command (the deadline runs on the
 board), and the board reconnects to WiFi by itself.
 
-## Sensor node (ESP32-S3 with PIR / gas / light / ultrasonic)
+## The S3 node — the robot's face and senses
 
-Flash `firmware/esp32-s3-iris-sensors/esp32-s3-iris-sensors.ino` on the S3
-(board: **ESP32S3 Dev Module**). Default pins — change them in CONFIG:
+One board does both jobs: two OLED eyes and all the sensors. Flash
+`firmware/esp32-s3-iris-sensors/` on the S3 (board: **ESP32S3 Dev Module**).
+
+> **IRIS itself does not run on the S3, and does not need to.** IRIS is a
+> Python application — the agent loop, the LLM gateway, the voice pipeline —
+> and it runs on your PC. The S3 has 512 KB of RAM; it is the robot's face and
+> senses, not its brain. One brain, many bodies.
+
+### Sensor pins — change them in CONFIG:
 
 | Sensor | Pin | Note |
 |---|---|---|
@@ -283,15 +290,94 @@ Flash `firmware/esp32-s3-iris-sensors/esp32-s3-iris-sensors.ino` on the S3
 inputs. Power PIR/MQ-2/HC-SR04 from the 5V pin, the LDR from 3.3V. Set any
 unused sensor's pin to `-1`.
 
-Register and ask:
+**Analog sensors must be on GPIO 1–10.** GPIO 11–20 are ADC2, and ADC2 stops
+working the moment WiFi comes up — the reading silently returns garbage. The
+firmware prints a warning at boot if you have put one there.
+
+### The eyes — two 0.96"/0.98" OLEDs
+
+Almost every SSD1306 module is hard-wired to I2C address **0x3C**, and two
+devices cannot share an address on one bus. Rather than make you solder the
+address jumper, each eye gets **its own I2C bus** — the S3 has two:
+
+| OLED pin | Left eye | Right eye |
+|---|---|---|
+| SDA | GPIO 9 | GPIO 11 |
+| SCL | GPIO 10 | GPIO 12 |
+| VCC | 3.3V | 3.3V |
+| GND | GND | GND |
+
+That is all. No jumpers, no soldering, no address changes.
+
+*(If you have already moved one module to 0x3D, set `SHARED_BUS = true` and
+wire both to the left-eye pins instead. If left and right come out reversed,
+set `SWAP_EYES = true` — no rewiring.)*
+
+### Register it
 
 ```
-add device room sensor at 192.168.1.70 as sensor
+add device face at 192.168.1.70 as face
+```
+
+A `face` device answers sensor questions too, so that one line covers both.
+
+### It expresses itself automatically
+
+You do not have to command the eyes. Every time IRIS speaks, it reads its own
+sentence and sets a matching expression, plus a syllable-paced bounce for
+however long the sentence takes to say:
+
+| IRIS says | the eyes |
+|---|---|
+| "Done! Your presentation is ready." | excited |
+| "Sorry, I could not find that file." | sad |
+| "Let me check the weather…" | thinking |
+| "Hello! Good morning." | happy |
+| "That is not allowed." | angry |
+| wake word heard | listening |
+
+It reads Hindi and Hinglish too ("ho gaya" → excited, "ruko, dekh raha hoon"
+→ thinking). Turn it off with `FACE_AUTO_EXPRESSION=false` in `.env`.
+
+Between sentences the face is still alive: it breathes, blinks at random
+intervals (sometimes twice), glances around, and after three minutes of
+silence it dozes off — and wakes on the next thing IRIS says.
+
+### Or ask directly
+
+```
+look happy          ·  khush ho jao
+look sad            ·  udaas
+be angry            ·  gussa dikhao
+wink                ·  aankh maaro
+blink               ·  palak jhapkao
+look left  /  look at me  /  eyes up
+show me love        ·  be excited  ·  look confused  ·  be sleepy
+```
+
+All 14: `neutral`, `happy`, `excited`, `love`, `sad`, `angry`, `surprised`,
+`sleepy`, `thinking`, `confused`, `listening`, `wink`, `suspicious`, `dizzy`.
+
+### Ask about the sensors
+
+```
 is there any motion       ·  koi hai kya
 what's the gas level      ·  gas level kya hai
 how far is the object     ·  kitna door hai
 check the sensors
 ```
+
+### Test it with no software at all
+
+Open the board's address in a browser: a button for every expression, a
+talking test, a gaze pad, and live sensor readings. If an OLED did not
+respond it says so there — the usual cause is VCC/GND, or both modules wired
+to the same bus.
+
+No router, or a wrong WiFi password? After 25 seconds the board serves its own
+network: join **`iris-face`** with password **`iriscalib`** and open
+`http://192.168.4.1`. The eyes animate while it is still trying to connect, so
+a frozen face always means a real fault rather than a slow boot.
 
 ## One brain, many bodies (the recommended 3-board setup)
 
@@ -301,9 +387,10 @@ check the sensors
       ┌───────────────────┼───────────────────────┐
       ▼                   ▼                       ▼
  ESP32-S3            ESP32 "robot"           ESP32 "relays"
- sensor node         L298N motors            lights/fans/sockets
- (this firmware)     (esp32-iris-node,       (esp32-iris-node, or your
-                      MOTORS_ENABLED=true)    existing sketch + command map)
+ face + sensors      BTS7960 x2 motors       lights/fans/sockets
+ (2 OLED eyes,       (esp32-iris-node-       (esp32-iris-node, or your
+  PIR/gas/light/      bts7960)                existing sketch + command map)
+  ultrasonic)
 ```
 
 If a board currently runs its **own** voice/AI code (mic + STT on the ESP):

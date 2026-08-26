@@ -216,6 +216,9 @@ class Settings(BaseSettings):
     SPEAK_RESPONSES: bool = True
 
     # ------------------------------------------------------------ automation
+    #: Match the robot's OLED eyes to what IRIS is saying, with no extra
+    #: commands. Harmless with no face node registered — it simply does nothing.
+    FACE_AUTO_EXPRESSION: bool = True
     SCHEDULER_ENABLED: bool = True
     HOTKEYS_ENABLED: bool = True
     SUMMON_HOTKEY: str = "ctrl+alt+space"

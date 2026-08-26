@@ -29,6 +29,7 @@ from iris.app.database.database import init_db
 from iris.app.services.scheduler import default_scheduler_service
 from iris.app.services.hotkeys import default_hotkey_service
 from iris.app.services.telegram import default_telegram_bridge
+from iris.app.services.face_presence import default_face_presence_service
 from iris.app.tools.loader import load_all_tools
 from iris.app.tools.registry import default_tool_registry
 
@@ -122,6 +123,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if settings.HOTKEYS_ENABLED:
         default_hotkey_service.start()
 
+    if settings.FACE_AUTO_EXPRESSION:
+        await default_face_presence_service.start()
+
     if auth_required():
         ensure_token()
         logger.info("Remote access enabled — bearer token enforced for non-local clients.")
@@ -139,6 +143,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Shutting down IRIS...")
     await default_scheduler_service.stop()
     await default_telegram_bridge.stop()
+    await default_face_presence_service.stop()
     default_hotkey_service.stop()
     try:
         from iris.app.llm.gateway import default_model_gateway

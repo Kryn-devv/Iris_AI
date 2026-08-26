@@ -36,7 +36,7 @@ REGISTRY_FILENAME = "devices.json"
 
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9 _-]{0,31}$")
 
-DEVICE_KINDS = ("relay", "motor", "sensor", "generic")
+DEVICE_KINDS = ("relay", "motor", "sensor", "face", "generic")
 
 
 class DeviceError(ValueError):
@@ -99,7 +99,7 @@ class Device:
 
     name: str
     base_url: str
-    kind: str = "generic"          # relay | motor | generic
+    kind: str = "generic"          # relay | motor | sensor | face | generic
     #: Named custom commands -> relative paths on the device
     #: (for user-built firmware), e.g. {"on": "/led/on", "off": "/led/off"}.
     commands: Dict[str, str] = field(default_factory=dict)

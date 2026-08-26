@@ -243,6 +243,51 @@ def _build_motor(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
     return args
 
 
+#: Spoken words -> the firmware's emotion names. Hindi/Hinglish included
+#: because that is how this assistant gets talked to.
+_FACE_WORDS = {
+    "happy": "happy", "smile": "happy", "smiley": "happy", "glad": "happy",
+    "cheerful": "happy", "khush": "happy",
+    "sad": "sad", "upset": "sad", "unhappy": "sad", "udaas": "sad",
+    "angry": "angry", "mad": "angry", "cross": "angry", "gussa": "angry",
+    "excited": "excited", "hyped": "excited",
+    "love": "love", "loving": "love", "heart": "love", "hearts": "love", "pyaar": "love",
+    "surprised": "surprised", "shocked": "surprised", "shock": "surprised",
+    "hairaan": "surprised",
+    "sleepy": "sleepy", "tired": "sleepy", "neend": "sleepy",
+    "thinking": "thinking", "thoughtful": "thinking",
+    "confused": "confused", "puzzled": "confused",
+    "listening": "listening", "attentive": "listening",
+    "suspicious": "suspicious", "sus": "suspicious",
+    "dizzy": "dizzy",
+    "neutral": "neutral", "normal": "neutral", "calm": "neutral", "blank": "neutral",
+}
+
+_FACE_DIRECTIONS = {
+    "left": "left", "right": "right", "up": "up", "down": "down",
+    "away": "away", "centre": "centre", "center": "centre",
+    "ahead": "centre", "forward": "centre", "straight": "centre",
+    "me": "centre", "at me": "centre",
+}
+
+
+def _build_face_emotion(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
+    word = (m.groupdict().get("mood") or "").strip().lower()
+    emotion = _FACE_WORDS.get(word)
+    if emotion is None:
+        return None
+    return {"emotion": emotion}
+
+
+def _build_face_look(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
+    word = (m.groupdict().get("dir") or "").strip().lower()
+    direction = _FACE_DIRECTIONS.get(word)
+    if direction is None:
+        return None
+    # Aiming the eyes is not a mood change, so keep whatever face is showing.
+    return {"emotion": "neutral", "look": direction}
+
+
 def _build_site_search(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
     query = (m.group("query") or "").strip()
     site = (m.group("site") or "").strip()
@@ -460,6 +505,46 @@ RULES: list[Rule] = [
         pattern=_rx(r"^(?:check\s+(?:the\s+)?sensors?|sensor\s+readings?|read\s+(?:the\s+)?sensors?|what\s+do\s+the\s+sensors\s+(?:say|show))\??$"),
         static_args={"sensor": "all"},
         confidence=0.96,
+    ),
+    Rule(
+        name="face_emotion_set",
+        intent="devices",
+        tool="face_emotion",
+        pattern=_rx(
+            r"^(?:(?:show|make|set|be|act|look|do)\s+)?"
+            r"(?:me\s+|the\s+|your\s+|a\s+)?"
+            r"(?P<mood>[a-z]+)"
+            r"(?:\s+(?:eyes|face|expression|mood|ho\s+jao|dikhao))?$"
+        ),
+        builder=_build_face_emotion,
+        confidence=0.93,
+    ),
+    Rule(
+        name="face_wink",
+        intent="devices",
+        tool="face_emotion",
+        pattern=_rx(r"^(?:wink(?:\s+at\s+me)?|aankh\s+maaro|give\s+me\s+a\s+wink)$"),
+        static_args={"emotion": "wink", "seconds": 2},
+        confidence=0.97,
+    ),
+    Rule(
+        name="face_blink",
+        intent="devices",
+        tool="face_emotion",
+        pattern=_rx(r"^(?:blink(?:\s+(?:your\s+)?eyes)?|palak\s+jhapkao)$"),
+        static_args={"emotion": "neutral", "blink": True},
+        confidence=0.96,
+    ),
+    Rule(
+        name="face_look_direction",
+        intent="devices",
+        tool="face_emotion",
+        pattern=_rx(
+            r"^(?:look|glance|eyes)\s+(?:to\s+(?:the\s+)?|at\s+|towards\s+)?"
+            r"(?P<dir>left|right|up|down|away|centre|center|ahead|forward|straight|me|at me)$"
+        ),
+        builder=_build_face_look,
+        confidence=0.94,
     ),
     Rule(
         name="device_status_query",
