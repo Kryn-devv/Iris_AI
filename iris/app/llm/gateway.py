@@ -174,36 +174,36 @@ class ModelGateway:
         for provider in self._usable_chain():
             circuit = self._circuits[provider.provider_name]
             try:
-                try:
-                    response = await provider.generate(
-                        prompt,
-                        system_prompt=system_prompt,
-                        model=model or settings.capability_model(capability) or provider.default_model,
-                        temperature=temp,
-                        max_tokens=max_tokens,
-                        tools=tools,
-                        **kwargs,
-                    )
-                except LLMProviderError as exc:
-                    # A short rate-limit pause beats an offline fallback: honour
-                    # the provider's own "try again in Ns" once, then move on.
-                    wait = getattr(exc, "retry_after", None)
-                    if exc.status_code != 429 or wait is None or wait > 20.0:
-                        raise
-                    logger.info(
-                        "Provider '%s' rate-limited; waiting %.1fs as requested.",
-                        provider.provider_name, wait,
-                    )
-                    await asyncio.sleep(wait + 0.5)
-                    response = await provider.generate(
-                        prompt,
-                        system_prompt=system_prompt,
-                        model=model or settings.capability_model(capability) or provider.default_model,
-                        temperature=temp,
-                        max_tokens=max_tokens,
-                        tools=tools,
-                        **kwargs,
-                    )
+                # Rate limits are pauses, not outages: keep honouring the
+                # provider's own "try again in Ns" until the patience budget
+                # (LLM_RATE_LIMIT_MAX_WAIT) is spent, then move on.
+                waited = 0.0
+                while True:
+                    try:
+                        response = await provider.generate(
+                            prompt,
+                            system_prompt=system_prompt,
+                            model=model or settings.capability_model(capability) or provider.default_model,
+                            temperature=temp,
+                            max_tokens=max_tokens,
+                            tools=tools,
+                            **kwargs,
+                        )
+                        break
+                    except LLMProviderError as exc:
+                        wait = getattr(exc, "retry_after", None)
+                        if (
+                            exc.status_code != 429
+                            or wait is None
+                            or waited + wait > settings.LLM_RATE_LIMIT_MAX_WAIT
+                        ):
+                            raise
+                        waited += wait
+                        logger.info(
+                            "Provider '%s' rate-limited; waiting %.1fs as requested (%.1fs of %.0fs budget).",
+                            provider.provider_name, wait, waited, settings.LLM_RATE_LIMIT_MAX_WAIT,
+                        )
+                        await asyncio.sleep(wait + 0.5)
                 circuit.record_success()
                 self.last_fallback_errors = []
                 if self._last_good != provider.provider_name:

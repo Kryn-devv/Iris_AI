@@ -92,6 +92,10 @@ class Settings(BaseSettings):
     LLM_TIMEOUT_SECONDS: float = 60.0
     LLM_MAX_RETRIES: int = 2
     LLM_CIRCUIT_BREAK_SECONDS: float = 120.0
+    #: Total seconds generate() may spend waiting out 429 cooldowns before
+    #: falling back. Free-tier per-minute limits reset fast; waiting a few
+    #: extra seconds beats answering from the offline engine.
+    LLM_RATE_LIMIT_MAX_WAIT: float = 45.0
     LLM_TEMPERATURE: float = 0.6
     LLM_MAX_TOKENS: int = 1024
     LLM_STREAM: bool = True
