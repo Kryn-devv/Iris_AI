@@ -31,6 +31,19 @@
     reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
   });
 
+  /* If the 3D scene could not start, say so where the user is already looking.
+     Silently showing the old flat hologram makes a stale install and switched-off
+     WebGL look identical, and both look like "the new UI never shipped". */
+  const sceneStatus = window.IrisSceneStatus || { active: false, reason: "no-scene",
+    detail: "The 3D scene files did not load — this copy of IRIS may be out of date." };
+  if (!sceneStatus.active) {
+    console.warn("[iris] scene inactive:", sceneStatus.reason, sceneStatus.detail);
+    window.addEventListener("load", () => {
+      const div = addMessage("iris", `**Showing the simple hologram.** ${sceneStatus.detail}`);
+      div.classList.add("error");
+    });
+  }
+
   let currentState = "idle";
   function setState(state, label) {
     currentState = state;
