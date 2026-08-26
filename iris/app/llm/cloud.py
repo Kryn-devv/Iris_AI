@@ -10,6 +10,7 @@ free-model filtering) are handled by small hooks.
 from __future__ import annotations
 
 import json
+import re
 import time
 from typing import Any, AsyncGenerator, Dict, List, Optional, Type, TypeVar
 
@@ -70,6 +71,47 @@ def extract_json_object(text: str) -> Optional[dict]:
     return None
 
 
+#: Substrings marking models that are not general chat models.
+_NON_CHAT_HINTS = (
+    "whisper", "tts", "audio", "orpheus", "embed", "moderat", "guard",
+    "safety", "safeguard", "rerank", "transcri", "ocr", "-vision-only",
+)
+
+#: Chat-model families in rough order of preference for auto-selection.
+_CHAT_FAMILY_SCORES = (
+    ("gpt-oss", 40), ("deepseek", 32), ("llama", 30), ("qwen", 28),
+    ("glm", 28), ("gemini", 26), ("nemotron", 24), ("mistral", 24),
+    ("minimax", 22), ("gemma", 20), ("compound", 18), ("claude", 16),
+)
+
+_PARAM_SIZE_RE = re.compile(r"(\d{1,3})b\b")
+
+
+def score_chat_model(model_id: str) -> float:
+    """Heuristic quality score for auto-picking a replacement chat model.
+
+    Free-tier catalogs rotate every few months, so any hardcoded default
+    eventually 404s. When that happens the provider picks the highest-scoring
+    id from its live /models list: known chat families first, bigger parameter
+    counts preferred, and everything that is clearly not a general chat model
+    (audio, embeddings, safety filters) excluded.
+    """
+    lowered = model_id.lower()
+    if any(hint in lowered for hint in _NON_CHAT_HINTS):
+        return -1.0
+    score = 10.0
+    for family, points in _CHAT_FAMILY_SCORES:
+        if family in lowered:
+            score += points
+            break
+    sizes = [int(m) for m in _PARAM_SIZE_RE.findall(lowered)]
+    if sizes:
+        score += min(max(sizes), 600) / 10.0
+    if lowered.endswith(":free"):
+        score += 5.0
+    return score
+
+
 class CloudLLMProvider(LLMProvider):
     """Async OpenAI-compatible chat completions client for hosted providers."""
 
@@ -88,6 +130,8 @@ class CloudLLMProvider(LLMProvider):
         self.timeout = timeout if timeout is not None else settings.LLM_TIMEOUT_SECONDS
         self.extra_headers = dict(extra_headers or {})
         self._client: Optional[httpx.AsyncClient] = None
+        #: Live replacement chosen when the configured model 404s (catalog rotation).
+        self._resolved_model: Optional[str] = None
 
     # ----------------------------------------------------------------- plumbing
     @property
@@ -162,6 +206,56 @@ class CloudLLMProvider(LLMProvider):
                 f"{self.provider_name}: invalid JSON response", retryable=True
             ) from exc
 
+    async def list_model_ids(self) -> List[str]:
+        """Ids from the provider's live /models endpoint ([] on any failure)."""
+        client = self._client_or_create()
+        try:
+            response = await client.get(f"{self.base_url}/models", headers=self._headers())
+            if response.status_code != 200:
+                return []
+            data = response.json()
+            items = data.get("data") if isinstance(data, dict) else data
+            if not isinstance(items, list):
+                return []
+            return [m["id"] for m in items if isinstance(m, dict) and m.get("id")]
+        except (httpx.HTTPError, json.JSONDecodeError, KeyError, TypeError):
+            return []
+
+    async def _resolve_fallback_model(self, exclude: Optional[str] = None) -> Optional[str]:
+        """Best-scoring chat model from the live catalog, or None."""
+        best_id, best_score = None, 0.0
+        for model_id in await self.list_model_ids():
+            if model_id == exclude:
+                continue
+            score = score_chat_model(model_id)
+            if score > best_score:
+                best_id, best_score = model_id, score
+        return best_id
+
+    @staticmethod
+    def _looks_like_missing_model(exc: "LLMProviderError") -> bool:
+        """True when the provider rejected the request because the model is gone."""
+        if getattr(exc, "status_code", None) not in (400, 404):
+            return False
+        message = str(exc).lower()
+        if "model" not in message:
+            return False
+        return any(
+            hint in message
+            for hint in (
+                "not exist", "not found", "model_not_found", "decommission",
+                "deprecat", "no longer", "invalid model", "unknown model",
+            )
+        )
+
+    def _target_model(self, requested: Optional[str]) -> str:
+        """Effective model: an explicit non-default request wins; otherwise the
+        healed replacement (if any) shadows a stale configured default."""
+        wanted = requested or self.default_model
+        if self._resolved_model and wanted == self.default_model:
+            return self._resolved_model
+        return wanted
+
     # --------------------------------------------------------------- interface
     async def generate(
         self,
@@ -176,7 +270,7 @@ class CloudLLMProvider(LLMProvider):
         if not self.configured:
             raise LLMProviderError(f"{self.provider_name}: not configured (missing API key).", retryable=False)
 
-        target_model = model or self.default_model
+        target_model = self._target_model(model)
         messages = self._build_messages(prompt, system_prompt, kwargs.get("messages"))
 
         payload: Dict[str, Any] = {
@@ -192,7 +286,24 @@ class CloudLLMProvider(LLMProvider):
             payload["response_format"] = kwargs["response_format"]
 
         start = time.perf_counter()
-        data = await self._post_chat(payload)
+        try:
+            data = await self._post_chat(payload)
+        except LLMProviderError as exc:
+            # Self-heal a rotated catalog: the configured model no longer
+            # exists, so pick the best live replacement and retry once.
+            if not self._looks_like_missing_model(exc):
+                raise
+            fallback = await self._resolve_fallback_model(exclude=target_model)
+            if not fallback:
+                raise
+            logger.warning(
+                "%s: model '%s' is gone from the catalog; auto-switching to '%s'.",
+                self.provider_name, target_model, fallback,
+            )
+            self._resolved_model = fallback
+            target_model = fallback
+            payload["model"] = fallback
+            data = await self._post_chat(payload)
         latency = (time.perf_counter() - start) * 1000.0
 
         choices = data.get("choices") or []
@@ -285,7 +396,7 @@ class CloudLLMProvider(LLMProvider):
         if not self.configured:
             raise LLMProviderError(f"{self.provider_name}: not configured (missing API key).", retryable=False)
 
-        target_model = model or self.default_model
+        target_model = self._target_model(model)
         messages = self._build_messages(prompt, system_prompt, kwargs.get("messages"))
         payload: Dict[str, Any] = {
             "model": target_model,
