@@ -44,6 +44,7 @@ from iris.app.api.routes import (
     tasks,
     tools,
     voice,
+    devices,
 )
 
 logger = get_logger("main")
@@ -231,6 +232,7 @@ app.include_router(chat.router)
 app.include_router(events.router)
 app.include_router(voice.router)
 app.include_router(system.router)
+app.include_router(devices.router)
 app.include_router(tasks.router)
 app.include_router(tools.router)
 app.include_router(memory.router)

@@ -667,6 +667,14 @@ html, body {
   word-break: break-word;
 }
 
+.device-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+.device-row .dev-toggle { margin-left: auto; }
+
 .tool-grid { display: flex; flex-wrap: wrap; gap: 6px; }
 .tool-pill {
   font-size: 10px;

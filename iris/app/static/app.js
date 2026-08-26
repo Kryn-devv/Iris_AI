@@ -451,6 +451,43 @@
     } catch { els.toolGrid.textContent = "unavailable"; }
 
     try {
+      const d = await jfetch("/api/v1/devices");
+      const list = document.getElementById("deviceList");
+      const count = document.getElementById("deviceCount");
+      count.textContent = d.count ? `(${d.devices.filter((x) => x.online).length}/${d.count} online)` : "";
+      if (!d.count) {
+        list.textContent = "none registered — say “add device light at 192.168.1.50”";
+      } else {
+        list.innerHTML = "";
+        for (const dev of d.devices) {
+          const row = document.createElement("div");
+          row.className = "device-row";
+          const dot = dev.online ? '<span class="ok">●</span>' : '<span class="bad">●</span>';
+          row.innerHTML = `${dot} <b>${escapeHtml(dev.name)}</b> <span class="muted">${escapeHtml(dev.kind)}</span>`;
+          if (dev.kind !== "motor") {
+            const btn = document.createElement("button");
+            btn.className = "btn ghost small dev-toggle";
+            btn.textContent = "toggle";
+            btn.onclick = async () => {
+              btn.disabled = true;
+              try {
+                await fetch(`/api/v1/devices/${encodeURIComponent(dev.name)}/switch`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json", ...authHeaders() },
+                  body: JSON.stringify({ state: "toggle" }),
+                });
+                tick(`${dev.name} toggled`, "ok");
+              } catch { tick(`${dev.name} unreachable`, "fail"); }
+              btn.disabled = false;
+            };
+            row.appendChild(btn);
+          }
+          list.appendChild(row);
+        }
+      }
+    } catch { /* devices panel is optional */ }
+
+    try {
       const r = await jfetch("/api/v1/system/reminders");
       els.reminderList.innerHTML = r.count
         ? r.reminders.map((x) => `<div>• ${escapeHtml(x.text)} <span class="muted">${new Date(x.due_at).toLocaleString()}</span></div>`).join("")
