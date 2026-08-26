@@ -24,12 +24,105 @@
   const token = () => { try { return localStorage.getItem("iris_token") || ""; } catch { return ""; } };
   const authHeaders = () => token() ? { "X-Iris-Token": token() } : {};
 
+  // ───────────────────────────── Themes ─────────────────────────────
+  /* A theme is the accent, one secondary, and the void it sits in. Everything
+     else in the stylesheet is derived from those three, so a theme is six
+     values rather than a second stylesheet — and the same accent is handed to
+     the 3D scene so the orb, nebula and rings move with the chrome instead of
+     staying teal in a violet room.
+
+     Amber (listening) and red (error) are deliberately NOT themed: they carry
+     meaning rather than identity, and "I am recording you" has to look the same
+     in every theme. */
+  const THEMES = [
+    { id: "teal",    name: "Teal",    accent: "#5eead4", accent2: "#818cf8", bg: "#020308", bgSoft: "#060a14" },
+    { id: "violet",  name: "Violet",  accent: "#a78bfa", accent2: "#22d3ee", bg: "#06040f", bgSoft: "#0c0918" },
+    { id: "ice",     name: "Ice",     accent: "#7dd3fc", accent2: "#c4b5fd", bg: "#020610", bgSoft: "#060d1c" },
+    { id: "ember",   name: "Ember",   accent: "#fb923c", accent2: "#f472b6", bg: "#0a0503", bgSoft: "#150b06" },
+    { id: "lime",    name: "Lime",    accent: "#a3e635", accent2: "#34d399", bg: "#040803", bgSoft: "#0a1006" },
+    { id: "rose",    name: "Rose",    accent: "#fb7185", accent2: "#c084fc", bg: "#0a0409", bgSoft: "#160a14" },
+    { id: "mono",    name: "Mono",    accent: "#cbd5e1", accent2: "#94a3b8", bg: "#050608", bgSoft: "#0b0d12" },
+  ];
+  const DEFAULT_THEME = "teal";
+
+  /* rgba() strings from a hex, because several of the tokens are the accent at
+     a low alpha and a browser cannot do that from a variable alone. */
+  const rgba = (hex, a) => {
+    const n = parseInt(hex.slice(1), 16);
+    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+  };
+
+  function themeById(id) {
+    return THEMES.find((t) => t.id === id) || THEMES[0];
+  }
+
+  function savedThemeId() {
+    try { return localStorage.getItem("iris_theme") || DEFAULT_THEME; }
+    catch { return DEFAULT_THEME; }
+  }
+
+  function applyTheme(id, { persist = true } = {}) {
+    const t = themeById(id);
+    const r = document.documentElement.style;
+    r.setProperty("--accent", t.accent);
+    r.setProperty("--accent-2", t.accent2);
+    r.setProperty("--accent-dim", rgba(t.accent, 0.55));
+    r.setProperty("--accent-glow", rgba(t.accent, 0.14));
+    r.setProperty("--line", rgba(t.accent, 0.10));
+    r.setProperty("--line-strong", rgba(t.accent, 0.28));
+    r.setProperty("--bg", t.bg);
+    r.setProperty("--bg-soft", t.bgSoft);
+    document.documentElement.dataset.theme = t.id;
+    /* The scene may not exist yet on first call, and may be the flat fallback
+       hologram, which has no themes. Either way the chrome still changes. */
+    if (typeof holo !== "undefined" && holo && holo.setTheme) {
+      holo.setTheme({ accent: t.accent, accent2: t.accent2 });
+    }
+    if (persist) { try { localStorage.setItem("iris_theme", t.id); } catch {} }
+    renderThemeGrid();
+  }
+
+  function renderThemeGrid() {
+    const grid = $("themeGrid");
+    if (!grid) return;
+    const active = document.documentElement.dataset.theme || DEFAULT_THEME;
+    grid.innerHTML = "";
+    for (const t of THEMES) {
+      const wrap = document.createElement("div");
+      const b = document.createElement("button");
+      b.className = "theme-swatch";
+      b.type = "button";
+      b.setAttribute("role", "radio");
+      b.setAttribute("aria-checked", String(t.id === active));
+      b.setAttribute("aria-label", t.name);
+      b.title = t.name;
+      b.style.background = `radial-gradient(circle at 50% 45%, ${t.bgSoft}, ${t.bg})`;
+      const ring = document.createElement("span");
+      ring.className = "sw-ring";
+      ring.style.color = t.accent2;
+      const orb = document.createElement("span");
+      orb.className = "sw-orb";
+      orb.style.color = t.accent;
+      b.append(ring, orb);
+      b.onclick = () => applyTheme(t.id);
+      const label = document.createElement("div");
+      label.className = "theme-name";
+      label.textContent = t.name;
+      wrap.append(b, label);
+      grid.appendChild(wrap);
+    }
+  }
+
   // ───────────────────────────── Hologram ─────────────────────────────
+  const activeTheme = themeById(savedThemeId());
   const holo = new window.IrisHologram(els.holo, {
-    accent: "#5eead4",
+    accent: activeTheme.accent,
     quality: matchMedia("(max-width: 640px)").matches ? "medium" : "high",
     reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
   });
+  /* Apply the saved theme once the scene exists, so the very first frame is
+     already the right colour instead of flashing teal. */
+  applyTheme(activeTheme.id, { persist: false });
 
   /* If the 3D scene could not start, say so where the user is already looking.
      Silently showing the old flat hologram makes a stale install and switched-off
@@ -451,7 +544,11 @@
   });
 
   // ─────────────────────────── Settings drawer ───────────────────────────
-  els.btnSettings.onclick = () => { els.drawer.classList.remove("hidden"); loadDrawer(); };
+  els.btnSettings.onclick = () => {
+    els.drawer.classList.remove("hidden");
+    renderThemeGrid();     /* purely local — no network, so it is never blank */
+    loadDrawer();
+  };
   els.btnCloseDrawer.onclick = () => els.drawer.classList.add("hidden");
 
   async function jfetch(url) {

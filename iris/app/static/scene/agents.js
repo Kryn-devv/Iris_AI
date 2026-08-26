@@ -227,6 +227,7 @@
       var rawName = def.name || def.id || "?";
       var agent = {
         id: def.id,
+        idx: i,
         name: rawName,
         initial: initials[i],
         specialty: def.specialty || "",
@@ -428,15 +429,28 @@
         var a = agents[i];
         if (a.labelOpacity > 0.08 && a.label.offsetWidth) vis.push(a);
       }
-      /* Nearest first, so a label only ever yields to something in front. */
-      vis.sort(function (p, q) { return p.depth - q.depth; });
+      /* Nearest first, so a label only ever yields to something in front —
+       * with depth QUANTIZED and ties broken by a fixed index.
+       *
+       * Sorting on raw depth was unstable exactly where it mattered: two
+       * agents passing each other sit at near-identical depth, the order
+       * flipped every frame, and the pair took turns yielding. Both names then
+       * flickered at half opacity instead of one staying readable. */
+      vis.sort(function (p, q) {
+        return (Math.round(p.depth * 20) - Math.round(q.depth * 20)) || (p.idx - q.idx);
+      });
 
       for (var j = 0; j < vis.length; j++) {
         var b = vis[j];
         var fade = 0;
         for (var k = 0; k < j; k++) {
           var front = vis[k];
-          if (front.hiddenByDeclutter) continue;
+          /* No check for whether `front` is itself faded. Reading that back
+           * from the previous frame made a pair oscillate — A hid B, then B
+           * saw A "hidden" and stopped yielding, so both came back solid and
+           * the collision never resolved. Sorting nearest-first already gives
+           * a stable total order: a label yields to anything in front of it,
+           * full stop. */
           var halfW = (b.label.offsetWidth + front.label.offsetWidth) / 2;
           var dx = Math.abs(b.lx - front.lx);
           var dy = Math.abs(b.ly - front.ly);
@@ -444,10 +458,9 @@
           if (dx < halfW && dy < maxH) {
             /* Ease over the last third of the approach so it dissolves. */
             var closeness = 1 - Math.max(dx / Math.max(halfW, 1), dy / Math.max(maxH, 1));
-            fade = Math.max(fade, Math.min(1, closeness / 0.34));
+            fade = Math.max(fade, Math.min(1, closeness / 0.18));
           }
         }
-        b.hiddenByDeclutter = fade > 0.92;
         if (fade > 0) {
           b.label.style.opacity = (b.labelOpacity * (1 - fade)).toFixed(3);
         }

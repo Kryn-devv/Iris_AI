@@ -218,6 +218,8 @@
         halfPx = rect.height / 2;
         /* The hologram row is much wider than it is tall, so orbits sized to
          * its height leave the sides empty. Stretching X fills the row. */
+        /* The hologram row is much wider than it is tall, so orbits sized to
+         * its height leave the sides empty. Stretching X fills the row. */
         spreadX = Math.max(1.0, Math.min(1.70, 0.85 + rect.width / rect.height * 0.16));
       }
     }
@@ -295,6 +297,24 @@
     var self = this;
     this._stageObserver = new global.ResizeObserver(function () { self._layout(); });
     this._stageObserver.observe(stage);
+  };
+
+  /* Re-tint the whole scene for a theme change, without rebuilding it.
+   *
+   * Recreating the scene would have been the shorter route and it is the wrong
+   * one: it means disposing and recreating two WebGL contexts on a user click,
+   * and browsers cap how many a page may create. Every layer that carries the
+   * accent takes a setter instead, and because the orb eases toward whatever
+   * the state machine hands it, the switch reads as the colour flowing rather
+   * than a cut. */
+  IrisScene.prototype.setTheme = function (theme) {
+    theme = theme || {};
+    var accent = theme.accent || this.accent;
+    var accent2 = theme.accent2 || null;
+    this.accent = accent;
+    if (this.states && this.states.setAccent) this.states.setAccent(accent, accent2);
+    if (this.sky && this.sky.setAccent) this.sky.setAccent(accent);
+    if (this.reactions && this.reactions.setAccent) this.reactions.setAccent(accent, accent2);
   };
 
   IrisScene.prototype._visibility = function () {

@@ -367,6 +367,12 @@
       camera: camera,
       resize: resize,
       update: update,
+      /* The nebula pools its glow in the orb's colour, so a theme change has
+       * to reach the background too or the orb sits in the wrong sky. */
+      setAccent: function (hex) {
+        accent.set(hex);
+        skyUniforms.uOrbColor.value.copy(accent);
+      },
       dispose: function () {
         skyQuad.geometry.dispose(); skyMat.dispose(); web.dispose();
       },
