@@ -436,6 +436,8 @@
       els.voiceStatus.innerHTML =
         `<div>speech-to-text: <b>${v.stt_engine}</b></div>` +
         `<div>text-to-speech: <b>${v.tts_engine}</b></div>` +
+        `<div>voice: <b>${escapeHtml(v.tts_voice || "auto")}</b></div>` +
+        `<div>languages: <b>${escapeHtml((v.languages || []).join(", "))}</b></div>` +
         `<div>wake words: <b>${(v.wake_words || []).join(", ")}</b></div>`;
       els.chipVoice.textContent = v.tts_engine === "browser" ? "browser voice" : v.tts_engine;
       voiceStatus = v;
