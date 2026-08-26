@@ -333,12 +333,26 @@ class MockLLMProvider(LLMProvider):
                     content = "Recursion is a programming technique where a function calls itself until a base condition is met."
             elif "namaste" in text or "नमस्ते" in text:
                 content = "नमस्ते! मैं IRIS हूँ, आपकी सहायता के लिए तैयार हूँ।"
-            elif is_hinglish or "bhai" in text:
+            elif ("bhai" in text or "haal" in text or "kaise ho" in text) and not is_hindi:
                 content = "Bas sab mast bhai! IRIS ekdam ready hai tumhari help ke liye."
-            elif is_hindi:
-                content = "जी, मैंने आपका संदेश समझ लिया है।"
             elif re.search(r"\b(hello|hi|hey)\b", text):
                 content = "Hello! I'm IRIS, your personal AI agent foundation."
+            elif is_hindi:
+                # Capability-help fallback, Hindi variant.
+                content = (
+                    "मैं ऑफ़लाइन कमांड चला सकता हूँ — \"youtube kholo\", \"screenshot lo\" या "
+                    "\"5 minute ka timer lagao\" आज़माइए। इस तरह की पूरी बातचीत के लिए अपनी .env में "
+                    "कोई भी मुफ़्त AI key जोड़ें (OpenRouter, Groq या Google AI Studio — .env.example देखें), "
+                    "मैं उसे अपने आप उठा लूँगा।"
+                )
+            elif is_hinglish:
+                # Capability-help fallback, Hinglish variant.
+                content = (
+                    "Main offline commands chala sakta hoon — try \"youtube kholo\", \"screenshot lo\" "
+                    "ya \"5 minute ka timer lagao\". Is tarah ki full conversation ke liye apni .env mein "
+                    "koi bhi free AI key daal do (OpenRouter, Groq ya Google AI Studio — .env.example dekho), "
+                    "main use automatically pick kar loonga."
+                )
             else:
                 content = (
                     "I can run commands offline — try \"open youtube\", \"take a screenshot\", "
