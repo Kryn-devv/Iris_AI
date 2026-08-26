@@ -8,14 +8,23 @@ from iris.app.language.models import (
     LanguageDetectionResult,
 )
 
-# Common Hinglish conversational markers (Latin script)
+# Common Hinglish conversational markers (Latin script). Many of these are
+# ambiguous on their own ("na", "ho", "par", …), so a single hit is never
+# enough to classify a sentence as Hinglish — see HINGLISH_STRONG_WORDS.
 HINGLISH_WORDS = {
     "bhai", "kya", "haal", "hai", "samjha", "karo", "batao", "mein", "mujhe",
-    "ko", "se", "kal", "school", "kar", "de", "kaise", "ho", "ye", "yeh",
+    "ko", "se", "kal", "kar", "de", "kaise", "ho", "ye", "yeh",
     "par", "aur", "bana", "karna", "kardo", "le", "lo", "bata", "hum", "tum",
-    "aap", "chahiye", "rakho", "thoda", "easy", "kijiye", "karke", "sakte",
-    "wale", "wali", "nahin", "nhi", "na", "mat", "khol", "chala", "bol"
+    "aap", "chahiye", "rakho", "thoda", "kijiye", "karke", "sakte",
+    "wale", "wali", "nahin", "nhi", "na", "mat", "khol", "kholo", "chala",
+    "chalu", "bol"
 }
+
+# Unambiguously Hindi/Hinglish words: a single hit classifies the sentence.
+HINGLISH_STRONG_WORDS = {"kholo", "chalu", "kaise", "kya", "hai"}
+
+# Multi-word markers that classify on their own.
+HINGLISH_STRONG_PHRASES = ("band karo", "band kar do")
 
 
 class LanguageDetector:
@@ -57,8 +66,13 @@ class LanguageDetector:
         # 3. Latin Script - Check for Hinglish Code-Switching vs Standard English
         tokens = [t.strip(",.!?\"'") for t in re.split(r"\s+", lower) if t.strip(",.!?\"'")]
         hinglish_hits = [t for t in tokens if t in HINGLISH_WORDS]
+        strong_hit = any(t in HINGLISH_STRONG_WORDS for t in hinglish_hits)
+        phrase_hit = any(phrase in lower for phrase in HINGLISH_STRONG_PHRASES)
 
-        if hinglish_hits:
+        # A lone ambiguous marker ("na", "ho", "par", …) in an otherwise
+        # English sentence is not code-switching: require at least two marker
+        # hits, or a single unambiguous word/phrase.
+        if len(hinglish_hits) >= 2 or strong_hit or phrase_hit:
             hinglish_ratio = len(hinglish_hits) / max(len(tokens), 1)
             confidence = min(round(0.6 + (hinglish_ratio * 0.4), 2), 1.0)
             style = LanguageStyle.HINGLISH if hinglish_ratio >= 0.2 else LanguageStyle.MIXED

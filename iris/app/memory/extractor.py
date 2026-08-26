@@ -17,6 +17,19 @@ class MemoryExtractor:
     FORGET_CMD = re.compile(r"^(?:please\s+)?forget\s+(?:the\s+)?(.+)", re.IGNORECASE)
     RECALL_CMD = re.compile(r"^(?:what\s+do\s+you\s+remember\s+about|what(?:'s|\s+is|\s+microcontroller\s+does)?\s+(?:my|the)?)\s*(.+)", re.IGNORECASE)
 
+    # Hinglish alternations: "yaad rakho/yaad rakhna" (remember),
+    # "bhool jao/bhul jao" (forget), "kya hai" (recall).
+    REMEMBER_CMD_HINGLISH = re.compile(
+        r"^(?:please\s+)?yaad\s+rakh(?:o|na)\s+(?:ki\s+)?(.+)$", re.IGNORECASE
+    )
+    REMEMBER_CMD_HINGLISH_SUFFIX = re.compile(r"^(.+?)\s+yaad\s+rakh(?:o|na)$", re.IGNORECASE)
+    FORGET_CMD_HINGLISH = re.compile(
+        r"^(?:please\s+)?bh(?:oo|u)l\s+jao\s+(?:the\s+)?(.+)$", re.IGNORECASE
+    )
+    FORGET_CMD_HINGLISH_SUFFIX = re.compile(
+        r"^(.+?)\s+(?:ko\s+)?bh(?:oo|u)l\s+jao$", re.IGNORECASE
+    )
+
     # Key patterns for facts and project attributes
     BUDGET_PATTERN = re.compile(r"(?:budget|cost)\s*(?:is|of|=)?\s*(?:₹|rs\.?|inr|\$)?\s*([\d,]+)", re.IGNORECASE)
     CONTROLLER_PATTERN = re.compile(r"(?:microcontroller|controller|board|processor|chip)\s*(?:is|uses|=)?\s*([a-zA-Z0-9_\-\s]+)", re.IGNORECASE)
@@ -24,26 +37,34 @@ class MemoryExtractor:
     @classmethod
     def parse_command(cls, text: str) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
         """Determine if text contains an explicit memory command (remember, forget, recall)."""
-        clean = text.strip()
+        clean = text.strip().rstrip("?").strip()
 
-        # 1. Explicit Forget Command
-        forget_match = cls.FORGET_CMD.match(clean)
+        # 1. Explicit Forget Command (English + Hinglish alternations)
+        forget_match = (
+            cls.FORGET_CMD.match(clean)
+            or cls.FORGET_CMD_HINGLISH.match(clean)
+            or cls.FORGET_CMD_HINGLISH_SUFFIX.match(clean)
+        )
         if forget_match:
             target = forget_match.group(1).strip().rstrip(".")
             # Standardize target key
             key = cls._normalize_key(target)
             return "forget", {"key": key, "raw_target": target}
 
-        # 2. Explicit Remember Command
-        rem_match = cls.REMEMBER_CMD.match(clean)
+        # 2. Explicit Remember Command (English + Hinglish alternations)
+        rem_match = (
+            cls.REMEMBER_CMD.match(clean)
+            or cls.REMEMBER_CMD_HINGLISH.match(clean)
+            or cls.REMEMBER_CMD_HINGLISH_SUFFIX.match(clean)
+        )
         if rem_match:
             fact = rem_match.group(1).strip().rstrip(".")
             extracted = cls.extract_fact_from_text(fact)
             return "remember", extracted
 
-        # 3. Explicit Recall Command
+        # 3. Explicit Recall Command (English + Hinglish "kya hai")
         lower = clean.lower()
-        if "remember about" in lower or "recall" in lower or "tell me about my" in lower or "what is my" in lower or "what's my" in lower or "what microcontroller" in lower:
+        if "remember about" in lower or "recall" in lower or "tell me about my" in lower or "what is my" in lower or "what's my" in lower or "what microcontroller" in lower or "kya hai" in lower:
             # Filter memory attribute targets vs tool queries (calculator, system_info, time)
             if any(term in lower for term in ["budget", "microcontroller", "controller", "board", "preference", "favorite", "hobby", "skill"]):
                 key = cls._normalize_key(clean)
