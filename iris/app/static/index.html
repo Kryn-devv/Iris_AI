@@ -136,7 +136,20 @@
     </aside>
   </div>
 
+  <script src="/static/vendor/three.min.js"></script>
+  <!-- hologram.js runs FIRST so it claims window.IrisHologram; scene.js then
+       captures it as the fallback for a machine with no WebGL and installs the
+       three.js scene behind the same name and the same three-call API, so
+       app.js needs no changes at all. -->
   <script src="/static/hologram.js"></script>
+  <script src="/static/scene/orb.js"></script>
+  <script src="/static/scene/sky.js"></script>
+  <script src="/static/scene/states.js"></script>
+  <script src="/static/scene/audio.js"></script>
+  <script src="/static/scene/agents.js"></script>
+  <script src="/static/scene/reactions.js"></script>
+  <script src="/static/scene/wiring.js"></script>
+  <script src="/static/scene/scene.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

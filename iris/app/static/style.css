@@ -705,3 +705,26 @@ html, body {
   *, *::before, *::after { animation-duration: 0.001s !important; transition-duration: 0.001s !important; }
   .bg-aurora { animation: none; }
 }
+
+/* ─────────────── WebGL scene layers ─────────────── */
+/* Two full-screen canvases behind the app chrome but in FRONT of .bg-aurora and
+   .bg-grid, so the existing .bg-noise grain and .bg-vignette still grade over
+   the 3D — which is what stops it looking pasted on top of the page.
+   Inserted by scene.js immediately before .bg-noise. */
+#scene-bg, #scene {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  display: block;
+  pointer-events: none;
+}
+
+/* With the WebGL scene live, the canvas-2D sphere and the CSS decorations drawn
+   for it are retired. The #holo node itself stays in the DOM because app.js
+   holds a reference to it and constructs against it. */
+body.iris-scene-active #holo,
+body.iris-scene-active .halo { display: none; }
+body.iris-scene-active .stage::after { content: none; }
+/* The aurora and grid would otherwise double up with the nebula. */
+body.iris-scene-active .bg-aurora { opacity: 0.35; }
+body.iris-scene-active .bg-grid { opacity: 0.35; }

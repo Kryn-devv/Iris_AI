@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IRIS scene — dev harness</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#020308;
+    font-family:system-ui,sans-serif;color:#e8eefa}
+  #scene-bg,#scene{position:fixed;inset:0;z-index:0;display:block}
+  .bg-noise{position:fixed;inset:0;z-index:0;pointer-events:none}
+  #panel{position:fixed;left:14px;bottom:14px;z-index:10;display:flex;gap:6px;flex-wrap:wrap;
+    max-width:70vw}
+  button{font:inherit;font-size:12px;padding:8px 11px;border-radius:9px;cursor:pointer;
+    border:1px solid rgba(94,234,212,.25);background:rgba(10,15,30,.7);color:#e8eefa}
+  button:hover{border-color:rgba(94,234,212,.6)}
+  #hud{position:fixed;right:14px;top:14px;z-index:10;font-size:11.5px;color:#8a94ac;
+    text-align:right;line-height:1.7;white-space:pre}
+  #stage{position:fixed;left:50%;top:36%;transform:translate(-50%,-50%);width:1px;height:1px}
+</style>
+</head>
+<body>
+  <div class="bg-noise"></div>
+  <section class="stage" id="stage"><canvas id="holo"></canvas></section>
+  <div id="panel"></div>
+  <div id="fakePanel" data-agent="scribe" style="position:fixed;right:60px;top:52%;
+    width:180px;height:110px;border:1px solid rgba(167,139,250,.35);border-radius:12px;
+    background:rgba(10,15,30,.5);z-index:1;display:flex;align-items:center;
+    justify-content:center;font-size:11px;color:#8a94ac">scribe panel</div>
+  <div id="hud">dev harness</div>
+
+  <script src="/static/vendor/three.min.js"></script>
+  <script src="/static/hologram.js"></script>
+  <script src="/static/scene/orb.js"></script>
+  <script src="/static/scene/sky.js"></script>
+  <script src="/static/scene/states.js"></script>
+  <script src="/static/scene/audio.js"></script>
+  <script src="/static/scene/agents.js"></script>
+  <script src="/static/scene/reactions.js"></script>
+  <script src="/static/scene/wiring.js"></script>
+  <script src="/static/scene/scene.js"></script>
+  <script>
+  (function () {
+    var holo = new window.IrisHologram(document.getElementById("holo"), {
+      accent: "#5eead4",
+      quality: matchMedia("(max-width: 640px)").matches ? "medium" : "high",
+      reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
+    });
+    window.holo = holo;
+
+    var states = ["idle", "listening", "thinking", "processing", "speaking", "error"];
+    var panel = document.getElementById("panel");
+    states.forEach(function (s) {
+      var b = document.createElement("button");
+      b.textContent = s;
+      b.onclick = function () { holo.setState(s); hud(); };
+      panel.appendChild(b);
+    });
+    ["operator","scout","scribe","relay","sentinel"].forEach(function (id) {
+      var b = document.createElement("button");
+      b.textContent = "dispatch " + id;
+      b.onclick = function () { holo.dispatchAgent(id); hud(); };
+      panel.appendChild(b);
+    });
+    var bw = document.createElement("button");
+    bw.textContent = "toggle busy: scribe";
+    var busy = false;
+    bw.onclick = function () {
+      busy = !busy;
+      holo.setAgentBusy("scribe", busy, busy ? document.getElementById("fakePanel") : null);
+      hud();
+    };
+    panel.appendChild(bw);
+
+    [["perf on", function(){holo.setPerformanceMode(true);}],
+     ["perf off", function(){holo.setPerformanceMode(false);}],
+     ["bus: tool.started web_search", function(){holo.handleBusEvent("tool.started",{tool:"web_search"});}],
+     ["bus: tool.started shutdown_pc", function(){holo.handleBusEvent("tool.started",{tool:"shutdown_pc"});}],
+     ["bus: agent.completed", function(){holo.handleBusEvent("agent.completed",{});}],
+     ["bus: agent.failed", function(){holo.handleBusEvent("agent.failed",{});}],
+     ["add agent", function(){holo.addAgent({id:"archivist",name:"Archivist",color:"#38bdf8",specialty:"Remembers what you told it"});}]
+    ].forEach(function (pair) {
+      var b = document.createElement("button");
+      b.textContent = pair[0];
+      b.onclick = function () { pair[1](); hud(); };
+      panel.appendChild(b);
+    });
+
+    var lvl = document.createElement("button");
+    lvl.textContent = "level 0.8 (3s)";
+    lvl.onclick = function () {
+      holo.setLevel(0.8);
+      setTimeout(function () { holo.setLevel(0); hud(); }, 3000);
+      hud();
+    };
+    panel.appendChild(lvl);
+
+    function hud() {
+      var r = window.holo.renderer;
+      document.getElementById("hud").textContent =
+        "engine  " + (r ? "webgl" : "canvas-2d") +
+        "\nstate   " + (holo.state || "-") +
+        "\naudio   " + (holo.audioSource || "-") +
+        "\nperf    " + (holo.perfMode ? "on" : "off") +
+        "\nbeams   " + (holo.reactions ? holo.reactions.activeBeams().join(",") || "-" : "-") +
+        "\nrings   " + (holo.reactions ? holo.reactions.ringsMix().toFixed(2) : "-") +
+        "\nagents  " + (holo.constellation ? holo.constellation.agents.length : 0) +
+        "  avatars " + (holo.constellation ? holo.constellation.agents.filter(function(a){return a.avatarFrom;}).length : 0) +
+        "\nlevel   " + (holo.level != null ? holo.level.toFixed(2) : "-") +
+        "\nthree   r" + (window.THREE ? window.THREE.REVISION : "-") +
+        (r ? "\ncalls   " + r.info.render.calls + "\ntris    " + r.info.render.triangles : "");
+    }
+    setInterval(hud, 400);
+    hud();
+    window.__ready = true;
+  })();
+  </script>
+</body>
+</html>
