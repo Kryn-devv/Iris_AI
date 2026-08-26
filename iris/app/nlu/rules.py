@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, Match, Optional, Pattern
 
 # ---------------------------------------------------------------------------
@@ -96,23 +97,34 @@ KNOWN_SITES = frozenset(
 _DOMAIN_RX = re.compile(r"^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(/\S*)?$", re.IGNORECASE)
 
 #: Folder words the "open X" rule routes to the file manager.
+from iris.app.core import paths as _paths
+
 KNOWN_FOLDERS = {
     "downloads": "~/Downloads",
-    "downloads folder": "~/Downloads",
     "documents": "~/Documents",
-    "documents folder": "~/Documents",
     "desktop": "~/Desktop",
     "pictures": "~/Pictures",
     "photos": "~/Pictures",
     "music": "~/Music",
     "videos": "~/Videos",
+    "home": "~",
     "home folder": "~",
-    "iris folder": "~/Iris",
-    "my outputs": "~/Iris/outputs",
-    "outputs folder": "~/Iris/outputs",
-    "projects folder": "~/Iris/projects",
-    "screenshots folder": "~/Iris/screenshots",
+    # Workspace paths honour IRIS_WORKSPACE_DIR instead of hardcoding ~/Iris.
+    "iris": str(_paths.workspace_dir()),
+    "iris folder": str(_paths.workspace_dir()),
+    "outputs": str(_paths.outputs_dir()),
+    "my outputs": str(_paths.outputs_dir()),
+    "projects": str(_paths.projects_dir()),
+    "screenshots": str(_paths.screenshots_dir()),
 }
+
+#: File extensions that mark an "open X" target as a file, not a website.
+_FILE_EXTENSIONS = (
+    ".pdf", ".txt", ".md", ".docx", ".doc", ".xlsx", ".xls", ".csv", ".pptx",
+    ".ppt", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp4", ".mkv", ".mov",
+    ".mp3", ".wav", ".m4a", ".zip", ".rar", ".7z", ".py", ".js", ".html",
+    ".json", ".ino", ".exe", ".msi", ".apk", ".iso", ".svg", ".rtf", ".odt",
+)
 
 _NUMBER_WORDS = {
     "one": 1, "a": 1, "an": 1, "two": 2, "three": 3, "four": 4, "five": 5,
@@ -153,16 +165,35 @@ def parse_duration_seconds(amount: str, unit: str) -> Optional[int]:
 # ---------------------------------------------------------------------------
 
 def _build_open_target(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
-    """Decide website vs folder vs application for a bare 'open X' command."""
+    """Decide file vs folder vs website vs application for a bare 'open X'."""
     target = (m.group("target") or "").strip().rstrip(".")
     if not target:
         return None
     lowered = target.lower()
+
+    # A real file name ("report.pdf") or path ("downloads/report.pdf", "~/x")
+    # must never be treated as a web domain.
+    if lowered.endswith(_FILE_EXTENSIONS):
+        if "/" in target or "\\" in target or target.startswith("~"):
+            return {"__tool__": "open_path", "path": target}
+        return {"__tool__": "find_and_open", "name": Path(target).stem, "kind": "file"}
+    if "/" in target or "\\" in target or target.startswith("~"):
+        return {"__tool__": "open_path", "path": target}
+
     if lowered in KNOWN_SITES or _DOMAIN_RX.match(lowered) or lowered.startswith(("http://", "https://")):
         return {"__tool__": "open_website", "site": target}
-    folder = KNOWN_FOLDERS.get(lowered) or KNOWN_FOLDERS.get(lowered.removeprefix("my ").strip())
-    if folder:
-        return {"__tool__": "open_path", "path": folder}
+
+    # Known folders, tolerating "my X", "X folder" and "X directory".
+    for candidate in (
+        lowered,
+        lowered.removeprefix("my ").strip(),
+        lowered.removesuffix(" folder").strip(),
+        lowered.removesuffix(" directory").strip(),
+        lowered.removeprefix("my ").removesuffix(" folder").strip(),
+    ):
+        folder = KNOWN_FOLDERS.get(candidate)
+        if folder:
+            return {"__tool__": "open_path", "path": folder}
     return {"__tool__": "open_app", "app": target}
 
 
@@ -440,10 +471,53 @@ RULES: list[Rule] = [
 
     # ------------------------------------------------------------------ open
     Rule(
+        name="open_latest_kind",
+        intent="files",
+        tool="find_and_open",
+        pattern=_rx(
+            r"^open\s+(?:my\s+|the\s+)?(?:latest|last|newest|most\s+recent|recent)\s+"
+            r"(?P<kind>screenshot|screen\s+shot|photo|picture|image|pic|presentation|ppt|deck|slides|"
+            r"document|doc|pdf|spreadsheet|excel|sheet|video|movie|song|audio|download|downloaded\s+file|code|script|file)$"
+        ),
+        builder=lambda m, c: {"kind": " ".join(m.group("kind").split()), "latest": True},
+        confidence=0.97,
+    ),
+    Rule(
+        name="open_that_kind_i_made",
+        intent="files",
+        tool="find_and_open",
+        pattern=_rx(
+            r"^open\s+(?:that|the)\s+(?P<kind>screenshot|photo|picture|image|presentation|ppt|deck|"
+            r"document|doc|pdf|spreadsheet|sheet|video|song|file)"
+            r"(?:\s+(?:i|we|you)\s+(?:made|created|generated|took|saved))?"
+            r"(?:\s+(?:yesterday|today|earlier|just\s+now|last\s+\w+))?$"
+        ),
+        builder=lambda m, c: {"kind": m.group("kind"), "latest": True},
+        confidence=0.95,
+    ),
+    Rule(
+        name="find_and_open_by_name",
+        intent="files",
+        tool="find_and_open",
+        pattern=_rx(r"^(?:find\s+and\s+open|open\s+the\s+file)\s+(?P<name>.+)$"),
+        builder=lambda m, c: {"name": m.group("name").strip(), "kind": "file"},
+        confidence=0.95,
+    ),
+    Rule(
+        name="show_my_folder",
+        intent="files",
+        tool="open_path",
+        pattern=_rx(r"^(?:show(?:\s+me)?|display|browse)\s+(?:my\s+|the\s+)?(?P<target>.+)$"),
+        builder=lambda m, c: (
+            lambda built: built if built and built.get("__tool__") in ("open_path", "find_and_open") else None
+        )(_build_open_target(m, c)),
+        confidence=0.92,
+    ),
+    Rule(
         name="open_target",
         intent="desktop",
         tool="__dynamic__",
-        pattern=_rx(r"^(?:open|launch|start|run)\s+(?:up\s+)?(?:the\s+)?(?P<target>[\w .+&/:-]{2,60})$"),
+        pattern=_rx(r"^(?:open|launch|start|run)\s+(?:up\s+)?(?:the\s+)?(?P<target>[\w .+&/:~\\\\-]{1,80})$"),
         builder=_build_open_target,
         confidence=0.95,
     ),
