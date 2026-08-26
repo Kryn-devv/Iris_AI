@@ -50,3 +50,4 @@ nova.db
 iris.db
 .venv/
 .claude/
+firmware/*/.pio/

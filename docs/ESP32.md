@@ -14,11 +14,28 @@ registry holds all your devices.
 
 One universal sketch: `firmware/esp32-iris-node/esp32-iris-node.ino`.
 
-### 1. Prepare Arduino IDE (once)
+### 1. Prepare your uploader (once) — Arduino IDE **or** PlatformIO
+
+**PlatformIO (VS Code)** — every firmware folder is already a ready
+PlatformIO project (`platformio.ini` included, compile-verified):
+1. In VS Code, install the **PlatformIO IDE** extension (square alien-head icon).
+2. *File → Open Folder* → pick the firmware folder itself, e.g.
+   `firmware/esp32-iris-node-bts7960` (the folder, not the repo root).
+3. Wait for PlatformIO to finish "Configuring project" the first time
+   (it downloads the ESP32 toolchain once — a few minutes).
+4. Edit the WiFi name/password in the `.ino`, plug in the board, then click
+   the **→ (Upload)** arrow in the blue status bar at the bottom.
+5. Click the **plug icon (Serial Monitor)** in the same bar to read the IP.
+
+**Arduino IDE** — alternative:
 1. Install [Arduino IDE](https://www.arduino.cc/en/software).
 2. *File → Preferences → Additional boards manager URLs*, add:
    `https://espressif.github.io/arduino-esp32/package_esp32_index.json`
 3. *Tools → Board → Boards Manager* → install **esp32 by Espressif Systems**.
+
+> Board won't show a COM port on Windows? Install the USB driver for your
+> board's serial chip (CP210x or CH340 — printed on the chip near the USB
+> port), then replug.
 
 ### 2. Configure the sketch
 Open the `.ino` and edit the CONFIG block:
