@@ -41,6 +41,12 @@ be careful with mains voltage; if unsure, switch a 12V strip or use a smart-plug
 `GPIO14 → ENB`, `GPIO21 → IN3`, `GPIO22 → IN4`, common GND between ESP32 and
 driver, motor battery to the driver's 12V input.
 
+> **Using BTS7960 instead of L298N?** (Common for a 4-wheel-drive robot with
+> two driver boards — one per side.) Don't use this sketch's motor section.
+> Flash **`firmware/esp32-iris-node-bts7960/esp32-iris-node-bts7960.ino`**
+> instead — same `/motor` API, wired for two BTS7960 boards. See its own
+> wiring table below.
+
 ### 4. Flash and find the IP
 Select your board (*Tools → Board → ESP32 Dev Module*), the right COM port,
 and Upload. Open **Serial Monitor at 115200** — on connect the board prints:
@@ -77,6 +83,42 @@ is the light online              list my devices
 > `http://<name>.local` mDNS address) so the IP never changes.
 
 ---
+
+## Robot with BTS7960 drivers (2 boards, 4-wheel-drive)
+
+If your robot uses **two BTS7960 modules** — one driving both left motors,
+one driving both right motors (the standard skid-steer 4WD wiring) — use
+`firmware/esp32-iris-node-bts7960/esp32-iris-node-bts7960.ino`, **not** the
+plain `esp32-iris-node.ino` (that one is wired for L298N and won't drive a
+BTS7960 correctly).
+
+### Wiring — per BTS7960 board
+
+| BTS7960 pin | Connect to |
+|---|---|
+| RPWM | an ESP32 GPIO (forward speed) |
+| LPWM | an ESP32 GPIO (reverse speed) |
+| R_EN **and** L_EN | tied together, to one more ESP32 GPIO |
+| B+ / B− | your motor battery — **never** the ESP32's own 5V pin |
+| GND | shared with the ESP32 **and** the battery **and** the other BTS7960 |
+
+Default pins in the sketch (edit if your wiring differs):
+
+| Side | RPWM | LPWM | EN |
+|---|---|---|---|
+| Left  | GPIO 25 | GPIO 26 | GPIO 27 |
+| Right | GPIO 32 | GPIO 33 | GPIO 14 |
+
+If a wheel spins the wrong way, swap that side's RPWM/LPWM wires — don't
+edit the code for it.
+
+### Flash it
+1. Open the `.ino`, fill in `WIFI_SSID` / `WIFI_PASS`
+2. Board: **ESP32 Dev Module** (or whatever your board's label says — S3
+   boards need "ESP32S3 Dev Module" instead)
+3. Upload → open **Serial Monitor at 115200** → it prints an IP address
+4. Tell IRIS: `add device robot at <that IP> as motor`
+5. Test: `robot forward`, `robot stop`, `move the robot left`
 
 ## Path B — keep your existing firmware (recommended if you already coded it)
 
