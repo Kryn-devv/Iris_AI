@@ -92,6 +92,121 @@ driver, motor battery to the driver's 12V input.
 > instead — same `/motor` API, wired for two BTS7960 boards. See its own
 > wiring table below.
 
+### One 12V battery, three appliances — the whole power tree
+
+This is the build most people end up with: a 12V battery, a 4-channel relay
+module, and three things to switch — a **12V DC light**, a **3V DC fan** and a
+**servo**.
+
+**There is no AC anywhere in it.** Every load is 12V DC or lower, so nothing
+here involves mains voltage, a plug, or live wiring. A relay *can* switch AC,
+which is why every tutorial warns about it, but you are not using it that way.
+The 12V battery is the only source in the system.
+
+#### What you need beyond the parts you have
+
+| Part | Why | Roughly |
+|---|---|---|
+| 2 × LM2596 buck converter (**3A**, adjustable) | the battery is 12V; the ESP32 and relay need 5V and the fan needs 3V | £2 each |
+| Inline blade fuse holder + **5A** fuse | a pinched wire otherwise puts a battery's full short-circuit current into a spark | £1 |
+| Rocker switch (rated 12V 5A+) | one thing that kills the whole system | £1 |
+| 1 × **1N4007** diode | the fan is a motor; see the flyback note below | pennies |
+
+Get **3A** buck modules, not the 2A ones. The reason is in the current budget
+below.
+
+#### The three rails
+
+```
+                 ┌─ 5A fuse ─ switch ─┬──────────────────────── 12V rail
+  12V battery  + ┘                    ├─ buck #1 ─▶ 5.0V ────── 5V rail
+               −  ───────────────┐    └─ buck #2 ─▶ 3.2V ────── 3V rail
+                                 └────────────────────────────── GROUND
+```
+
+| Rail | Feeds |
+|---|---|
+| **12V** | relay CH1 COM (→ the 12V light) |
+| **5V** | ESP32 `5V`/`VIN` pin · relay module `VCC` · relay CH3 COM (→ the servo) |
+| **3V** | relay CH2 COM (→ the fan) |
+| **GROUND** | battery − · both bucks' − out · ESP32 `GND` · relay `GND` · light − · fan − · servo brown — **all joined at one point** |
+
+Every black wire in the build meets at that one point. A build where the
+appliance grounds come back separately works by luck; a build with one star
+ground works by design.
+
+#### The relay channels
+
+| CH | ESP32 pin → IN | COM ← from | NO → to | What it switches |
+|---|---|---|---|---|
+| 1 | GPIO 26 → IN1 | 12V rail | light **+** | the 12V light |
+| 2 | GPIO 27 → IN2 | 3V rail | fan **+** | the 3V fan |
+| 3 | GPIO 32 → IN3 | 5V rail | servo **red** | the servo's power |
+| 4 | GPIO 33 → IN4 | — | — | spare |
+
+Leave **NC** empty on all four. NC is the terminal that is connected when the
+channel is *off*, which is not what you want for any of these.
+
+The servo's **signal** wire (orange or yellow) does **not** go through the
+relay — a relay cannot make a pulse. It goes straight from **GPIO 19** to the
+servo. CH3 only decides whether the servo has power. Its brown/black wire goes
+to the shared ground like everything else.
+
+#### Assemble it in this order
+
+The order matters more than the wiring does, because two of these steps are
+where parts get destroyed.
+
+1. Build the 12V side — battery lead, fuse holder, switch, and the two bucks'
+   **inputs**. **Do not connect the battery yet.** Nothing on the bucks' outputs.
+2. Battery on, switch on. Put a multimeter on **buck #1's output** and turn its
+   little screw until it reads **5.0 V**. Switch off.
+3. Same for **buck #2**, until it reads **3.2 V**. Switch off, battery off.
+4. **Only now** connect the loads. A buck module out of the box can be set
+   anywhere from 1.25V to nearly its input voltage — connecting the 3V fan
+   before you have set that screw is how a 3V fan dies in one second.
+5. Wire the relay COM/NO terminals, the four IN signal wires, the servo, and
+   the ESP32's 5V and GND.
+6. Battery on. The relay board's power LED lights, the ESP32 prints its IP,
+   and every channel starts **off**.
+
+#### Current budget — why 3A buck modules
+
+| On the 5V rail | Draw |
+|---|---|
+| ESP32 with WiFi transmitting | ~250 mA in bursts |
+| Relay module, all four coils closed | ~280 mA |
+| SG90 servo, moving | ~400 mA |
+| SG90 servo, stalled against a stop | ~700 mA |
+| MG996R servo, stalled | up to 2.5 A |
+
+A 2A module survives the typical case and browns out the ESP32 halfway through
+a servo move — which reads as "the board keeps rebooting when the curtain
+moves", not as a power problem. A 3A module has the headroom. The 12V light and
+the 3V fan each sit on their own rail and are small (a 12V 5W strip is ~0.4 A,
+a small fan 100–250 mA), so the 5A fuse covers the whole system comfortably
+while still being far below what the wire can carry.
+
+#### Three things worth knowing before you power it
+
+**The fan needs a flyback diode.** A DC motor's coil field collapses when the
+relay opens and drives a reverse voltage spike back down the wire. It arcs the
+relay contacts and can reset the ESP32. Put the **1N4007 across the fan's own
+two terminals, with the stripe (cathode) on the + side**. It does nothing at
+all in normal running and absorbs the spike on switch-off.
+
+**Nothing motorised comes off an ESP32 pin.** Not the fan, not the servo. The
+3.3V regulator on the board cannot source a motor's current, and the 5V pin is
+just the incoming supply passed through — hanging a servo on it drags the
+board's own supply down with it. Both get their power from the 5V rail, through
+the relay.
+
+**A 3.3V GPIO driving a 5V relay module usually works, and sometimes doesn't.**
+The relay's opto-input is designed around 5V logic. Most modules trigger fine
+at 3.3V. If one channel never clicks while the others do, that is the cause,
+not your wiring — the fix is a module labelled "3V3" or a 4-channel level
+shifter, not more soldering.
+
 ### 4. Flash and find the IP
 Select your board (*Tools → Board → ESP32 Dev Module*), the right COM port,
 and Upload. Open **Serial Monitor at 115200** — on connect the board prints:

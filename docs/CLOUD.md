@@ -36,6 +36,11 @@ Every board is a **body**: it has no AI on it, it just does what it is told and
 reports what it senses. One brain, many bodies. Add a fourth board and nothing
 about the brain changes.
 
+A **laptop, tablet or phone is not a body** — it is a window. The dashboard is
+a web page served by the brain, so any device with a browser can watch and
+control everything with nothing installed on it. See **§3.8** if that is how
+you intend to use it.
+
 ---
 
 ## 2. The two ways a board reaches the brain
@@ -199,6 +204,59 @@ scheduler, Telegram, and content creation (documents, presentations, code).
 
 If you want desktop automation *and* a cloud brain, run IRIS at home and reach
 it from outside with a tunnel instead (`TUNNEL_PROVIDER=cloudflared`).
+
+### 3.8 Using a laptop as a display only — nothing installed on it
+
+This is the normal way to use a cloud brain, and it needs no special mode.
+**IRIS's dashboard is a web page.** The VPS serves it; the laptop opens it.
+Nothing is installed on the laptop — no Python, no repository, no service, not
+a single file. If the laptop can open a web page, it can show the dashboard.
+
+**The whole procedure:**
+
+1. On the VPS, in `.env`, have the three settings from §3.4 —
+   `HOST=0.0.0.0`, `ALLOW_LAN_ACCESS=true`, and an `API_TOKEN` you choose.
+   Put TLS in front of it (§3.6) so the address is `https://`.
+2. On the laptop, open a browser and go to, once:
+
+   ```
+   https://iris.yourdomain.com/?token=YOUR_API_TOKEN
+   ```
+
+3. The page stores the token in the browser and drops it from the address bar.
+   From then on the bare `https://iris.yourdomain.com` is enough on that
+   laptop. Bookmark it.
+
+That is it. The dashboard, the hologram, the conversation, the device panels,
+the sensor readings — all of it is drawn from data the VPS pushes down a
+WebSocket. Close the tab and IRIS keeps running on the VPS; reopen it and the
+current state is there. Open it on a phone and a laptop at the same time and
+both show the same live state, because neither of them holds any of it.
+
+**Where each piece actually executes:**
+
+| Piece | Runs on |
+|---|---|
+| The agent, tools, memory, LLM calls, scheduler | the VPS |
+| Speech-to-text, text-to-speech | the VPS |
+| Every device command (relays, servo, robot, sensors) | the VPS → the boards |
+| Drawing the page: layout, the hologram canvas | the laptop's browser, like any website |
+
+**The one thing worth deciding.** The dashboard can use the laptop's
+microphone and speaker for talking to IRIS — that is the browser's own audio
+permission, the same one a video call uses, not software you installed. If even
+that is more than you want on the laptop, don't grant the permission: put the
+I2S microphone and speaker on the S3 board (§6) and talk to the robot instead.
+The laptop then shows the conversation happening without taking any part in it.
+
+**A guarantee you get for free.** IRIS's desktop tools act on the machine IRIS
+runs on, which here is the VPS (§3.7). "Open notepad" cannot reach the laptop
+even if you ask for it, because the laptop is not where IRIS is. A browser tab
+has no way to launch a program on the computer showing it.
+
+> Sharing the dashboard on a LAN instead of the internet works identically:
+> the same three settings, and the address is the machine's LAN IP
+> (`http://192.168.1.20:8756/?token=...`). The token is what makes that safe.
 
 ---
 
