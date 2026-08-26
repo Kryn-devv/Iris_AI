@@ -126,6 +126,7 @@ re-wiring and no re-flashing to fix a robot that turns the wrong way.
 | RPWM | an ESP32 GPIO (PWM) |
 | LPWM | an ESP32 GPIO (PWM) |
 | R_EN **and** L_EN | **tied together**, to one more GPIO (or straight to 3.3V) |
+| *(optional)* | both modules may share **one** enable GPIO — tie all four EN pins together |
 | VCC | **5V — required.** The logic side *consumes* 5V, it does not make it. A module with VCC unconnected looks completely dead. |
 | GND | ESP32 GND **and** battery minus — all grounds common |
 | B+ / B− | motor battery — never the ESP32's 5V pin |
@@ -139,8 +140,17 @@ Default pins (changeable live from the page):
 
 ### Calibrate it (this is the part that fixes wrong directions)
 
-Flash, read the IP from Serial Monitor @115200, then **open that IP in a
-browser**. The page walks three steps:
+Flash and read the address from Serial Monitor @115200, then **open it in a
+browser**.
+
+> **No router, or the WiFi name/password is wrong?** The board gives up after
+> 25 seconds and starts **its own WiFi** instead: join `iris-robot` with the
+> password `iriscalib` and open `http://192.168.4.1`. You can calibrate the
+> whole robot on the bench this way, with no network at all — and it keeps
+> retrying your router in the background, so it switches over by itself once
+> the router is reachable.
+
+The page walks three steps:
 
 1. **Find your sides.** Press `A fwd` / `A rev` / `B fwd` / `B rev` and watch
    which wheels move. These bypass all calibration, so they show the raw
@@ -152,8 +162,12 @@ browser**. The page walks three steps:
    Exactly one combination is correct for any given wiring.
 3. **Drive straight.** If it veers, trim the faster side down.
 
-Press **SAVE** and it persists across reboots. Arrow keys drive it from the
-keyboard; space stops.
+Press **SAVE** and it persists across reboots. The page will tell you if the
+write failed rather than claiming success.
+
+The drive controls are **hold-to-drive**: the robot moves only while a button
+or an arrow key is held down, and stops the moment you let go. Space stops
+too. Nothing on the page can walk away leaving the motors running.
 
 Then in IRIS: `add device robot at <IP> as motor`, and
 `robot forward` · `move the robot left` · `stop the robot` · `robot peeche`.
@@ -161,10 +175,25 @@ Then in IRIS: `add device robot at <IP> as motor`, and
 ### Safety behaviour
 
 - Motion stops automatically if no command arrives for 10 s (configurable),
-  so a dropped WiFi link can never leave the motors running.
-- Motion stops immediately if WiFi drops.
+  so a dropped link can never leave the motors running. This is the backstop
+  that holds no matter which network the commands came in on.
+- Motion stops immediately if the WiFi carrying commands drops.
 - Speed ramps instead of stepping, so four motors starting at once cannot
   brown-out the board.
+- "Stop" really coasts. A BTS7960 with its enable high and both inputs low
+  shorts the motor through the low-side FETs — that is a brake, not a coast —
+  so stopping *disables the bridge* rather than just writing zero duty.
+- Each side's bridge is enabled only while that side has something to do, so
+  a raw single-side test lets the other side free-wheel instead of dragging
+  against it, and `left=200&right=0` pivots rather than braking.
+- Every numeric argument is parsed strictly. `/motor?speed=fast` is answered
+  with an error instead of being read as `speed=0`, and a rejected request
+  changes nothing at all — it cannot cancel a running self-test and leave the
+  motors turning with nothing left to stop them.
+- Only GPIOs that can actually drive an output are accepted for a motor pin.
+  The ones that cannot (6–11 flash, 20/24/28–31 absent, 34–39 input-only,
+  1/3 serial) are refused rather than silently attached to nothing, and the
+  bootloader strapping pins (0/2/12/15) are allowed but warned about.
 
 ### Extra endpoints (beyond what IRIS uses)
 

@@ -21,6 +21,7 @@ If the firmware logic is edited, update the transliteration in lockstep.
 from __future__ import annotations
 
 import itertools
+import pathlib
 from dataclasses import dataclass, replace
 
 import pytest
@@ -594,3 +595,794 @@ class TestRawTestValidation:
     def test_valid_directions(self):
         assert self.parse_dir("forward") == 1
         assert self.parse_dir("backward") == -1
+
+
+# ---------------------------------------------------------------------------
+# Strict argument parsing
+# ---------------------------------------------------------------------------
+
+MS_MAX = 600000
+MIN_DUTY_MAX = 120
+
+
+def parse_long(raw: str) -> int | None:
+    """firmware: parseLong(). None means "not a number", never 0.
+
+    Arduino's String::toInt() answers 0 for "", "abc" and "twelve". On this
+    board a silent 0 means GPIO 0 (a strapping pin) or "no timed stop", so
+    every numeric argument goes through this instead.
+    """
+    if not raw or len(raw) > 11:
+        return None
+    index, negative = 0, False
+    if raw[0] in "+-":
+        negative = raw[0] == "-"
+        index = 1
+    if index >= len(raw):
+        return None
+    value = 0
+    for char in raw[index:]:
+        if not ("0" <= char <= "9"):
+            return None
+        value = value * 10 + (ord(char) - ord("0"))
+        if value > 2000000:
+            return None
+    return -value if negative else value
+
+
+def arg_clamp(args: dict, name: str, lo: int, hi: int, fallback: int):
+    """firmware: argClamp() -> (ok, value). Out of range is clamped."""
+    if name not in args:
+        return (True, fallback)
+    value = parse_long(args[name])
+    if value is None:
+        return (False, fallback)
+    return (True, max(lo, min(hi, value)))
+
+
+def arg_range(args: dict, name: str, lo: int, hi: int, fallback: int):
+    """firmware: argRange() -> (ok, value). Out of range is refused."""
+    if name not in args:
+        return (True, fallback)
+    value = parse_long(args[name])
+    if value is None or value < lo or value > hi:
+        return (False, fallback)
+    return (True, value)
+
+
+def arg_bool(args: dict, name: str, fallback: bool):
+    """firmware: argBool() -> (ok, value)."""
+    if name not in args:
+        return (True, fallback)
+    raw = args[name]
+    if raw in ("true", "on", "yes"):
+        return (True, True)
+    if raw in ("false", "off", "no"):
+        return (True, False)
+    value = parse_long(raw)
+    if value is None:
+        return (False, fallback)
+    return (True, value != 0)
+
+
+class TestStrictArgumentParsing:
+    """A typo must be an error, never a silent default.
+
+    ``toInt()`` turning "twelve" into 0 is how a mistyped GPIO becomes GPIO 0
+    and a mistyped duration becomes "run until the failsafe notices".
+    """
+
+    @pytest.mark.parametrize("raw", ["", " ", "abc", "twelve", "1a", "a1", "1.5",
+                                     "0x10", "1 2", "+", "-", "--3", "1e3", "٣"])
+    def test_garbage_is_rejected_not_zero(self, raw):
+        assert parse_long(raw) is None
+
+    @pytest.mark.parametrize("raw,want", [("0", 0), ("00", 0), ("7", 7), ("25", 25),
+                                          ("+25", 25), ("-1", -1), ("-255", -255),
+                                          ("255", 255), ("600000", 600000)])
+    def test_well_formed_numbers_parse(self, raw, want):
+        assert parse_long(raw) == want
+
+    def test_absurdly_long_input_is_refused(self):
+        assert parse_long("9" * 12) is None
+        assert parse_long("99999999") is None      # > 2_000_000 guard
+
+    def test_round_trips_every_value_we_accept(self):
+        for value in range(-2000, 2001):
+            assert parse_long(str(value)) == value
+
+    def test_missing_argument_keeps_the_default(self):
+        assert arg_clamp({}, "speed", 0, 255, 200) == (True, 200)
+        assert arg_range({}, "ms", 0, MS_MAX, 0) == (True, 0)
+
+    def test_speed_is_clamped_because_a_neighbour_means_the_same_thing(self):
+        assert arg_clamp({"speed": "300"}, "speed", 0, 255, 200) == (True, 255)
+        assert arg_clamp({"speed": "-5"}, "speed", 0, 255, 200) == (True, 0)
+
+    def test_malformed_speed_is_refused_rather_than_defaulted(self):
+        ok, _ = arg_clamp({"speed": "fast"}, "speed", 0, 255, 200)
+        assert ok is False
+
+    def test_negative_ms_is_refused_not_clamped_to_no_timed_stop(self):
+        """Clamping ms=-1 to 0 would mean "never stop" — the opposite intent."""
+        assert arg_range({"ms": "-1"}, "ms", 0, MS_MAX, 0) == (False, 0)
+        assert arg_range({"ms": "nope"}, "ms", 0, MS_MAX, 0) == (False, 0)
+        assert arg_range({"ms": str(MS_MAX + 1)}, "ms", 0, MS_MAX, 0) == (False, 0)
+
+    def test_ms_within_range_is_accepted_exactly(self):
+        for value in (0, 1, 1200, MS_MAX):
+            assert arg_range({"ms": str(value)}, "ms", 0, MS_MAX, 0) == (True, value)
+
+    @pytest.mark.parametrize("raw,want", [("1", True), ("0", False), ("2", True),
+                                          ("true", True), ("false", False),
+                                          ("on", True), ("off", False),
+                                          ("yes", True), ("no", False)])
+    def test_booleans_accept_words_and_numbers(self, raw, want):
+        assert arg_bool({"swap_sides": raw}, "swap_sides", False) == (True, want)
+
+    def test_malformed_boolean_is_refused(self):
+        ok, _ = arg_bool({"swap_sides": "maybe"}, "swap_sides", False)
+        assert ok is False
+
+
+# ---------------------------------------------------------------------------
+# Pin validation
+# ---------------------------------------------------------------------------
+
+FLASH_PINS = set(range(6, 12))          # SPI flash: using them crashes the board
+ABSENT_PINS = {20, 24, 28, 29, 30, 31}  # not bonded out on the ESP32 package
+INPUT_ONLY_PINS = set(range(34, 40))    # physically cannot drive anything
+UART0_PINS = {1, 3}                     # the serial monitor
+STRAPPING_PINS = {0, 2, 12, 15}         # read by the bootloader; allowed, warned
+
+
+def pin_usable(p: int) -> bool:
+    """firmware: pinUsable()"""
+    if p < 0 or p > 33:
+        return False
+    if 6 <= p <= 11:
+        return False
+    if p in (20, 24):
+        return False
+    if 28 <= p <= 31:
+        return False
+    if p in (1, 3):
+        return False
+    return True
+
+
+def pin_risky(p: int) -> bool:
+    """firmware: pinRisky()"""
+    return p in STRAPPING_PINS
+
+
+@dataclass(frozen=True)
+class Pins:
+    a_r: int = 25
+    a_l: int = 26
+    a_en: int = 27
+    b_r: int = 32
+    b_l: int = 33
+    b_en: int = 14
+
+
+def pin_conflict(pins: Pins) -> int:
+    """firmware: pinConflict() -> the clashing GPIO, or -1."""
+    pwm = [pins.a_r, pins.a_l, pins.b_r, pins.b_l]
+    for i in range(4):
+        for j in range(i + 1, 4):
+            if pwm[i] == pwm[j]:
+                return pwm[i]
+    for value in pwm:
+        if value in (pins.a_en, pins.b_en):
+            return value
+    return -1
+
+
+class TestPinValidation:
+    """A GPIO that cannot drive an output must be refused, not attached.
+
+    ``ledcAttach()`` on an absent or input-only pin fails silently. The
+    firmware then reports the new configuration as live while one whole side
+    is electrically disconnected — indistinguishable from the wiring fault
+    this firmware exists to diagnose.
+    """
+
+    def test_pins_that_cannot_work_are_refused(self):
+        for p in FLASH_PINS | ABSENT_PINS | INPUT_ONLY_PINS | UART0_PINS:
+            assert not pin_usable(p), f"GPIO {p} must be refused"
+
+    def test_out_of_range_is_refused(self):
+        for p in (-1, -100, 40, 48, 999):
+            assert not pin_usable(p)
+
+    def test_the_usable_set_is_exactly_what_we_expect(self):
+        usable = {p for p in range(-5, 50) if pin_usable(p)}
+        expected = ({0, 2, 4, 5} | {12, 13, 14, 15, 16, 17, 18, 19}
+                    | {21, 22, 23, 25, 26, 27} | {32, 33})
+        assert usable == expected
+
+    def test_every_default_pin_is_usable(self):
+        pins = Pins()
+        for p in (pins.a_r, pins.a_l, pins.a_en, pins.b_r, pins.b_l, pins.b_en):
+            assert pin_usable(p)
+
+    def test_defaults_do_not_use_a_bootloader_strapping_pin(self):
+        pins = Pins()
+        assert not any(pin_risky(p) for p in
+                       (pins.a_r, pins.a_l, pins.a_en, pins.b_r, pins.b_l, pins.b_en))
+
+    def test_strapping_pins_are_allowed_but_flagged(self):
+        for p in STRAPPING_PINS:
+            assert pin_usable(p), "someone short of pins may still need these"
+            assert pin_risky(p), "...but they must be warned about it"
+
+    def test_defaults_have_no_conflict(self):
+        assert pin_conflict(Pins()) == -1
+
+    def test_two_pwm_signals_cannot_share_a_gpio(self):
+        assert pin_conflict(Pins(a_r=26, a_l=26)) == 26       # direction meaningless
+        assert pin_conflict(Pins(a_r=32)) == 32               # A and B fighting
+        assert pin_conflict(Pins(b_l=25)) == 25
+
+    def test_a_pwm_pin_cannot_double_as_an_enable(self):
+        assert pin_conflict(Pins(a_en=25)) == 25
+        assert pin_conflict(Pins(b_en=33)) == 33
+
+    def test_both_modules_may_share_one_enable_gpio(self):
+        """The common wiring ties every R_EN/L_EN together — that is legal."""
+        assert pin_conflict(Pins(a_en=27, b_en=27)) == -1
+
+    def test_conflict_detection_is_exhaustive_over_small_sets(self):
+        candidates = [4, 5, 13, 14]
+        for combo in itertools.product(candidates, repeat=4):
+            pins = Pins(a_r=combo[0], a_l=combo[1], b_r=combo[2], b_l=combo[3],
+                        a_en=27, b_en=27)
+            pwm = list(combo)
+            expected_clash = len(set(pwm)) != len(pwm)
+            assert (pin_conflict(pins) >= 0) is expected_clash
+
+
+# ---------------------------------------------------------------------------
+# Bridge enable state: coast must really coast
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Bridges:
+    """The hardware state the firmware holds, as the BTS7960 sees it.
+
+    The two enables are tracked separately because the firmware drives them
+    separately: enabling both because one side is driving low-side-shorts the
+    idle one.
+    """
+
+    en_a: bool = False
+    en_b: bool = False
+    live_a: int = 0
+    live_b: int = 0
+    target_a: int = 0
+    target_b: int = 0
+    braking_a: bool = False
+    braking_b: bool = False
+    wrote_brake_a: bool = False
+    wrote_brake_b: bool = False
+
+    @property
+    def enables(self) -> bool:
+        """True while either bridge is live."""
+        return self.en_a or self.en_b
+
+
+def side_effect(enable: bool, live: int, braking: bool) -> str:
+    """What one module physically does, from what the firmware wrote to it.
+
+    A BTS7960 with EN high and both inputs low turns its LOW-side FETs on and
+    shorts the motor. That is a brake, and it is what "0 duty" looks like
+    unless that side's enable is dropped.
+    """
+    if not enable:
+        return "coast"
+    rpwm, lpwm = write_side(live, braking)
+    if rpwm == lpwm:                # both low (short) or both high (brake)
+        return "brake"
+    return "drive"
+
+
+def sync_enables(state: Bridges) -> None:
+    """firmware: syncEnables(). A side is live while it has something to do."""
+    state.en_a = bool(state.target_a or state.live_a or state.braking_a)
+    state.en_b = bool(state.target_b or state.live_b or state.braking_b)
+
+
+def ramp_tick_bridges(state: Bridges, cfg: Config, dt_ms: int = 10) -> None:
+    """firmware: rampTick(), including the symmetric enable release."""
+    step = ramp_step(cfg, dt_ms)
+    changed = (state.braking_a != state.wrote_brake_a or
+               state.braking_b != state.wrote_brake_b)
+    if state.live_a != state.target_a:
+        state.live_a = ramp_tick(state.live_a, state.target_a, step)
+        changed = True
+    if state.live_b != state.target_b:
+        state.live_b = ramp_tick(state.live_b, state.target_b, step)
+        changed = True
+    if changed:
+        # Raise before writing duty; the release below happens after.
+        state.en_a = state.en_a or bool(state.target_a) or state.braking_a
+        state.en_b = state.en_b or bool(state.target_b) or state.braking_b
+        state.wrote_brake_a = state.braking_a
+        state.wrote_brake_b = state.braking_b
+    sync_enables(state)
+
+
+def settle(state: Bridges, cfg: Config, ticks: int = 400) -> Bridges:
+    for _ in range(ticks):
+        ramp_tick_bridges(state, cfg)
+    return state
+
+
+def request(state: Bridges, cfg: Config, left: int, right: int) -> Bridges:
+    """firmware: applyLogical() as a drive command arriving over HTTP."""
+    state.target_a, state.target_b = apply_logical(cfg, left, right)
+    state.braking_a = state.braking_b = False
+    sync_enables(state)
+    return state
+
+
+def raw_side_test(state: Bridges, side: str, signed_duty: int) -> Bridges:
+    """firmware: handleTest(). Calibration is deliberately bypassed."""
+    state.target_a = signed_duty if side == "a" else 0
+    state.target_b = signed_duty if side == "b" else 0
+    state.braking_a = state.braking_b = False
+    sync_enables(state)
+    return state
+
+
+class TestEnableRelease:
+    """A request for zero must coast, not latch a brake.
+
+    ``rampTick()`` only ever RAISED the enables. A joystick returning to
+    centre, ``speed=0``, or ``trim=0`` therefore left both bridges enabled
+    with both inputs low — four motors shorted through the low-side FETs,
+    reported as ``moving: false``, and unreachable by the failsafe (which
+    only looks at moving robots) or the auto-stop (no ``ms`` pending).
+    """
+
+    def test_zero_valued_command_ends_up_coasting(self):
+        cfg = Config()
+        state = settle(request(Bridges(), cfg, 200, 200), cfg)
+        assert side_effect(state.en_a, state.live_a, state.braking_a) == "drive"
+
+        settle(request(state, cfg, 0, 0), cfg)
+        assert state.enables is False
+        assert side_effect(state.en_a, state.live_a, state.braking_a) == "coast"
+        assert side_effect(state.en_b, state.live_b, state.braking_b) == "coast"
+
+    def test_joystick_returning_to_centre_does_not_lock_the_wheels(self):
+        cfg = Config()
+        state = settle(request(Bridges(), cfg, 255, -255), cfg)
+        settle(request(state, cfg, 0, 0), cfg)          # stick released
+        assert state.enables is False
+
+    def test_speed_zero_never_energises_the_bridges(self):
+        cfg = Config()
+        state = settle(request(Bridges(), cfg, 0, 0), cfg)
+        assert state.enables is False
+
+    def test_trim_zero_on_one_side_coasts_that_side_while_the_other_drives(self):
+        """trim_a=0 makes side A's request 0 while side B drives normally."""
+        cfg = Config(trim_a=0)
+        state = settle(request(Bridges(), cfg, 200, 200), cfg)
+        assert state.target_a == 0 and state.target_b == 200
+        assert side_effect(state.en_b, state.live_b, state.braking_b) == "drive"
+        assert side_effect(state.en_a, state.live_a, state.braking_a) == "coast"
+
+    def test_a_raw_side_test_leaves_the_other_side_free_wheeling(self):
+        """The one diagnostic that must show a single module in isolation.
+
+        Enabling both bridges locked the untested side's wheels, so the robot
+        skidded or pivoted instead of showing plainly which module responded.
+        """
+        cfg = Config()
+        state = settle(raw_side_test(Bridges(), "a", 200), cfg)
+        assert side_effect(state.en_a, state.live_a, state.braking_a) == "drive"
+        assert side_effect(state.en_b, state.live_b, state.braking_b) == "coast"
+
+        settle(raw_side_test(state, "b", -200), cfg)
+        assert side_effect(state.en_b, state.live_b, state.braking_b) == "drive"
+        assert side_effect(state.en_a, state.live_a, state.braking_a) == "coast"
+
+    def test_a_one_sided_turn_coasts_the_idle_side(self):
+        """left=200,right=0 should pivot, not brake the right wheels."""
+        cfg = Config()
+        state = settle(request(Bridges(), cfg, 200, 0), cfg)
+        assert side_effect(state.en_a, state.live_a, state.braking_a) == "drive"
+        assert side_effect(state.en_b, state.live_b, state.braking_b) == "coast"
+
+    def test_ramp_down_keeps_the_bridges_live_until_it_reaches_zero(self):
+        cfg = Config(ramp_ms=180)
+        state = settle(request(Bridges(), cfg, 255, 255), cfg)
+        request(state, cfg, 0, 0)
+        ramp_tick_bridges(state, cfg)
+        assert state.live_a != 0, "the ramp must still be running"
+        assert state.en_a is True, "cutting mid-ramp would be a hard stop"
+        settle(state, cfg)
+        assert state.enables is False
+
+    def test_an_explicit_brake_is_not_released(self):
+        cfg = Config()
+        state = Bridges(braking_a=True, braking_b=True, en_a=True, en_b=True)
+        settle(state, cfg)
+        assert state.en_a is True and state.en_b is True
+        assert side_effect(state.en_a, state.live_a, state.braking_a) == "brake"
+        assert side_effect(state.en_b, state.live_b, state.braking_b) == "brake"
+
+    def test_release_is_idempotent_and_never_thrashes(self):
+        cfg = Config()
+        state = Bridges()
+        for _ in range(50):
+            ramp_tick_bridges(state, cfg)
+            assert state.enables is False
+
+    def test_every_zero_request_settles_to_coast(self):
+        """Exhaustive over the calibration space: no setting can latch a brake."""
+        for cfg in ALL_CALIBRATIONS:
+            for trim_a, trim_b in itertools.product((0, 50, 100), repeat=2):
+                for min_duty in (0, 60, MIN_DUTY_MAX):
+                    tuned = replace(cfg, trim_a=trim_a, trim_b=trim_b,
+                                    min_duty=min_duty)
+                    state = settle(request(Bridges(), tuned, 200, -200), tuned)
+                    settle(request(state, tuned, 0, 0), tuned)
+                    assert state.enables is False, f"{tuned} latched a brake"
+
+
+# ---------------------------------------------------------------------------
+# Handler ordering: a rejected request must change nothing
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Machine:
+    """The slice of firmware state an HTTP handler can mutate."""
+
+    self_step: int = -1
+    target_a: int = 0
+    target_b: int = 0
+    auto_stop_at: int = 0
+    last_command: str = "stop"
+
+
+def handle_motor(machine: Machine, args: dict, cfg: Config,
+                 now: int = 1000) -> int:
+    """firmware: handleMotor() after the validate-before-mutate fix."""
+    direction = args.get("dir", "stop").lower()
+    ok, speed = arg_clamp(args, "speed", 0, PWM_DUTY_MAX, cfg.default_speed)
+    if not ok:
+        return 400
+    ok, ms = arg_range(args, "ms", 0, MS_MAX, 0)
+    if not ok:
+        return 400
+
+    is_stop, is_brake = direction == "stop", direction == "brake"
+    pair = None
+    if not is_stop and not is_brake:
+        pair = direction_to_pair(direction, speed)
+        if pair is None:
+            return 400                      # nothing has been touched yet
+
+    machine.self_step = -1                  # an accepted command wins
+    if is_stop or is_brake:
+        machine.target_a = machine.target_b = 0
+        machine.auto_stop_at = 0
+        machine.last_command = "brake" if is_brake else "stop"
+        return 200
+
+    machine.target_a, machine.target_b = apply_logical(cfg, *pair)
+    machine.auto_stop_at = (now + ms) if ms > 0 else 0
+    machine.last_command = direction
+    return 200
+
+
+def handle_motor_buggy(machine: Machine, args: dict, cfg: Config,
+                       now: int = 1000) -> int:
+    """The old ordering, kept to prove the test can tell the difference."""
+    direction = args.get("dir", "stop").lower()
+    speed = cfg.default_speed
+    machine.self_step = -1                  # <- mutated before validation
+    if direction in ("stop", "brake"):
+        machine.target_a = machine.target_b = 0
+        machine.auto_stop_at = 0
+        return 200
+    pair = direction_to_pair(direction, speed)
+    if pair is None:
+        return 400
+    machine.target_a, machine.target_b = apply_logical(cfg, *pair)
+    return 200
+
+
+def spinning_selftest() -> Machine:
+    """A self-test mid-step: motors turning, the sequence owns the stop."""
+    return Machine(self_step=2, target_a=0, target_b=200, auto_stop_at=0,
+                   last_command="selftest")
+
+
+class TestRejectedRequestsChangeNothing:
+    """A 400 must leave the machine exactly as it was.
+
+    Cancelling a running self-test and only then noticing the direction was a
+    typo switched off the state machine that owns the stop, while the motors
+    kept their spin values and nothing had an auto-stop pending. The caller is
+    told its command failed; the robot keeps going.
+    """
+
+    @pytest.mark.parametrize("bogus", ["fwd", "up", "FORWARDS", "", "spin", "l"])
+    def test_a_typo_does_not_cancel_a_running_selftest(self, bogus):
+        machine = spinning_selftest()
+        code = handle_motor(machine, {"dir": bogus}, Config())
+        assert code == 400
+        assert machine.self_step == 2, "the self-test must still own the motors"
+        assert (machine.target_a, machine.target_b) == (0, 200)
+        assert machine.last_command == "selftest"
+
+    def test_the_old_ordering_would_have_orphaned_the_motors(self):
+        machine = spinning_selftest()
+        assert handle_motor_buggy(machine, {"dir": "fwd"}, Config()) == 400
+        assert machine.self_step == -1          # the bug: sequence disabled...
+        assert machine.target_b == 200          # ...while the motors still spin
+
+    def test_a_malformed_speed_also_changes_nothing(self):
+        machine = spinning_selftest()
+        assert handle_motor(machine, {"dir": "forward", "speed": "fast"},
+                            Config()) == 400
+        assert machine.self_step == 2
+        assert (machine.target_a, machine.target_b) == (0, 200)
+
+    def test_a_malformed_duration_also_changes_nothing(self):
+        machine = spinning_selftest()
+        assert handle_motor(machine, {"dir": "forward", "ms": "-1"},
+                            Config()) == 400
+        assert machine.self_step == 2
+
+    def test_a_valid_command_does_take_over(self):
+        machine = spinning_selftest()
+        assert handle_motor(machine, {"dir": "forward", "speed": "150"},
+                            Config()) == 200
+        assert machine.self_step == -1
+        assert (machine.target_a, machine.target_b) == (150, 150)
+
+    def test_stop_takes_over_and_cancels_the_selftest(self):
+        machine = spinning_selftest()
+        assert handle_motor(machine, {"dir": "stop"}, Config()) == 200
+        assert machine.self_step == -1
+        assert (machine.target_a, machine.target_b) == (0, 0)
+
+    def test_a_timed_move_schedules_its_own_stop(self):
+        machine = Machine()
+        assert handle_motor(machine, {"dir": "forward", "ms": "800"},
+                            Config(), now=5000) == 200
+        assert machine.auto_stop_at == 5800
+
+    def test_no_duration_means_the_failsafe_is_the_only_backstop(self):
+        machine = Machine()
+        handle_motor(machine, {"dir": "forward"}, Config())
+        assert machine.auto_stop_at == 0
+
+
+# ---------------------------------------------------------------------------
+# Stored-configuration clamps
+# ---------------------------------------------------------------------------
+
+
+def config_apply_clamps(values: dict) -> dict:
+    """firmware: configApplyClamps(). NVS can hold anything at all."""
+    out = dict(values)
+    out["trim_a"] = min(100, out.get("trim_a", 100))
+    out["trim_b"] = min(100, out.get("trim_b", 100))
+    freq = out.get("pwm_freq", 20000)
+    out["pwm_freq"] = 20000 if (freq < 100 or freq > 25000) else freq
+    out["failsafe_ms"] = min(60000, out.get("failsafe_ms", 10000))
+    out["ramp_ms"] = min(3000, out.get("ramp_ms", 180))
+    out["min_duty"] = min(MIN_DUTY_MAX, out.get("min_duty", 0))
+    return out
+
+
+class TestStoredConfigurationClamps:
+    """Flash can hold a value the hardware cannot honour.
+
+    A hand-edited partition, a half-finished write or a field written by an
+    older build all reach ``configLoad()``. A ``ramp_ms`` of 60000 or a
+    ``min_duty`` of 255 makes a correctly wired robot look broken, so the
+    clamps run on load as well as on entry.
+    """
+
+    def test_min_duty_cannot_reach_full_scale(self):
+        """min_duty=255 made every nonzero request full throttle."""
+        assert config_apply_clamps({"min_duty": 255})["min_duty"] == MIN_DUTY_MAX
+        assert config_apply_clamps({"min_duty": 200})["min_duty"] == MIN_DUTY_MAX
+        assert config_apply_clamps({"min_duty": 60})["min_duty"] == 60
+
+    def test_a_capped_deadband_still_leaves_real_range_above_it(self):
+        cfg = Config(min_duty=MIN_DUTY_MAX)
+        for value in range(MIN_DUTY_MAX + 1, 256):
+            a, _ = apply_logical(cfg, value, 0)
+            assert a == value, "above the deadband the request must pass through"
+
+    def test_a_capped_deadband_never_inverts_the_speed_ordering(self):
+        cfg = Config(min_duty=MIN_DUTY_MAX)
+        previous = 0
+        for value in range(1, 256):
+            a, _ = apply_logical(cfg, value, 0)
+            assert a >= previous
+            previous = a
+
+    def test_absurd_ramp_and_failsafe_are_clamped(self):
+        clamped = config_apply_clamps({"ramp_ms": 60000, "failsafe_ms": 65535})
+        assert clamped["ramp_ms"] == 3000
+        assert clamped["failsafe_ms"] == 60000
+
+    def test_out_of_band_pwm_frequency_falls_back_to_the_default(self):
+        for freq in (0, 1, 99, 25001, 65535):
+            assert config_apply_clamps({"pwm_freq": freq})["pwm_freq"] == 20000
+        for freq in (100, 1000, 20000, 25000):
+            assert config_apply_clamps({"pwm_freq": freq})["pwm_freq"] == freq
+
+    def test_clamping_is_idempotent(self):
+        wild = {"trim_a": 255, "trim_b": 200, "pwm_freq": 90000,
+                "failsafe_ms": 65535, "ramp_ms": 65535, "min_duty": 255}
+        once = config_apply_clamps(wild)
+        assert config_apply_clamps(once) == once
+
+    def test_defaults_survive_clamping_unchanged(self):
+        defaults = {"trim_a": 100, "trim_b": 100, "pwm_freq": 20000,
+                    "failsafe_ms": 10000, "ramp_ms": 180, "min_duty": 0}
+        assert config_apply_clamps(defaults) == defaults
+
+
+# ---------------------------------------------------------------------------
+# Deadline sentinel
+# ---------------------------------------------------------------------------
+
+UINT32 = 1 << 32
+
+
+def deadline_from_now(now: int, ms: int) -> int:
+    """firmware: deadlineFromNow(). 0 is the "nothing pending" sentinel."""
+    value = (now + ms) % UINT32
+    return value if value else 1
+
+
+class TestDeadlineSentinel:
+    """A pending stop must never be mistaken for no pending stop.
+
+    ``autoStopAt`` uses 0 to mean "no timed stop". Once per ``millis()`` wrap
+    a real deadline lands exactly on 0 and would cancel itself, leaving a
+    timed move running until the failsafe noticed.
+    """
+
+    def test_never_returns_the_sentinel(self):
+        assert deadline_from_now(UINT32 - 500, 500) == 1
+        for ms in range(1, 2000):
+            assert deadline_from_now(UINT32 - ms, ms) != 0
+
+    def test_ordinary_deadlines_are_exact(self):
+        assert deadline_from_now(5000, 800) == 5800
+        assert deadline_from_now(0, 1200) == 1200
+
+    def test_wrapping_deadlines_stay_correct_modulo_the_clock(self):
+        assert deadline_from_now(UINT32 - 100, 300) == 200
+
+
+# ---------------------------------------------------------------------------
+# Dashboard dead-man's switch
+# ---------------------------------------------------------------------------
+
+PAGE_SOURCE = (pathlib.Path(__file__).resolve().parents[2] / "firmware" /
+               "esp32-iris-node-bts7960" / "page.h").read_text(encoding="utf-8")
+
+
+class TestDashboardDeadMansSwitch:
+    """The web page must not be able to leave the robot driving.
+
+    Its drive controls used to be fire-and-forget clicks: one press and the
+    robot ran until the firmware failsafe expired, up to ten seconds later,
+    with nobody holding anything. The page now drives only while a control is
+    held. These checks pin the handlers that make that true — losing any one
+    of them silently restores the old behaviour.
+    """
+
+    def test_arrow_keys_stop_when_released(self):
+        assert "keyup" in PAGE_SOURCE
+        assert "keydown" in PAGE_SOURCE
+
+    def test_pointer_release_is_handled_every_way_a_press_can_end(self):
+        for event in ("pointerdown", "pointerup", "pointerleave", "pointercancel"):
+            assert event in PAGE_SOURCE, f"missing {event} handler"
+
+    def test_losing_the_window_or_tab_also_releases(self):
+        assert "blur" in PAGE_SOURCE
+        assert "visibilitychange" in PAGE_SOURCE
+
+    def test_drive_controls_are_hold_to_drive_not_click_to_drive(self):
+        assert "data-h=" in PAGE_SOURCE
+        assert 'onclick="go(' not in PAGE_SOURCE, "click-to-drive is back"
+
+    def test_a_held_control_keeps_itself_alive(self):
+        """Otherwise a hold longer than failsafe_ms stops on its own."""
+        assert "setInterval" in PAGE_SOURCE
+
+    def test_save_reports_the_firmware_answer_rather_than_assuming_success(self):
+        assert "SAVE FAILED" in PAGE_SOURCE
+
+
+def enable_pin_levels(pins: Pins, en_a: bool, en_b: bool) -> dict:
+    """firmware: setEnables(). One GPIO may carry both enables."""
+    if pins.a_en == pins.b_en:
+        return {pins.a_en: en_a or en_b}
+    return {pins.a_en: en_a, pins.b_en: en_b}
+
+
+class TestSharedEnableGpio:
+    """Both modules may have every R_EN/L_EN tied to one GPIO.
+
+    Per-side enables then cannot be written independently: the shared pin has
+    to be high whenever EITHER side needs its bridge, or driving side A would
+    cut power to side B mid-command.
+    """
+
+    def test_separate_pins_are_driven_independently(self):
+        pins = Pins(a_en=27, b_en=14)
+        assert enable_pin_levels(pins, True, False) == {27: True, 14: False}
+        assert enable_pin_levels(pins, False, True) == {27: False, 14: True}
+
+    def test_a_shared_pin_is_high_whenever_either_side_needs_it(self):
+        pins = Pins(a_en=27, b_en=27)
+        assert enable_pin_levels(pins, True, False) == {27: True}
+        assert enable_pin_levels(pins, False, True) == {27: True}
+        assert enable_pin_levels(pins, True, True) == {27: True}
+        assert enable_pin_levels(pins, False, False) == {27: False}
+
+    def test_a_shared_pin_never_cuts_a_driving_side(self):
+        """Exhaustive: no combination drops the pin while a side is live."""
+        pins = Pins(a_en=27, b_en=27)
+        for en_a, en_b in itertools.product([True, False], repeat=2):
+            level = enable_pin_levels(pins, en_a, en_b)[27]
+            assert level == (en_a or en_b)
+            if en_a or en_b:
+                assert level is True
+
+    def test_sharing_is_only_a_conflict_between_pwm_pins(self):
+        assert pin_conflict(Pins(a_en=27, b_en=27)) == -1
+        assert pin_conflict(Pins(a_r=25, b_r=25)) == 25
+
+
+class TestArgumentContract:
+    """The documented contract for each argument, pinned case by case.
+
+    Three behaviours are deliberately different from each other, and each
+    difference matters: ``dir`` is case-insensitive (people type LEFT),
+    ``speed`` is clamped (300 obviously means "as fast as you can"), and
+    ``ms`` is refused when out of range (clamping -1 to 0 would silently turn
+    a short move into an indefinite one).
+    """
+
+    @pytest.mark.parametrize("raw", ["FORWARD", "Forward", "BaCkWaRd", "LEFT",
+                                     "Right", "STOP", "Brake"])
+    def test_direction_is_case_insensitive(self, raw):
+        assert handle_motor(Machine(), {"dir": raw}, Config()) == 200
+
+    @pytest.mark.parametrize("raw,want", [("-1", 0), ("0", 0), ("77", 77),
+                                          ("255", 255), ("300", 255),
+                                          ("99999", 255)])
+    def test_speed_is_clamped_and_the_command_still_runs(self, raw, want):
+        machine = Machine()
+        assert handle_motor(machine, {"dir": "forward", "speed": raw},
+                            Config()) == 200
+        assert machine.target_a == want
+
+    @pytest.mark.parametrize("raw", ["-1", "-1000", "600001", "9999999"])
+    def test_out_of_range_duration_is_refused(self, raw):
+        machine = spinning_selftest()
+        before = (machine.self_step, machine.target_a, machine.target_b)
+        assert handle_motor(machine, {"dir": "forward", "ms": raw},
+                            Config()) == 400
+        assert (machine.self_step, machine.target_a, machine.target_b) == before
