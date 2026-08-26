@@ -1,7 +1,7 @@
 # ── Desktop automation extras (recommended on your own machine) ──────
 # Install with:  pip install -r requirements-desktop.txt
 pyautogui>=0.9.54          # keyboard/mouse control
-pygetwindow>=0.0.9         # window management (Windows)
+pygetwindow>=0.0.9; sys_platform == "win32"   # window management (Windows only)
 pyperclip>=1.8.2           # clipboard
 mss>=9.0.1                 # fast screenshots
 pillow>=10.2.0             # image handling + tray icon

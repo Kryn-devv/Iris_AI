@@ -32,6 +32,7 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from iris.app.core.logging import get_logger
@@ -135,9 +136,9 @@ APP_SPECS: dict[str, AppSpec] = {
             group="graphics",
             windows=("mspaint",),
             linux=("kolourpaint", "pinta", "drawing", "krita", "gimp"),
-            macos=(),
+            macos=("Preview",),
             processes=("mspaint", "paintapp", "kolourpaint", "pinta", "drawing", "krita",
-                       "gimp"),
+                       "gimp", "preview"),
         ),
         AppSpec(
             key="browser",
@@ -180,7 +181,7 @@ APP_SPECS: dict[str, AppSpec] = {
             windows_paths=_EDGE_WIN_PATHS,
             linux=("microsoft-edge", "microsoft-edge-stable"),
             macos=("Microsoft Edge",),
-            processes=("msedge", "microsoft-edge"),
+            processes=("msedge", "microsoft-edge", "microsoft edge"),
         ),
         AppSpec(
             key="terminal",
@@ -231,7 +232,7 @@ APP_SPECS: dict[str, AppSpec] = {
             windows_paths=(r"%ProgramFiles%\Microsoft Office\root\Office16\WINWORD.EXE",),
             linux=("lowriter", "libreoffice --writer"),
             macos=("Microsoft Word",),
-            processes=("winword", "lowriter", "soffice", "soffice.bin"),
+            processes=("winword", "lowriter", "soffice", "soffice.bin", "microsoft word"),
         ),
         AppSpec(
             key="excel",
@@ -241,7 +242,7 @@ APP_SPECS: dict[str, AppSpec] = {
             windows_paths=(r"%ProgramFiles%\Microsoft Office\root\Office16\EXCEL.EXE",),
             linux=("localc", "libreoffice --calc"),
             macos=("Microsoft Excel",),
-            processes=("excel", "localc", "soffice", "soffice.bin"),
+            processes=("excel", "localc", "soffice", "soffice.bin", "microsoft excel"),
         ),
         AppSpec(
             key="powerpoint",
@@ -251,7 +252,8 @@ APP_SPECS: dict[str, AppSpec] = {
             windows_paths=(r"%ProgramFiles%\Microsoft Office\root\Office16\POWERPNT.EXE",),
             linux=("loimpress", "libreoffice --impress"),
             macos=("Microsoft PowerPoint",),
-            processes=("powerpnt", "loimpress", "soffice", "soffice.bin"),
+            processes=("powerpnt", "loimpress", "soffice", "soffice.bin",
+                       "microsoft powerpoint"),
         ),
         AppSpec(
             key="task_manager",
@@ -681,6 +683,23 @@ class OpenAppTool(BaseTool):
                 "display": f"Opened {requested} from {binary}.",
             }
 
+        # On macOS 'open -a' matches installed .app bundles case-insensitively
+        # ("open -a slack" launches Slack.app), so try it before giving up.
+        if current_os() == "macos":
+            proc = await self.to_thread(
+                subprocess.run, ["open", "-a", requested], capture_output=True
+            )
+            if proc.returncode == 0:
+                logger.info("Opened unlisted app %r via 'open -a'.", requested)
+                return {
+                    "app": requested,
+                    "label": requested,
+                    "strategy": "open -a",
+                    "target": requested,
+                    "speech": f"Opened {requested}.",
+                    "display": f"Opened {requested} using open -a.",
+                }
+
         suggestions = suggest_apps(requested)
         hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
         raise ToolError(
@@ -828,7 +847,9 @@ class ListAppsTool(BaseTool):
         if osname == "macos":
             for app_name in spec.macos:
                 for root in ("/Applications", "/System/Applications",
-                             "/System/Applications/Utilities"):
+                             "/System/Applications/Utilities",
+                             "/System/Library/CoreServices",
+                             str(Path.home() / "Applications")):
                     bundle = os.path.join(root, f"{app_name}.app")
                     if os.path.isdir(bundle):
                         return bundle

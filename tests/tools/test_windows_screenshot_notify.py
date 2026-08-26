@@ -210,14 +210,34 @@ async def test_list_windows_headless_failure(no_window_backends):
     assert "wmctrl" in result.error
 
 
-def test_select_backend_prefers_pygetwindow(monkeypatch):
+def test_select_backend_prefers_pygetwindow_on_windows(monkeypatch):
     fake_gw = SimpleNamespace(getAllTitles=lambda: ["A"], getWindowsWithTitle=lambda t: [])
+    monkeypatch.setattr(windows_mgmt, "is_windows", lambda: True)
+    monkeypatch.setattr(windows_mgmt, "is_linux", lambda: False)
+    monkeypatch.setattr(windows_mgmt, "is_macos", lambda: False)
     monkeypatch.setattr(
         windows_mgmt, "try_import", lambda name: fake_gw if name == "pygetwindow" else None
     )
     backend = select_backend()
     assert backend.name == "pygetwindow"
     assert backend.list_titles() == ["A"]
+
+
+def test_select_backend_ignores_pygetwindow_off_windows(monkeypatch):
+    """macOS must always get AppleScript, even when pygetwindow imports."""
+    fake_gw = SimpleNamespace(getAllTitles=lambda: ["A"], getWindowsWithTitle=lambda t: [])
+    monkeypatch.setattr(windows_mgmt, "is_windows", lambda: False)
+    monkeypatch.setattr(windows_mgmt, "is_linux", lambda: False)
+    monkeypatch.setattr(windows_mgmt, "is_macos", lambda: True)
+    monkeypatch.setattr(
+        windows_mgmt, "try_import", lambda name: fake_gw if name == "pygetwindow" else None
+    )
+    monkeypatch.setattr(
+        windows_mgmt.shutil,
+        "which",
+        lambda name: "/usr/bin/osascript" if name == "osascript" else None,
+    )
+    assert select_backend().name == "applescript"
 
 
 def test_select_backend_picks_wmctrl_then_xdotool(monkeypatch):
@@ -484,6 +504,34 @@ async def test_notify_headless_failure(monkeypatch):
     assert not result.success
     assert "plyer" in result.error
     assert "notify-send" in result.error
+
+
+def test_notify_macos_skips_plyer_for_osascript(monkeypatch):
+    """On macOS plyer is never tried (its backend needs pyobjus); osascript is."""
+    monkeypatch.setattr(notify_module, "is_linux", lambda: False)
+    monkeypatch.setattr(notify_module, "is_macos", lambda: True)
+    monkeypatch.setattr(notify_module, "is_windows", lambda: False)
+
+    def _no_plyer(name):
+        raise AssertionError("plyer must not be imported on macOS")
+
+    monkeypatch.setattr(notify_module, "try_import", _no_plyer)
+    monkeypatch.setattr(
+        notify_module.shutil,
+        "which",
+        lambda name: "/usr/bin/osascript" if name == "osascript" else None,
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        notify_module.subprocess,
+        "run",
+        lambda argv, **kwargs: (calls.append(list(argv)), completed(argv))[1],
+    )
+    assert send_notification("Build", 'It is "done"') == "osascript"
+    assert calls == [
+        ["osascript", "-e",
+         'display notification "It is \\"done\\"" with title "Build"'],
+    ]
 
 
 def _fake_windows(monkeypatch):

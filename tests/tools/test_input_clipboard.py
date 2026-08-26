@@ -323,6 +323,25 @@ async def test_gui_tools_unavailable_headless(tool_factory, kwargs):
     assert result.speech  # spoken form always present
 
 
+def test_load_pyautogui_error_mentions_accessibility_on_macos(monkeypatch):
+    monkeypatch.setattr(input_control, "try_import", lambda name: None)
+    monkeypatch.setattr(input_control, "is_macos", lambda: True)
+    with pytest.raises(ToolError) as excinfo:
+        input_control._load_pyautogui()
+    message = str(excinfo.value)
+    assert "pip install pyautogui" in message
+    assert "Accessibility" in message
+    assert "System Settings > Privacy & Security > Accessibility" in message
+
+
+def test_load_pyautogui_error_has_no_mac_hint_elsewhere(monkeypatch):
+    monkeypatch.setattr(input_control, "try_import", lambda name: None)
+    monkeypatch.setattr(input_control, "is_macos", lambda: False)
+    with pytest.raises(ToolError) as excinfo:
+        input_control._load_pyautogui()
+    assert "Accessibility" not in str(excinfo.value)
+
+
 def test_input_tool_metadata():
     tools = {tool.name: tool for tool in input_control.get_tools()}
     assert set(tools) == {

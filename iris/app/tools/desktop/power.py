@@ -23,7 +23,9 @@ Action       Windows / Linux / macOS
 ===========  ==============================================================
 lock         ``rundll32 user32.dll,LockWorkStation`` /
              ``loginctl lock-session`` → ``xdg-screensaver lock`` →
-             ``gnome-screensaver-command -l`` / ``pmset displaysleepnow``
+             ``gnome-screensaver-command -l`` / Ctrl+Cmd+Q via ``osascript``
+             (needs Accessibility) → ``open -a ScreenSaverEngine`` →
+             ``pmset displaysleepnow``
 sleep        ``rundll32 powrprof.dll,SetSuspendState 0,1,0`` /
              ``systemctl suspend`` / ``pmset sleepnow``
 shutdown     ``shutdown /s /t N`` / ``shutdown -h +M`` /
@@ -62,9 +64,11 @@ MAX_SHUTDOWN_DELAY_SECONDS = 3600
 #: Default shutdown/restart delay.
 DEFAULT_SHUTDOWN_DELAY_SECONDS = 15
 
-#: AppleScript marker shared by the delayed macOS shutdown/restart commands;
-#: ``cancel_shutdown`` pkills processes whose command line contains it.
-_MACOS_POWER_MARKER = 'tell application "System Events" to'
+#: Unique marker embedded (as an AppleScript ``--`` comment) in the delayed
+#: macOS shutdown/restart commands; ``cancel_shutdown`` pkills processes
+#: whose command line contains it. Kept dash-free so it can be passed to
+#: ``pkill -f`` verbatim, and unique so nothing else is ever matched.
+_MACOS_POWER_MARKER = "iris-power"
 
 
 # =============================================================================
@@ -185,8 +189,8 @@ def _schedule_halt(mode: str, delay: int) -> Dict[str, Any]:
         event = "shut down" if mode == "halt" else "restart"
         argv = [
             "osascript",
-            "-e", f"delay {delay}",
-            "-e", f"{_MACOS_POWER_MARKER} {event}",
+            "-e", f"delay {delay} -- {_MACOS_POWER_MARKER}",
+            "-e", f'tell application "System Events" to {event}',
         ]
         _spawn_detached(argv)
         return {"command": " ".join(argv), "scheduled_in_seconds": delay}
@@ -233,9 +237,7 @@ class LockScreenTool(BaseTool):
             return {"command": " ".join(argv), "speech": "Locked the screen."}
 
         if os_name == OS.MACOS:
-            argv = ["pmset", "displaysleepnow"]
-            _checked_run(argv, what="lock the screen")
-            return {"command": " ".join(argv), "speech": "Locked the screen."}
+            return self._lock_macos()
 
         if os_name == OS.LINUX:
             failures: list[str] = []
@@ -260,6 +262,41 @@ class LockScreenTool(BaseTool):
             )
 
         raise _unsupported_os("lock the screen")
+
+    #: AppleScript for the macOS lock shortcut (Ctrl+Cmd+Q). Needs the
+    #: Accessibility permission for the process hosting IRIS.
+    MACOS_LOCK_KEYSTROKE = (
+        'tell application "System Events" to '
+        'keystroke "q" using {control down, command down}'
+    )
+
+    @classmethod
+    def _lock_macos(cls) -> Dict[str, Any]:
+        """Lock a Mac: real lock keystroke, then screensaver, then display sleep."""
+        # 1. The real lock (Ctrl+Cmd+Q). Fails without Accessibility permission.
+        argv = ["osascript", "-e", cls.MACOS_LOCK_KEYSTROKE]
+        try:
+            _checked_run(argv, what="lock the screen")
+            return {"command": " ".join(argv), "speech": "Locked the screen."}
+        except ToolError:
+            pass
+        # 2. The screensaver — locks when "require password after screen saver
+        #    begins" is enabled, and needs no special permission.
+        argv = ["open", "-a", "ScreenSaverEngine"]
+        try:
+            _checked_run(argv, what="lock the screen")
+            return {"command": " ".join(argv), "speech": "Locked the screen."}
+        except ToolError:
+            pass
+        # 3. Last resort: sleep the display. Only locks if password-on-wake is on.
+        argv = ["pmset", "displaysleepnow"]
+        _checked_run(argv, what="lock the screen")
+        return {
+            "command": " ".join(argv),
+            "speech": "I put the display to sleep. It only locks if your Mac "
+                      "requires a password on wake, and a real lock needs "
+                      "Accessibility permission for IRIS.",
+        }
 
 
 class SleepTool(BaseTool):

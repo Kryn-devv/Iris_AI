@@ -288,6 +288,58 @@ async def test_open_app_macos_open_a(monkeypatch):
     assert runs == [["open", "-a", "Google Chrome"]]
 
 
+async def test_open_app_macos_unknown_falls_back_to_open_a(monkeypatch, fake_popen):
+    """An app missing from the alias table still opens via 'open -a' on macOS."""
+    monkeypatch.setattr(apps_mod, "current_os", lambda: "macos")
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    runs: list[list[str]] = []
+
+    class _Result:
+        returncode = 0
+
+    def _run(argv, **kwargs):
+        runs.append(list(argv))
+        return _Result()
+
+    monkeypatch.setattr(subprocess, "run", _run)
+
+    res = await OpenAppTool().execute(app="slack")
+    assert res.success is True
+    assert res.result["strategy"] == "open -a"
+    assert runs == [["open", "-a", "slack"]]
+    assert res.speech == "Opened slack."
+    assert fake_popen.calls == []
+
+
+async def test_open_app_macos_open_a_failure_still_suggests(monkeypatch, fake_popen):
+    """When 'open -a' exits non-zero the did-you-mean error is raised."""
+    monkeypatch.setattr(apps_mod, "current_os", lambda: "macos")
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+    class _Result:
+        returncode = 1
+
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kwargs: _Result())
+
+    res = await OpenAppTool().execute(app="chrme")
+    assert res.success is False
+    assert "Did you mean" in res.error
+    assert "chrome" in res.error.lower()
+
+
+def test_paint_maps_to_preview_on_macos():
+    assert APP_SPECS["paint"].macos == ("Preview",)
+    assert "preview" in APP_SPECS["paint"].processes
+
+
+def test_mac_process_names_for_office_and_edge():
+    """macOS process base names ('Microsoft Word') must be closeable."""
+    assert "microsoft word" in APP_SPECS["word"].processes
+    assert "microsoft excel" in APP_SPECS["excel"].processes
+    assert "microsoft powerpoint" in APP_SPECS["powerpoint"].processes
+    assert "microsoft edge" in APP_SPECS["edge"].processes
+
+
 async def test_open_app_unknown_falls_back_to_path_lookup(monkeypatch, fake_popen):
     monkeypatch.setattr(
         shutil, "which", lambda name: "/usr/bin/htop" if name == "htop" else None
@@ -405,6 +457,18 @@ async def test_close_app_without_psutil(monkeypatch):
     assert "psutil" in res.error
 
 
+async def test_close_app_matches_mac_process_names(monkeypatch):
+    monkeypatch.setattr(apps_mod, "current_os", lambda: "macos")
+    word = FakeProc(51, "Microsoft Word")
+    fake = FakePsutil([word, FakeProc(52, "Microsoft Edge")])
+    monkeypatch.setattr(apps_mod, "try_import", lambda name: fake)
+
+    res = await CloseAppTool().execute(app="word")
+    assert res.success is True
+    assert word.terminated is True
+    assert res.result["closed"] == 1
+
+
 async def test_close_app_never_targets_itself(monkeypatch):
     me = FakeProc(os.getpid(), "spotify")
     fake = FakePsutil([me])
@@ -454,6 +518,20 @@ async def test_list_apps_none_installed(monkeypatch):
     assert res.result["installed"] == {}
     assert res.result["installed_count"] == 0
     assert len(res.result["missing"]) == len(APP_SPECS)
+
+
+def test_find_installed_checks_coreservices_and_home_apps(monkeypatch):
+    """macOS probing also looks in CoreServices and ~/Applications."""
+    from pathlib import Path
+
+    finder = "/System/Library/CoreServices/Finder.app"
+    chrome = str(Path.home() / "Applications" / "Google Chrome.app")
+    monkeypatch.setattr(os.path, "isdir", lambda p: p in (finder, chrome))
+
+    find = ListAppsTool._find_installed
+    assert find(APP_SPECS["file_manager"], "macos") == finder
+    assert find(APP_SPECS["chrome"], "macos") == chrome
+    assert find(APP_SPECS["spotify"], "macos") is None
 
 
 def test_list_apps_metadata():
