@@ -358,6 +358,21 @@ class CloudLLMProvider(LLMProvider):
         )
 
 
+def clean_credential(value: Optional[str]) -> Optional[str]:
+    """Normalize a pasted credential: trim whitespace/newlines and wrapping quotes.
+
+    Notepad and PowerShell pastes routinely smuggle a trailing newline or the
+    surrounding quotes into ``.env`` values; every provider then 401s while the
+    key itself is perfectly valid.
+    """
+    if value is None:
+        return None
+    cleaned = value.strip()
+    while len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in ("'", '"'):
+        cleaned = cleaned[1:-1].strip()
+    return cleaned or None
+
+
 def build_provider(name: str, credentials: Dict[str, Optional[str]]) -> CloudLLMProvider:
     """Construct a provider from a name and its settings credentials."""
     extra_headers: Dict[str, str] = {}
@@ -369,8 +384,8 @@ def build_provider(name: str, credentials: Dict[str, Optional[str]]) -> CloudLLM
         }
     return CloudLLMProvider(
         provider_name=name,
-        base_url=credentials.get("base_url") or "",
-        api_key=credentials.get("api_key"),
-        default_model=credentials.get("model") or "auto",
+        base_url=(clean_credential(credentials.get("base_url")) or ""),
+        api_key=clean_credential(credentials.get("api_key")),
+        default_model=clean_credential(credentials.get("model")) or "auto",
         extra_headers=extra_headers,
     )
