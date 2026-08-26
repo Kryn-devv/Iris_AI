@@ -370,17 +370,18 @@ class DeviceSensorsTool(BaseTool):
     name = "device_sensors"
     description = (
         "Read live sensor values from a registered sensor node (ESP32 with motion, gas, "
-        "light, ultrasonic distance...). Answers 'is there motion', 'gas level', "
-        "'how far is the object'."
+        "light, flame, temperature, humidity, ultrasonic distance front and rear). Answers "
+        "'is there motion', 'gas level', 'how far is the object', 'what's the temperature'."
     )
     category = ToolCategory.AUTOMATION
     permission_level = PermissionLevel.READ
-    aliases = ["read sensors", "sensor readings", "check motion", "gas level"]
+    aliases = ["read sensors", "sensor readings", "check motion", "gas level", "temperature", "humidity"]
     network = True
     input_schema = ToolParameterSchema(
         properties={
             "device": {"type": "string", "description": "Sensor node name (defaults to the first sensor device)"},
-            "sensor": {"type": "string", "enum": ["all", "motion", "gas", "light", "distance", "flame"],
+            "sensor": {"type": "string", "enum": ["all", "motion", "gas", "light", "distance", "flame",
+                                  "temperature", "humidity", "climate"],
                         "description": "Which reading to report (default all)"},
         },
     )
@@ -389,6 +390,8 @@ class DeviceSensorsTool(BaseTool):
         ToolExample(utterance="what's the gas level", arguments={"sensor": "gas"}),
         ToolExample(utterance="how far is the object", arguments={"sensor": "distance"}),
         ToolExample(utterance="is there a fire", arguments={"sensor": "flame"}),
+        ToolExample(utterance="what's the temperature", arguments={"sensor": "temperature"}),
+        ToolExample(utterance="what's the humidity", arguments={"sensor": "humidity"}),
     ]
 
     def __init__(self, registry: Optional[DeviceRegistry] = None):
@@ -411,10 +414,23 @@ class DeviceSensorsTool(BaseTool):
                 "Motion detected" if data.get("motion") or data.get("motion_recent")
                 else "No motion"
             )
+        if sensor in ("all", "temperature", "climate") and "temperature_c" in data:
+            parts.append(f"{data['temperature_c']} degrees")
+        if sensor in ("all", "humidity", "climate") and "humidity_pct" in data:
+            parts.append(f"humidity {data['humidity_pct']}%")
         if sensor in ("all", "light") and "light_percent" in data:
             parts.append(f"light {data['light_percent']}%")
-        if sensor in ("all", "distance") and "distance_cm" in data:
-            parts.append(f"nearest object {data['distance_cm']} cm away")
+        # Two ultrasonics read as one sentence: "40 cm ahead, 12 cm behind"
+        # beats two separate numbers the listener has to pair up themselves.
+        if sensor in ("all", "distance"):
+            front = data.get("distance_cm")
+            rear = data.get("distance_rear_cm")
+            if front is not None and rear is not None:
+                parts.append(f"{front} cm ahead, {rear} cm behind")
+            elif front is not None:
+                parts.append(f"nearest object {front} cm away")
+            elif rear is not None:
+                parts.append(f"{rear} cm behind")
         if not parts:
             return "The node answered but reported no matching sensors."
         return ", ".join(parts) + "."

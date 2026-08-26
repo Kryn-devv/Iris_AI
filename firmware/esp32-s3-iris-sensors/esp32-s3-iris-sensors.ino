@@ -12,7 +12,8 @@
  *  WHAT THIS BOARD DOES
  *    - two 128x64 SSD1306 OLEDs as expressive eyes (14 emotions, blinking,
  *      idle glances, breathing, and a bounce while IRIS speaks)
- *    - PIR motion, MQ-2 gas, LDR light, flame, HC-SR04 distance
+ *    - PIR motion, MQ-2 gas, LDR light, flame, TWO HC-SR04 distance sensors
+ *      (front and rear), DHT11/DHT22 temperature and humidity
  *    - an I2S microphone and speaker: talk to it, it answers out loud
  *    - a web dashboard for testing all of it with nothing installed
  *
@@ -41,8 +42,10 @@
  *  ── WIRING WARNINGS ────────────────────────────────────────────────────────
  *  ESP32-S3 pins are 3.3V and NOT 5V tolerant.
  *    HC-SR04 ECHO outputs 5V  -> divider: ECHO --[1k]--+--[2k]-- GND, tap +
+ *                                (BOTH of them — one divider each)
  *    MQ-2 AO can reach ~4V    -> same 1k/2k divider on AO
  *    PIR HC-SR501 out is 3.3V — direct. Flame module DO is 3.3V — direct.
+ *    DHT11/DHT22 DATA is 3.3V — direct, and its VCC goes to 3.3V not 5V.
  *  Analog sensors must be on GPIO 1..10 (ADC1). GPIO 11..20 are ADC2, which
  *  stops working once WiFi is up and silently returns garbage; setup() warns.
  *
@@ -105,8 +108,12 @@ const bool SWAP_EYES    = false;   /* true if left/right came out reversed   */
 const int PIN_PIR       = 4;      /* HC-SR501 OUT (digital)                  */
 const int PIN_GAS_ADC   = 5;      /* MQ-2 AO through divider  (ADC1: 1..10)  */
 const int PIN_LDR_ADC   = 6;      /* LDR divider midpoint     (ADC1: 1..10)  */
-const int PIN_US_TRIG   = 7;      /* HC-SR04 TRIG                            */
-const int PIN_US_ECHO   = 8;      /* HC-SR04 ECHO through divider            */
+const int PIN_US_TRIG   = 7;      /* HC-SR04 #1 (front) TRIG                 */
+const int PIN_US_ECHO   = 8;      /* HC-SR04 #1 (front) ECHO through divider */
+const int PIN_US_TRIG2  = 38;     /* HC-SR04 #2 (rear) TRIG,  -1 if unfitted */
+const int PIN_US_ECHO2  = 39;     /* HC-SR04 #2 (rear) ECHO through divider  */
+const int PIN_DHT       = 40;     /* DHT11/DHT22 DATA (digital)              */
+const uint8_t DHT_KIND  = DHT11;  /* DHT11 (blue) or DHT22 (white)           */
 const int PIN_FLAME     = 13;     /* flame module DO (digital)               */
 const bool FLAME_ACTIVE_LOW = true;  /* most IR flame modules pull DO LOW    */
 const int GAS_ALARM_RAW = 1800;   /* watch /sensors in clean air, add ~800   */
@@ -142,6 +149,7 @@ SensorReading lastReading;
 bool lastDanger = false;
 bool lastMotionRecent = false;
 long lastDistanceSent = -1;
+long lastRearSent = -1;
 
 /* ═════════════════════ argument access ═════════════════════ */
 
@@ -525,14 +533,21 @@ void setup() {
   fpsWindowMs = millis();
 
   SensorConfig sensorCfg;
-  sensorCfg.pins = {PIN_PIR, PIN_GAS_ADC, PIN_LDR_ADC, PIN_FLAME, PIN_US_TRIG, PIN_US_ECHO};
+  sensorCfg.pins = {PIN_PIR, PIN_GAS_ADC, PIN_LDR_ADC, PIN_FLAME,
+                    PIN_US_TRIG, PIN_US_ECHO, PIN_US_TRIG2, PIN_US_ECHO2, PIN_DHT};
   sensorCfg.flameActiveLow = FLAME_ACTIVE_LOW;
   sensorCfg.gasAlarmRaw = GAS_ALARM_RAW;
   sensorCfg.motionHoldMs = 30000;
+  /* Per SLOT, and the two ultrasonics alternate slots — so each one is actually
+   * measured every 500 ms, which is plenty for an obstacle check. */
   sensorCfg.distanceEveryMs = 250;
+  sensorCfg.climateEveryMs = 2500;   /* a DHT11 refuses to be read faster */
+  sensorCfg.dhtType = DHT_KIND;
   sensors.begin(sensorCfg);
   warnAboutAdc2("gas sensor", PIN_GAS_ADC);
   warnAboutAdc2("light sensor", PIN_LDR_ADC);
+  if (PIN_US_TRIG2 >= 0) Serial.println("  Two ultrasonics fitted — readings are staggered.");
+  if (PIN_DHT >= 0) Serial.printf("  DHT%s on GPIO %d\n", DHT_KIND == DHT11 ? "11" : "22", PIN_DHT);
 
   startEyes();
   face.begin(millis());
@@ -628,6 +643,12 @@ void loop() {
   if (lastReading.hasDistance) {
     if (lastDistanceSent < 0 || labs(lastReading.distanceCm - lastDistanceSent) > 8) {
       lastDistanceSent = lastReading.distanceCm;
+      changed = true;
+    }
+  }
+  if (lastReading.hasDistance2) {
+    if (lastRearSent < 0 || labs(lastReading.distanceCm2 - lastRearSent) > 8) {
+      lastRearSent = lastReading.distanceCm2;
       changed = true;
     }
   }

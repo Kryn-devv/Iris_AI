@@ -289,13 +289,30 @@ One board does both jobs: two OLED eyes and all the sensors. Flash
 | PIR HC-SR501 OUT | GPIO 4 | 3.3V output, connect directly |
 | MQ-2 gas AO | GPIO 5 | ⚠ through a 1k/2k voltage divider (AO can reach ~4V) |
 | LDR divider midpoint | GPIO 6 | LDR + 10k resistor from 3.3V |
-| HC-SR04 TRIG | GPIO 7 | direct |
-| HC-SR04 ECHO | GPIO 8 | ⚠ through a 1k/2k divider (ECHO is 5V) |
+| HC-SR04 #1 (front) TRIG | GPIO 7 | direct |
+| HC-SR04 #1 (front) ECHO | GPIO 8 | ⚠ through a 1k/2k divider (ECHO is 5V) |
+| HC-SR04 #2 (rear) TRIG | GPIO 38 | direct |
+| HC-SR04 #2 (rear) ECHO | GPIO 39 | ⚠ through a 1k/2k divider (ECHO is 5V) |
+| DHT11/DHT22 DATA | GPIO 40 | direct. Module boards have the 10k pull-up already; a bare 4-pin sensor needs one 10k from DATA to 3.3V |
 | Flame module DO | GPIO 13 | 3.3V output, direct. Use **DO**, not AO. Most modules are active-LOW — the default matches |
 
-**The S3's pins are NOT 5V tolerant** — skipping the two dividers can kill
-inputs. Power PIR/MQ-2/HC-SR04 from the 5V pin, the LDR from 3.3V. Set any
-unused sensor's pin to `-1`.
+**The S3's pins are NOT 5V tolerant** — skipping the ECHO dividers can kill
+inputs. Power PIR/MQ-2/HC-SR04 from the 5V pin, the LDR and the DHT from 3.3V.
+Set any unused sensor's pin to `-1`.
+
+**Two ultrasonics fire alternately, never together.** If both ping at the same
+instant each one hears the other's burst, and the false echo looks exactly like
+a broken sensor rather than like interference. The firmware reads one per slot
+and alternates, so each still refreshes several times a second.
+
+**The DHT is slow on purpose.** A DHT11 needs about a second between reads and
+a DHT22 two, so climate is sampled every 2.5 s (`climateEveryMs`) and the last
+good value is cached in between. Set `DHT_KIND` to `DHT11` (blue module) or
+`DHT22` (white module) — the wrong one reads as `nan` and IRIS simply omits it
+rather than reporting a made-up number.
+
+Both extra sensors are optional: leave `PIN_US_TRIG2`/`PIN_US_ECHO2`/`PIN_DHT`
+at `-1` and everything else keeps working.
 
 **Analog sensors must be on GPIO 1–10.** GPIO 11–20 are ADC2, and ADC2 stops
 working the moment WiFi comes up — the reading silently returns garbage. The
@@ -372,8 +389,14 @@ is there a fire           ·  aag lagi hai kya
 is there any motion       ·  koi hai kya
 what's the gas level      ·  gas level kya hai
 how far is the object     ·  kitna door hai
+what's the temperature    ·  kitna garam hai  ·  temperature batao
+what's the humidity       ·  nami kitni hai
 check the sensors
 ```
+
+With both HC-SR04s fitted, "how far is the object" answers with one phrase —
+*"82 cm ahead, 15 cm behind"* — rather than two numbers you have to pair up
+yourself. With only the front one, it says *"nearest object 82 cm away"*.
 
 Flame and gas do not wait to be asked: the board reports them the instant it
 sees them, and IRIS says so out loud with the eyes going wide. Repeats are

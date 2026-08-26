@@ -262,12 +262,86 @@ class TestSensorNode:
         res = await DeviceSensorsTool(registry).execute()
         assert not res.success and "No sensor node" in res.error
 
+    @pytest.mark.asyncio
+    async def test_climate_and_two_ultrasonics(self, registry, monkeypatch):
+        """A node with the DHT and both HC-SR04s fitted.
+
+        The two distances have to read as one phrase — "82 cm ahead, 15 cm
+        behind" — because two bare numbers leave the listener to guess which
+        end of the robot each belongs to.
+        """
+        from iris.app.tools.devices.esp32 import DeviceSensorsTool
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={
+                "flame": False,
+                "distance_cm": 82, "distance_rear_cm": 15,
+                "temperature_c": 28.4, "humidity_pct": 61,
+            })
+
+        transport = httpx.MockTransport(handler)
+        real_client = httpx.AsyncClient
+        monkeypatch.setattr(esp32_mod.httpx, "AsyncClient",
+                            lambda **kw: real_client(transport=transport, **{k: v for k, v in kw.items() if k != "transport"}))
+        registry.add(Device(name="room sensor", base_url="http://192.168.1.72", kind="sensor"))
+
+        temp = await DeviceSensorsTool(registry).execute(sensor="temperature")
+        assert temp.success and temp.result["speech"] == "28.4 degrees."
+
+        hum = await DeviceSensorsTool(registry).execute(sensor="humidity")
+        assert hum.result["speech"] == "humidity 61%."
+
+        both = await DeviceSensorsTool(registry).execute(sensor="climate")
+        assert "28.4 degrees" in both.result["speech"]
+        assert "humidity 61%" in both.result["speech"]
+
+        dist = await DeviceSensorsTool(registry).execute(sensor="distance")
+        assert dist.result["speech"] == "82 cm ahead, 15 cm behind."
+
+    @pytest.mark.asyncio
+    async def test_single_ultrasonic_still_reads_naturally(self, registry, monkeypatch):
+        """The rear sensor is optional, so a one-sensor node must not say
+        "82 cm ahead" with nothing behind it."""
+        from iris.app.tools.devices.esp32 import DeviceSensorsTool
+
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"distance_cm": 82}))
+        real_client = httpx.AsyncClient
+        monkeypatch.setattr(esp32_mod.httpx, "AsyncClient",
+                            lambda **kw: real_client(transport=transport, **{k: v for k, v in kw.items() if k != "transport"}))
+        registry.add(Device(name="front sensor", base_url="http://192.168.1.73", kind="sensor"))
+
+        res = await DeviceSensorsTool(registry).execute(sensor="distance")
+        assert res.result["speech"] == "nearest object 82 cm away."
+
+    @pytest.mark.asyncio
+    async def test_missing_dht_does_not_invent_a_temperature(self, registry, monkeypatch):
+        from iris.app.tools.devices.esp32 import DeviceSensorsTool
+
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"motion": False, "motion_recent": False}))
+        real_client = httpx.AsyncClient
+        monkeypatch.setattr(esp32_mod.httpx, "AsyncClient",
+                            lambda **kw: real_client(transport=transport, **{k: v for k, v in kw.items() if k != "transport"}))
+        registry.add(Device(name="bare sensor", base_url="http://192.168.1.74", kind="sensor"))
+
+        res = await DeviceSensorsTool(registry).execute(sensor="temperature")
+        assert "no matching sensors" in res.result["speech"]
+
     @pytest.mark.parametrize("utterance,sensor", [
         ("is there any motion", "motion"),
         ("koi hai kya", "motion"),
         ("gas level kya hai", "gas"),
         ("kitna door hai", "distance"),
         ("check the sensors", "all"),
+        ("what's the temperature", "temperature"),
+        ("how hot is it", "temperature"),
+        ("kitna garam hai", "temperature"),
+        ("temperature batao", "temperature"),
+        ("room temperature", "temperature"),
+        ("what's the humidity", "humidity"),
+        ("how humid is it", "humidity"),
+        ("nami kitni hai", "humidity"),
     ])
     def test_sensor_nlu(self, utterance, sensor):
         match = IntentEngine().match(utterance)

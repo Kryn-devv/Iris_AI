@@ -19,23 +19,33 @@
  *  reading silently returns garbage rather than failing. setup() warns if a
  *  sensor is on one.
  *
- *  ── THE ULTRASONIC SENSOR IS THE SLOW ONE ──────────────────────────────────
- *  pulseIn() blocks for up to its timeout — 25 ms with nothing in range. At 40
- *  frames per second that is a visible stutter in the eyes, so the distance is
- *  measured on a timer and cached rather than on every request.
+ *  ── THE SLOW SENSORS ───────────────────────────────────────────────────────
+ *  Two sensors here block, and both are measured on a timer and cached rather
+ *  than on every request — otherwise the eyes visibly stutter at 40 fps.
+ *
+ *    ultrasonic  pulseIn() blocks up to its timeout (25 ms with nothing in
+ *                range). With TWO of them the readings are also STAGGERED:
+ *                fired together, each hears the other's ping and both report
+ *                nonsense that looks exactly like a broken sensor.
+ *    DHT         the single-wire protocol takes ~25 ms and a DHT11 cannot be
+ *                read faster than about once a second anyway.
  * ============================================================================
  */
 #pragma once
 
 #include <Arduino.h>
+#include <DHT.h>
 
 struct SensorPins {
   int pir;         /* HC-SR501 OUT            (digital)          */
   int gasAdc;      /* MQ-2 AO through divider (ADC1: GPIO 1..10) */
   int ldrAdc;      /* LDR divider midpoint    (ADC1: GPIO 1..10) */
   int flame;       /* flame module DO         (digital, often active LOW) */
-  int usTrig;      /* HC-SR04 TRIG                               */
-  int usEcho;      /* HC-SR04 ECHO through divider               */
+  int usTrig;      /* HC-SR04 #1 (front) TRIG                    */
+  int usEcho;      /* HC-SR04 #1 (front) ECHO through divider     */
+  int usTrig2;     /* HC-SR04 #2 (rear) TRIG,  -1 if not fitted   */
+  int usEcho2;     /* HC-SR04 #2 (rear) ECHO through divider      */
+  int dht;         /* DHT11/DHT22 DATA        (digital)           */
 };
 
 struct SensorConfig {
@@ -43,7 +53,9 @@ struct SensorConfig {
   bool     flameActiveLow;   /* most IR flame modules pull DO LOW on fire */
   int      gasAlarmRaw;      /* 0..4095; watch /sensors in clean air + ~800 */
   uint32_t motionHoldMs;     /* how long motion stays "recent"             */
-  uint32_t distanceEveryMs;  /* how often to re-measure distance            */
+  uint32_t distanceEveryMs;  /* how often to re-measure ONE ultrasonic      */
+  uint32_t climateEveryMs;   /* DHT11 needs >= ~1000; DHT22 >= ~2000        */
+  uint8_t  dhtType;          /* DHT11 or DHT22 (the library's constants)    */
 };
 
 struct SensorReading {
@@ -64,6 +76,13 @@ struct SensorReading {
 
   bool  hasDistance = false;
   long  distanceCm = -1;
+
+  bool  hasDistance2 = false;
+  long  distanceCm2 = -1;
+
+  bool  hasClimate = false;
+  float temperatureC = NAN;
+  float humidityPct = NAN;
 };
 
 class Sensors {
@@ -74,9 +93,18 @@ class Sensors {
     if (cfg_.pins.flame >= 0) pinMode(cfg_.pins.flame, INPUT);
     if (cfg_.pins.usTrig >= 0) pinMode(cfg_.pins.usTrig, OUTPUT);
     if (cfg_.pins.usEcho >= 0) pinMode(cfg_.pins.usEcho, INPUT);
+    if (cfg_.pins.usTrig2 >= 0) pinMode(cfg_.pins.usTrig2, OUTPUT);
+    if (cfg_.pins.usEcho2 >= 0) pinMode(cfg_.pins.usEcho2, INPUT);
     analogReadResolution(12);
     lastDistanceAt_ = 0;
+    lastClimateAt_ = 0;
     lastMotionMs_ = 0;
+    whichUs_ = 0;
+
+    if (cfg_.pins.dht >= 0) {
+      dht_ = new DHT(cfg_.pins.dht, cfg_.dhtType);
+      dht_->begin();
+    }
   }
 
   /* Called every loop. Cheap: the only slow sensor is rate-limited. */
@@ -84,10 +112,30 @@ class Sensors {
     if (cfg_.pins.pir >= 0 && digitalRead(cfg_.pins.pir) == HIGH) {
       lastMotionMs_ = now ? now : 1;      /* 0 doubles as "never seen" */
     }
-    if (cfg_.pins.usTrig >= 0 && cfg_.pins.usEcho >= 0 &&
-        (uint32_t)(now - lastDistanceAt_) >= cfg_.distanceEveryMs) {
+    /* One ultrasonic per slot, alternating. Firing both at once means each
+     * hears the other's ping, and the false echoes look exactly like a broken
+     * sensor rather than like interference. */
+    if ((uint32_t)(now - lastDistanceAt_) >= cfg_.distanceEveryMs) {
       lastDistanceAt_ = now;
-      cachedDistance_ = measureDistance();
+      const bool haveFront = cfg_.pins.usTrig >= 0 && cfg_.pins.usEcho >= 0;
+      const bool haveRear = cfg_.pins.usTrig2 >= 0 && cfg_.pins.usEcho2 >= 0;
+      if (haveFront && (whichUs_ == 0 || !haveRear)) {
+        cachedDistance_ = measureDistance(cfg_.pins.usTrig, cfg_.pins.usEcho);
+      } else if (haveRear) {
+        cachedDistance2_ = measureDistance(cfg_.pins.usTrig2, cfg_.pins.usEcho2);
+      }
+      whichUs_ ^= 1;
+    }
+
+    /* The DHT blocks for ~25 ms and refuses to be read quickly, so it gets its
+     * own slow timer. A failed read keeps the last good value rather than
+     * flapping to nothing — one dropped sample is noise, not news. */
+    if (dht_ != nullptr && (uint32_t)(now - lastClimateAt_) >= cfg_.climateEveryMs) {
+      lastClimateAt_ = now;
+      const float t = dht_->readTemperature();
+      const float h = dht_->readHumidity();
+      if (!isnan(t) && t > -40.0f && t < 85.0f) cachedTempC_ = t;
+      if (!isnan(h) && h >= 0.0f && h <= 100.0f) cachedHumidity_ = h;
     }
   }
 
@@ -122,6 +170,15 @@ class Sensors {
       r.hasDistance = cachedDistance_ >= 0;
       r.distanceCm = cachedDistance_;
     }
+    if (cfg_.pins.usTrig2 >= 0 && cfg_.pins.usEcho2 >= 0) {
+      r.hasDistance2 = cachedDistance2_ >= 0;
+      r.distanceCm2 = cachedDistance2_;
+    }
+    if (dht_ != nullptr) {
+      r.hasClimate = !isnan(cachedTempC_) || !isnan(cachedHumidity_);
+      r.temperatureC = cachedTempC_;
+      r.humidityPct = cachedHumidity_;
+    }
     return r;
   }
 
@@ -152,6 +209,11 @@ class Sensors {
     }
     if (r.hasFlame) add("\"flame\":" + String(r.flame ? "true" : "false"));
     if (r.hasDistance) add("\"distance_cm\":" + String(r.distanceCm));
+    if (r.hasDistance2) add("\"distance_rear_cm\":" + String(r.distanceCm2));
+    if (r.hasClimate) {
+      if (!isnan(r.temperatureC)) add("\"temperature_c\":" + String(r.temperatureC, 1));
+      if (!isnan(r.humidityPct)) add("\"humidity_pct\":" + String(r.humidityPct, 1));
+    }
     add("\"uptime_s\":" + String(uptimeS));
     j += "}";
     return j;
@@ -171,6 +233,9 @@ class Sensors {
     add("light", cfg_.pins.ldrAdc >= 0);
     add("flame", cfg_.pins.flame >= 0);
     add("ultrasonic", cfg_.pins.usTrig >= 0 && cfg_.pins.usEcho >= 0);
+    add("ultrasonic_rear", cfg_.pins.usTrig2 >= 0 && cfg_.pins.usEcho2 >= 0);
+    add("temperature", cfg_.pins.dht >= 0);
+    add("humidity", cfg_.pins.dht >= 0);
     j += "]";
     return j;
   }
@@ -178,13 +243,13 @@ class Sensors {
   const SensorConfig& config() const { return cfg_; }
 
  private:
-  long measureDistance() const {
-    digitalWrite(cfg_.pins.usTrig, LOW);  delayMicroseconds(3);
-    digitalWrite(cfg_.pins.usTrig, HIGH); delayMicroseconds(10);
-    digitalWrite(cfg_.pins.usTrig, LOW);
+  static long measureDistance(int trig, int echo) {
+    digitalWrite(trig, LOW);  delayMicroseconds(3);
+    digitalWrite(trig, HIGH); delayMicroseconds(10);
+    digitalWrite(trig, LOW);
     /* 25 ms ~ 4 m. Shorter than the classic 30 ms on purpose: this blocks the
      * animation, and nothing useful lives past 4 m for a desk robot. */
-    const long duration = pulseIn(cfg_.pins.usEcho, HIGH, 25000);
+    const long duration = pulseIn(echo, HIGH, 25000);
     if (duration <= 0) return -1;
     const long cm = (long)(duration * 0.0343 / 2.0);
     return (cm > 0 && cm < 500) ? cm : -1;
@@ -193,5 +258,11 @@ class Sensors {
   SensorConfig cfg_{};
   uint32_t lastMotionMs_ = 0;
   uint32_t lastDistanceAt_ = 0;
+  uint32_t lastClimateAt_ = 0;
+  uint8_t  whichUs_ = 0;
   long     cachedDistance_ = -1;
+  long     cachedDistance2_ = -1;
+  float    cachedTempC_ = NAN;
+  float    cachedHumidity_ = NAN;
+  DHT*     dht_ = nullptr;
 };

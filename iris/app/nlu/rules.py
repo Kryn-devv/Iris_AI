@@ -511,6 +511,33 @@ RULES: list[Rule] = [
         confidence=0.97,
     ),
     Rule(
+        name="sensor_temperature_query",
+        intent="devices",
+        tool="device_sensors",
+        pattern=_rx(
+            r"^(?:what(?:'s|\s+is)\s+(?:the\s+)?(?:room\s+|current\s+)?temperature"
+            r"|how\s+(?:hot|cold|warm)\s+is\s+it(?:\s+in\s+(?:here|the\s+room))?"
+            r"|temperature\s+(?:check|reading|batao|kya\s+hai|bataiye)"
+            r"|kitna\s+(?:garam|thanda)\s+hai"
+            r"|room\s+temperature)\??$"
+        ),
+        static_args={"sensor": "temperature"},
+        confidence=0.96,
+    ),
+    Rule(
+        name="sensor_humidity_query",
+        intent="devices",
+        tool="device_sensors",
+        pattern=_rx(
+            r"^(?:what(?:'s|\s+is)\s+(?:the\s+)?humidity"
+            r"|how\s+humid\s+is\s+it(?:\s+in\s+(?:here|the\s+room))?"
+            r"|humidity\s+(?:check|reading|batao|kya\s+hai)"
+            r"|nami\s+kitni\s+hai)\??$"
+        ),
+        static_args={"sensor": "humidity"},
+        confidence=0.96,
+    ),
+    Rule(
         name="sensor_all_query",
         intent="devices",
         tool="device_sensors",
