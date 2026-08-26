@@ -95,7 +95,7 @@ class VoiceService:
         engine = stt_module.pick_engine()
         return engine.name if engine else "browser"
 
-    async def speak(self, text: str, *, interrupt: bool = False) -> dict[str, Any]:
+    async def speak(self, text: str, *, language: str = "en", interrupt: bool = False) -> dict[str, Any]:
         """Speak a sentence (server-side when possible) and notify all UIs."""
         sentence = sanitize_for_speech(text)
         if not sentence:
@@ -104,25 +104,33 @@ class VoiceService:
         engine = self._get_tts() if (self.enabled and settings.SPEAK_RESPONSES) else None
         default_event_bus.publish(
             Topics.VOICE_SPEAKING,
-            {"text": sentence, "engine": engine.name if engine else "browser"},
+            {"text": sentence, "engine": engine.name if engine else "browser", "language": language},
         )
 
         spoken = False
         if engine is not None:
             async with self._speak_lock:
                 try:
-                    spoken = await engine.speak(sentence)
+                    spoken = await engine.speak(sentence, language)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("TTS engine %s failed: %s", engine.name, exc)
-        return {"spoken": spoken, "engine": engine.name if engine else "browser", "text": sentence}
+            if not spoken:
+                # Server audio failed — hand the sentence to the web UI's
+                # speechSynthesis so the user hears it instead of silence.
+                default_event_bus.publish(
+                    Topics.VOICE_SPEAKING,
+                    {"text": sentence, "engine": "browser", "language": language},
+                )
+        engine_name = engine.name if engine is not None and spoken else "browser"
+        return {"spoken": spoken, "engine": engine_name, "text": sentence, "language": language}
 
-    async def synthesize(self, text: str) -> Optional[str]:
+    async def synthesize(self, text: str, language: str = "en") -> Optional[str]:
         """Produce an audio file for a sentence (for phone clients)."""
         sentence = sanitize_for_speech(text)
         engine = self._get_tts()
         if engine is None or not sentence:
             return None
-        path = await engine.synthesize(sentence)
+        path = await engine.synthesize(sentence, language)
         return str(path) if path else None
 
     # -------------------------------------------------------------------- STT
@@ -140,6 +148,8 @@ class VoiceService:
             "enabled": self.enabled,
             "speak_responses": settings.SPEAK_RESPONSES,
             "tts_engine": self.tts_engine_name,
+            "tts_voice": settings.TTS_VOICE or "auto (female)",
+            "languages": ["en", "hi", "hinglish"],
             "stt_engine": self.stt_engine_name,
             "wake_words": settings.WAKE_WORDS,
             "wake_word_enabled": settings.WAKE_WORD_ENABLED,

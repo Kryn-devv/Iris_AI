@@ -48,6 +48,32 @@ It's built **free-first**: every command works with *zero* API keys thanks to a 
 
 …and anything else becomes a conversation with a free AI model, which can chain any of the 65+ tools itself.
 
+## 🏠 ESP32, home automation & the robot
+
+IRIS drives your WiFi hardware — relay boards for lights/fans/sockets and an
+L298N motor base for the robot — over plain HTTP on your LAN:
+
+```
+add device kitchen light at 192.168.1.73 as relay
+turn on the kitchen light        ·  light chalu karo
+fan band karo                    ·  toggle the socket
+add device robot at 192.168.1.74 as motor
+robot forward · move the robot left · stop the robot
+```
+
+Flash the bundled universal firmware (`firmware/esp32-iris-node/`) or keep
+your existing sketches and map their URLs per device. Full wiring and setup
+guide: **[docs/ESP32.md](docs/ESP32.md)**. Registered devices also show up in
+the settings drawer with live online state and toggle buttons.
+
+## 🗣 Languages & voice
+
+Talk to IRIS in **English, Hindi or Hinglish** — it detects the language and
+replies (and speaks) in kind, always with a **female voice**: Zira/Aria/Heera
+on Windows, Samantha/Lekha on macOS, Swara for Hindi via edge-tts, and
+matching browser voices. `delhi ka mausam kaisa hai`, `kitne baje hain`,
+`screenshot lo`, `awaaz badhao`, `notepad kholo` all work offline.
+
 ## 🖥 The interface
 
 A minimalist dark UI with a **3D holographic particle sphere** at its heart — it drifts while idle, blooms when listening, swirls while thinking and pulses as it speaks. Live activity ticker, confirmation dialogs for risky actions, a settings drawer with provider/voice/tool status, and one-tap phone pairing with a QR code.

@@ -35,6 +35,7 @@ from iris.app.agent.prompts import (
     CONTENT_SLIDES_PROMPT,
     CONTENT_SPREADSHEET_PROMPT,
     get_system_prompt,
+    language_instruction,
 )
 from iris.app.agent.smalltalk import match_smalltalk
 from iris.app.agent.state import AgentState
@@ -47,6 +48,7 @@ from iris.app.core.security import (
     PermissionManager,
     default_permission_manager,
 )
+from iris.app.language.localize import localize_ack
 from iris.app.language.service import LanguageService, default_language_service
 from iris.app.llm.cloud import extract_json_object
 from iris.app.llm.gateway import ModelGateway, default_model_gateway
@@ -144,8 +146,8 @@ class AgentKernel:
             if memory_response is not None:
                 return self._finish(state, memory_response)
 
-            # Layer 3: instant small talk.
-            smalltalk = match_smalltalk(user_input_clean)
+            # Layer 3: instant small talk, in the user's own register.
+            smalltalk = match_smalltalk(user_input_clean, style=target_style)
             if smalltalk is not None:
                 state.update_status(TaskStatus.COMPLETED)
                 self._dispatch_event(state, AgentEventType.AGENT_COMPLETED)
@@ -380,7 +382,7 @@ class AgentKernel:
         arguments = dict(match.arguments)
         generation_note = ""
         if match.needs_generation:
-            arguments, generation_note = await self._enrich_content_arguments(match, arguments)
+            arguments, generation_note = await self._enrich_content_arguments(state, match, arguments)
 
         summary, exec_result = await self._execute_tool(
             state, match.tool_name, arguments, user_approved
@@ -398,6 +400,13 @@ class AgentKernel:
         text = exec_result.spoken_or_display()
         if not text:
             text = "Done." if exec_result.success else "That didn't work."
+        speech = exec_result.speech
+        if exec_result.success:
+            # Conservative localization of common acks ("Opened X." -> "X khol diya.").
+            style = state.metadata.get("target_style")
+            text = localize_ack(text, style)
+            if speech:
+                speech = localize_ack(speech, style)
         if generation_note:
             text = f"{text}\n\n{generation_note}" if exec_result.success else text
 
@@ -408,7 +417,7 @@ class AgentKernel:
             handler="nlu",
             intent=match.tool_name,
             tools=[summary],
-            speech=exec_result.speech,
+            speech=speech,
             artifacts=exec_result.artifacts,
             ui=exec_result.ui,
             status=TaskStatus.COMPLETED if exec_result.success else TaskStatus.FAILED,
@@ -416,12 +425,15 @@ class AgentKernel:
         )
 
     async def _enrich_content_arguments(
-        self, match: IntentMatch, arguments: Dict[str, Any]
+        self, state: AgentState, match: IntentMatch, arguments: Dict[str, Any]
     ) -> tuple[Dict[str, Any], str]:
         """Generate rich content for content-producing intents when a model is available.
 
         Falls back to the tools' own deterministic templates when offline.
         """
+        lang_instruction = language_instruction(
+            state.metadata.get("target_response_language", "en")
+        )
         if not self.model_gateway.has_cloud or settings.LLM_MODE in ("off", "mock"):
             if match.tool_name == "write_code":
                 return self._offline_code_arguments(arguments), (
@@ -441,7 +453,8 @@ class AgentKernel:
             if match.tool_name == "create_presentation":
                 topic = arguments.get("topic") or arguments.get("title", "")
                 res = await self.model_gateway.generate(
-                    CONTENT_SLIDES_PROMPT.format(topic=topic), capability="REASONING"
+                    CONTENT_SLIDES_PROMPT.format(topic=topic, lang_instruction=lang_instruction),
+                    capability="REASONING",
                 )
                 data = extract_json_object(res.content)
                 if data and isinstance(data.get("slides"), list) and data["slides"]:
@@ -450,7 +463,8 @@ class AgentKernel:
             elif match.tool_name == "write_document":
                 topic = arguments.get("title", "")
                 res = await self.model_gateway.generate(
-                    CONTENT_DOCUMENT_PROMPT.format(topic=topic), capability="REASONING"
+                    CONTENT_DOCUMENT_PROMPT.format(topic=topic, lang_instruction=lang_instruction),
+                    capability="REASONING",
                 )
                 if res.content.strip():
                     arguments["content"] = res.content.strip()
@@ -458,7 +472,10 @@ class AgentKernel:
                 task = arguments.pop("task", "")
                 language = arguments.get("language", "python")
                 res = await self.model_gateway.generate(
-                    CONTENT_CODE_PROMPT.format(task=task, language=language), capability="CODING"
+                    CONTENT_CODE_PROMPT.format(
+                        task=task, language=language, lang_instruction=lang_instruction
+                    ),
+                    capability="CODING",
                 )
                 data = extract_json_object(res.content)
                 if data and data.get("code"):
@@ -470,7 +487,8 @@ class AgentKernel:
             elif match.tool_name == "create_spreadsheet":
                 topic = arguments.get("title", "")
                 res = await self.model_gateway.generate(
-                    CONTENT_SPREADSHEET_PROMPT.format(topic=topic), capability="REASONING"
+                    CONTENT_SPREADSHEET_PROMPT.format(topic=topic, lang_instruction=lang_instruction),
+                    capability="REASONING",
                 )
                 data = extract_json_object(res.content)
                 if data and data.get("headers"):

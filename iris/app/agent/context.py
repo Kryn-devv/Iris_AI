@@ -66,12 +66,29 @@ class ContextAssembler:
             style_val = getattr(getattr(lang_det, "style", None), "value", "ENGLISH")
             has_explicit = "true" if getattr(lang_det, "explicit_request", None) else "false"
 
+            directives = {
+                "hi": (
+                    "IMPORTANT: The user is speaking Hindi. Reply ENTIRELY in Hindi "
+                    "(Devanagari script). Keep technical terms in English where natural."
+                ),
+                "hinglish": (
+                    "IMPORTANT: The user is speaking Hinglish (Hindi-English mix in Latin "
+                    "script). Reply in the SAME casual Hinglish style — Hindi grammar with "
+                    "everyday English words, written in Latin script. Example: 'Haan bilkul, "
+                    "maine file bana di hai. Check karo Downloads folder mein.'"
+                ),
+            }
+            directive = directives.get(
+                str(resp_lang).lower(),
+                "Reply in clear, natural English." if str(resp_lang).lower() == "en" else "",
+            )
             lang_block = (
                 f"\n[LANGUAGE CONTEXT]\n"
                 f"detected={lang_val}\n"
                 f"response_language={resp_lang}\n"
                 f"style={style_val.lower()}\n"
-                f"explicit_request={has_explicit}"
+                f"explicit_request={has_explicit}\n"
+                f"{directive}"
             )
             memory_context_parts.append(lang_block)
 

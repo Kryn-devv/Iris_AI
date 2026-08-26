@@ -12,7 +12,7 @@ from typing import Any, Callable, Optional
 
 from iris.app.core.config import settings
 from iris.app.core.logging import get_logger
-from iris.app.core.platform_info import has_display, try_import
+from iris.app.core.platform_info import has_display, is_macos, try_import
 
 logger = get_logger("desktop.tray")
 
@@ -73,6 +73,27 @@ class TrayIcon:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Tray icon creation failed: %s", exc)
             return False
+
+        if is_macos():
+            # pystray's darwin backend must own the main thread's event loop;
+            # run() in a secondary thread aborts the process. run_detached()
+            # (available when pyobjc is installed) is the only safe option.
+            run_detached = getattr(self._icon, "run_detached", None)
+            if not callable(run_detached):
+                logger.info(
+                    "Tray skipped on macOS: pystray cannot run() in a background "
+                    "thread and this pystray build has no run_detached()."
+                )
+                self._icon = None
+                return False
+            try:
+                run_detached()
+            except Exception as exc:  # noqa: BLE001 - tray is always optional
+                logger.info("Tray skipped on macOS: run_detached() failed: %s", exc)
+                self._icon = None
+                return False
+            logger.info("Tray icon started (detached).")
+            return True
 
         self._thread = threading.Thread(target=self._icon.run, name="iris-tray", daemon=True)
         self._thread.start()

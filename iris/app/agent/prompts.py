@@ -29,16 +29,33 @@ def get_system_prompt(custom_context: str = "") -> str:
 
 
 CONTENT_SLIDES_PROMPT = """Create the content for a presentation about: {topic}
+Write all human-readable content in {lang_instruction}.
 Return JSON only: {{"title": str, "slides": [{{"title": str, "bullets": [str, ...], "notes": str}}]}}
 6-10 slides, 3-5 tight bullets each, an agenda slide after the title, and a closing summary slide."""
 
 CONTENT_DOCUMENT_PROMPT = """Write a well-structured document about: {topic}
+Write all human-readable content in {lang_instruction}.
 Use markdown-style structure: '# ' headings, '- ' bullet lists and plain paragraphs.
 Aim for 400-800 words of genuinely informative content. Return the document text only."""
 
 CONTENT_CODE_PROMPT = """Write a complete, runnable {language} program for this task: {task}
+Write all human-readable content (comments, docstrings, notes) in {lang_instruction}.
 Requirements: production quality, comments where helpful, no placeholders.
 Return JSON only: {{"filename": str, "code": str, "notes": str}}"""
 
 CONTENT_SPREADSHEET_PROMPT = """Design a spreadsheet about: {topic}
+Write all human-readable content in {lang_instruction}.
 Return JSON only: {{"title": str, "headers": [str,...], "rows": [[...], ...]}} with 5-15 realistic rows."""
+
+
+#: How the ``{lang_instruction}`` placeholder reads for each target language.
+_LANGUAGE_INSTRUCTIONS = {
+    "en": "English",
+    "hi": "Hindi (Devanagari)",
+    "hinglish": "Hinglish (Hindi-English mix, Latin script)",
+}
+
+
+def language_instruction(lang_code: str) -> str:
+    """Map a target response language code to a prompt-ready instruction."""
+    return _LANGUAGE_INSTRUCTIONS.get((lang_code or "en").lower(), "English")

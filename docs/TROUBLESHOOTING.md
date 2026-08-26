@@ -144,6 +144,25 @@ Anything pasted into a screenshot, chat or issue is compromised. Delete it at
 the provider and create a new one. `.env` is in `.gitignore`, so it is never
 committed — but a screenshot bypasses that entirely.
 
+## macOS: commands run but nothing happens
+
+Most desktop control on macOS goes through permissions in *System Settings >
+Privacy & Security*. Grant them to the app that runs IRIS (Terminal, iTerm,
+or the Python binary macOS names in the prompt):
+
+- **Accessibility** — required for typing, clicking, window management and
+  the real screen lock (Ctrl+Cmd+Q). Without it, key and mouse events are
+  **silently dropped** — no error, nothing happens.
+- **Automation → System Events** — asked on the first shutdown/restart/lock;
+  if you clicked "Don't Allow" once, re-enable it here.
+- **Microphone** — for voice commands.
+- **Notifications** (top-level System Settings section) — enable them for
+  your terminal or `notify` toasts never appear.
+
+After changing Accessibility or Automation, fully quit and restart the
+terminal app — grants are read at process start. `scripts/install-macos.sh`
+prints this checklist after installing.
+
 ## Autostart
 
 ```

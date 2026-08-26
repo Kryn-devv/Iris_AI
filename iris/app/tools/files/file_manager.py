@@ -648,26 +648,12 @@ class OpenPathTool(BaseTool):
     )
 
     def _open(self, path: str) -> dict[str, Any]:
-        target = resolve_sandboxed(path, must_exist=True)
-        osname = current_os()
-        if is_windows():
-            os.startfile(str(target))  # type: ignore[attr-defined]  # noqa: S606
-        elif is_macos():
-            subprocess.Popen(  # noqa: S603 - fixed argv, no shell
-                ["open", str(target)], start_new_session=True,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-        else:
-            if shutil.which("xdg-open") is None:
-                raise ToolError(
-                    "No 'xdg-open' on this system — I can't open files with a default app here.",
-                    speech="This machine has no desktop opener installed.",
-                )
-            subprocess.Popen(  # noqa: S603 - fixed argv, no shell
-                ["xdg-open", str(target)], start_new_session=True,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-        return {"path": str(target), "os": osname}
+        # Opening the home directory itself is a harmless read action the
+        # sandbox would otherwise reject ("open my home folder").
+        expanded = Path(os.path.expandvars(str(path))).expanduser()
+        if expanded == paths.home_dir():
+            return _open_with_os(str(expanded), sandboxed=False)
+        return _open_with_os(path)
 
     async def _run(self, path: str = "", **kwargs: Any) -> dict[str, Any]:
         if not path:
@@ -736,6 +722,193 @@ class FileInfoTool(BaseTool):
         return {**info, "speech": speech}
 
 
+
+def _open_with_os(path: str, *, sandboxed: bool = True) -> dict[str, Any]:
+    """Open a file or folder with the OS default application."""
+    target = resolve_sandboxed(path, must_exist=True) if sandboxed else Path(path)
+    osname = current_os()
+    if is_windows():
+        os.startfile(str(target))  # type: ignore[attr-defined]  # noqa: S606
+    elif is_macos():
+        subprocess.Popen(  # noqa: S603 - fixed argv, no shell
+            ["open", str(target)], start_new_session=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    else:
+        if shutil.which("xdg-open") is None:
+            raise ToolError(
+                "No 'xdg-open' on this system — I can't open files with a default app here.",
+                speech="This machine has no desktop opener installed.",
+            )
+        subprocess.Popen(  # noqa: S603 - fixed argv, no shell
+            ["xdg-open", str(target)], start_new_session=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    return {"path": str(target), "os": osname}
+
+
+# ---------------------------------------------------------------------------
+# Find-and-open: "open my latest screenshot", "open that ppt I made"
+# ---------------------------------------------------------------------------
+
+#: What a spoken "kind" means: which folders to look in, which extensions count.
+FILE_KINDS: dict[str, dict[str, Any]] = {
+    "screenshot": {"dirs": [lambda: paths.screenshots_dir(), lambda: paths.home_dir() / "Pictures"],
+                    "exts": (".png", ".jpg", ".jpeg")},
+    "photo":      {"dirs": [lambda: paths.home_dir() / "Pictures", lambda: paths.screenshots_dir(),
+                             lambda: paths.home_dir() / "Downloads"],
+                    "exts": (".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".bmp")},
+    "presentation": {"dirs": [lambda: paths.outputs_dir(), lambda: paths.home_dir() / "Documents",
+                               lambda: paths.home_dir() / "Downloads"],
+                    "exts": (".pptx", ".ppt", ".html")},
+    "document":   {"dirs": [lambda: paths.outputs_dir(), lambda: paths.home_dir() / "Documents",
+                             lambda: paths.home_dir() / "Downloads"],
+                    "exts": (".docx", ".doc", ".pdf", ".md", ".txt", ".rtf", ".odt")},
+    "pdf":        {"dirs": [lambda: paths.home_dir() / "Downloads", lambda: paths.outputs_dir(),
+                             lambda: paths.home_dir() / "Documents"],
+                    "exts": (".pdf",)},
+    "spreadsheet": {"dirs": [lambda: paths.outputs_dir(), lambda: paths.home_dir() / "Documents",
+                              lambda: paths.home_dir() / "Downloads"],
+                    "exts": (".xlsx", ".xls", ".csv", ".ods")},
+    "video":      {"dirs": [lambda: paths.home_dir() / "Videos", lambda: paths.home_dir() / "Downloads"],
+                    "exts": (".mp4", ".mkv", ".mov", ".avi", ".webm")},
+    "song":       {"dirs": [lambda: paths.home_dir() / "Music", lambda: paths.home_dir() / "Downloads"],
+                    "exts": (".mp3", ".m4a", ".wav", ".flac", ".ogg")},
+    "download":   {"dirs": [lambda: paths.home_dir() / "Downloads"], "exts": ()},
+    "code":       {"dirs": [lambda: paths.projects_dir(), lambda: paths.outputs_dir()],
+                    "exts": (".py", ".js", ".ts", ".html", ".ino", ".cpp", ".java")},
+    "file":       {"dirs": [lambda: paths.workspace_dir(), lambda: paths.home_dir() / "Downloads",
+                             lambda: paths.home_dir() / "Documents", lambda: paths.home_dir() / "Desktop"],
+                    "exts": ()},
+}
+
+#: Spoken aliases -> canonical kind key.
+KIND_ALIASES = {
+    "screenshot": "screenshot", "screen shot": "screenshot",
+    "photo": "photo", "picture": "photo", "image": "photo", "pic": "photo",
+    "presentation": "presentation", "ppt": "presentation", "deck": "presentation",
+    "slides": "presentation", "slideshow": "presentation",
+    "document": "document", "doc": "document", "word doc": "document",
+    "pdf": "pdf",
+    "spreadsheet": "spreadsheet", "excel": "spreadsheet", "sheet": "spreadsheet", "csv": "spreadsheet",
+    "video": "video", "movie": "video",
+    "song": "song", "music file": "song", "audio": "song",
+    "download": "download", "downloaded file": "download",
+    "code": "code", "script": "code",
+    "file": "file",
+}
+
+
+def _iter_candidate_files(kind_spec: dict[str, Any], max_entries: int = 4000):
+    """Yield existing files for a kind spec, bounded for responsiveness."""
+    seen: set[Path] = set()
+    count = 0
+    for dir_factory in kind_spec["dirs"]:
+        try:
+            root = Path(dir_factory()).expanduser()
+        except OSError:
+            continue
+        if not root.is_dir() or root in seen:
+            continue
+        seen.add(root)
+        exts = kind_spec["exts"]
+        for current, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if not d.startswith(".")][:40]
+            depth = len(Path(current).relative_to(root).parts)
+            if depth >= 3:
+                dirnames[:] = []
+            for filename in filenames:
+                if filename.startswith("."):
+                    continue
+                if exts and not filename.lower().endswith(exts):
+                    continue
+                yield Path(current) / filename
+                count += 1
+                if count >= max_entries:
+                    return
+
+
+class FindAndOpenTool(BaseTool):
+    """Find a file by kind or fuzzy name across the user's folders and open it.
+
+    Powers "open my latest screenshot", "open that ppt I made" and
+    "open the budget spreadsheet" without the user knowing any paths.
+    """
+
+    name = "find_and_open"
+    description = (
+        "Find a file by kind (screenshot, photo, ppt, document, pdf, video, download...) "
+        "or by fuzzy name across the user's folders, then open it. Use latest=true for "
+        "'the newest one'."
+    )
+    permission_level = PermissionLevel.DESKTOP_ACTION
+    category = ToolCategory.FILES
+    aliases = ("open_latest", "open_recent", "find_file_and_open")
+    examples = (
+        ToolExample(utterance="open my latest screenshot", arguments={"kind": "screenshot", "latest": True}),
+        ToolExample(utterance="open that ppt I made", arguments={"kind": "presentation", "latest": True}),
+        ToolExample(utterance="open the budget spreadsheet", arguments={"kind": "spreadsheet", "name": "budget"}),
+    )
+    input_schema = ToolParameterSchema(
+        type="object",
+        properties={
+            "kind": {"type": "string", "description": "File kind: screenshot, photo, presentation, document, pdf, spreadsheet, video, song, download, code, file."},
+            "name": {"type": "string", "description": "Fuzzy file name to look for (optional)."},
+            "latest": {"type": "boolean", "description": "Pick the most recently modified match."},
+        },
+    )
+
+    def _find(self, kind: str, name: str, latest: bool) -> Path:
+        import difflib
+
+        kind_key = KIND_ALIASES.get((kind or "file").strip().lower(), "file")
+        spec = FILE_KINDS[kind_key]
+        needle = (name or "").strip().lower()
+
+        # Ranking: with a name, best fuzzy match wins (recency breaks ties);
+        # with latest (or no name at all), newest file wins.
+        best_key: tuple[float, float] | None = None
+        best_path: Path | None = None
+        for candidate in _iter_candidate_files(spec):
+            try:
+                mtime = candidate.stat().st_mtime
+            except OSError:
+                continue
+            if needle:
+                stem = candidate.stem.lower().replace("-", " ").replace("_", " ")
+                similarity = difflib.SequenceMatcher(None, needle, stem).ratio()
+                if needle in stem:
+                    similarity = max(similarity, 0.85)
+                if similarity < 0.45:
+                    continue
+                key = (mtime, similarity) if latest else (similarity, mtime)
+            else:
+                key = (mtime, 0.0)
+            if best_key is None or key > best_key:
+                best_key, best_path = key, candidate
+
+        if best_path is None:
+            what = f"a {kind_key}" + (f" named '{name}'" if name else "")
+            raise ToolError(
+                f"I couldn't find {what} in your folders.",
+                speech=f"I couldn't find {what}.",
+            )
+        return best_path
+
+    async def _run(
+        self, kind: str = "file", name: str = "", latest: bool = False, **kwargs: Any
+    ) -> dict[str, Any]:
+        target = await self.to_thread(self._find, kind, name, bool(latest))
+        report = await self.to_thread(_open_with_os, str(target))
+        modified = datetime.fromtimestamp(target.stat().st_mtime).strftime("%b %d, %H:%M")
+        return {
+            **report,
+            "modified": modified,
+            "speech": f"Opened {target.name}.",
+            "display": f"Opened {target} (modified {modified})",
+        }
+
+
 def get_tools() -> list[BaseTool]:
     return [
         ListDirectoryTool(),
@@ -746,5 +919,6 @@ def get_tools() -> list[BaseTool]:
         DeletePathTool(),
         SearchFilesTool(),
         OpenPathTool(),
+        FindAndOpenTool(),
         FileInfoTool(),
     ]

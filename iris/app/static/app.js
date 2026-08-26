@@ -91,7 +91,7 @@
       case "tool.completed": tick(`${p.tool}`, "ok"); break;
       case "tool.failed": tick(`${p.tool} failed`, "fail"); break;
       case "voice.speaking":
-        if (shouldBrowserSpeak(p.engine)) speakBrowser(p.text);
+        if (shouldBrowserSpeak(p.engine)) speakBrowser(p.text, p.language);
         break;
       case "reminder.due":
       case "routine.fired": {
@@ -207,7 +207,7 @@
     if (r.provider) els.chipProvider.textContent = r.provider;
     if (els.speakToggle.checked) {
       const sentence = r.speech || (r.response && r.response.length < 300 ? r.response : null);
-      if (sentence) speakBrowser(sentence);
+      if (sentence) speakBrowser(sentence, r.response_language);
     }
     setState("idle", "ready");
   }
@@ -245,7 +245,7 @@
     return els.speakToggle.checked && (engine === "browser" || !engine);
   }
 
-  function speakBrowser(text) {
+  function speakBrowser(text, lang) {
     if (!("speechSynthesis" in window) || !text) return;
     try {
       window.speechSynthesis.cancel();
@@ -253,7 +253,16 @@
       utter.rate = 1.02;
       utter.pitch = 1.0;
       const voices = window.speechSynthesis.getVoices();
-      const preferred = voices.find((v) => /female|aria|zira|samantha|google uk english female/i.test(v.name))
+      const female = /female|aria|zira|jenny|hazel|samantha|swara|heera|kalpana|lekha|veena/i;
+      const wantHindi = /^hi/.test(lang || "") || lang === "hinglish";
+      let preferred = null;
+      if (wantHindi) {
+        utter.lang = "hi-IN";
+        preferred = voices.find((v) => v.lang.startsWith("hi") && female.test(v.name))
+          || voices.find((v) => v.lang.startsWith("hi"));
+      }
+      preferred = preferred
+        || voices.find((v) => female.test(v.name))
         || voices.find((v) => v.lang.startsWith("en"));
       if (preferred) utter.voice = preferred;
       speaking = true;
@@ -427,6 +436,8 @@
       els.voiceStatus.innerHTML =
         `<div>speech-to-text: <b>${v.stt_engine}</b></div>` +
         `<div>text-to-speech: <b>${v.tts_engine}</b></div>` +
+        `<div>voice: <b>${escapeHtml(v.tts_voice || "auto")}</b></div>` +
+        `<div>languages: <b>${escapeHtml((v.languages || []).join(", "))}</b></div>` +
         `<div>wake words: <b>${(v.wake_words || []).join(", ")}</b></div>`;
       els.chipVoice.textContent = v.tts_engine === "browser" ? "browser voice" : v.tts_engine;
       voiceStatus = v;
@@ -440,6 +451,43 @@
         .map((t) => `<span class="tool-pill ${t.available ? "" : "off"}" title="${escapeHtml(t.unavailable_reason || t.description)}">${t.name}</span>`)
         .join("");
     } catch { els.toolGrid.textContent = "unavailable"; }
+
+    try {
+      const d = await jfetch("/api/v1/devices");
+      const list = document.getElementById("deviceList");
+      const count = document.getElementById("deviceCount");
+      count.textContent = d.count ? `(${d.devices.filter((x) => x.online).length}/${d.count} online)` : "";
+      if (!d.count) {
+        list.textContent = "none registered — say “add device light at 192.168.1.50”";
+      } else {
+        list.innerHTML = "";
+        for (const dev of d.devices) {
+          const row = document.createElement("div");
+          row.className = "device-row";
+          const dot = dev.online ? '<span class="ok">●</span>' : '<span class="bad">●</span>';
+          row.innerHTML = `${dot} <b>${escapeHtml(dev.name)}</b> <span class="muted">${escapeHtml(dev.kind)}</span>`;
+          if (dev.kind !== "motor") {
+            const btn = document.createElement("button");
+            btn.className = "btn ghost small dev-toggle";
+            btn.textContent = "toggle";
+            btn.onclick = async () => {
+              btn.disabled = true;
+              try {
+                await fetch(`/api/v1/devices/${encodeURIComponent(dev.name)}/switch`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json", ...authHeaders() },
+                  body: JSON.stringify({ state: "toggle" }),
+                });
+                tick(`${dev.name} toggled`, "ok");
+              } catch { tick(`${dev.name} unreachable`, "fail"); }
+              btn.disabled = false;
+            };
+            row.appendChild(btn);
+          }
+          list.appendChild(row);
+        }
+      }
+    } catch { /* devices panel is optional */ }
 
     try {
       const r = await jfetch("/api/v1/system/reminders");

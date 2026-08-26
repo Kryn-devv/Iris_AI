@@ -483,7 +483,7 @@ def test_get_tools_exports():
     file_names = {t.name for t in file_manager.get_tools()}
     assert file_names == {
         "list_directory", "read_file", "write_file", "copy_path", "move_path",
-        "delete_path", "search_files", "open_path", "file_info",
+        "delete_path", "search_files", "open_path", "find_and_open", "file_info",
     }
     for tool in list(code_writer.get_tools()) + list(file_manager.get_tools()):
         assert tool.description

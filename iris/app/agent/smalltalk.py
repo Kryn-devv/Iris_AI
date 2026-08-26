@@ -2,6 +2,11 @@
 
 Greetings, thanks, identity questions and a few delights answer immediately
 without any model. Anything not matched here flows onward to the agent loop.
+
+Responders are keyed by :class:`LanguageStyle` so greetings, thanks and
+identity answers come back in the user's own register (English, Hindi or
+Hinglish). Rules without a variant for the requested style fall back to
+English.
 """
 
 from __future__ import annotations
@@ -9,9 +14,10 @@ from __future__ import annotations
 import datetime
 import random
 import re
-from typing import Optional
+from typing import Optional, Union
 
 from iris.app.core.config import settings
+from iris.app.language.models import LanguageStyle
 
 _JOKES = (
     "Why do programmers prefer dark mode? Because light attracts bugs.",
@@ -42,9 +48,21 @@ def _greeting_for_hour(hour: int) -> str:
 
 
 class _Rule:
-    def __init__(self, pattern: str, responder):
+    """A trigger pattern plus one responder per language style.
+
+    ``responders`` is either a single callable (English-only) or a dict
+    keyed by :class:`LanguageStyle`; missing styles fall back to English.
+    """
+
+    def __init__(self, pattern: str, responders):
         self.pattern = re.compile(pattern, re.IGNORECASE)
-        self.responder = responder
+        if not isinstance(responders, dict):
+            responders = {LanguageStyle.ENGLISH: responders}
+        self.responders = responders
+
+    def respond(self, match, style: LanguageStyle) -> str:
+        responder = self.responders.get(style) or self.responders[LanguageStyle.ENGLISH]
+        return responder(match)
 
 
 def _name() -> str:
@@ -53,17 +71,44 @@ def _name() -> str:
 
 _RULES = [
     _Rule(
-        r"^(hi|hii+|hello|hey|yo|hola|namaste|good (morning|afternoon|evening))\b.{0,15}$",
-        lambda m: f"{_greeting_for_hour(datetime.datetime.now().hour)}! I'm {_name()}. What can I do for you?",
+        # (?=$|[\s!,.?]) instead of \b: Devanagari vowel signs are not word
+        # characters, so \b never matches after "नमस्ते".
+        r"^(hi|hii+|hello|hey|yo|hola|namaste|नमस्ते|नमस्कार"
+        r"|good (morning|afternoon|evening))(?=$|[\s!,.?]).{0,15}$",
+        {
+            LanguageStyle.ENGLISH: lambda m: (
+                f"{_greeting_for_hour(datetime.datetime.now().hour)}! I'm {_name()}. "
+                "What can I do for you?"
+            ),
+            LanguageStyle.HINGLISH: lambda m: (
+                f"Namaste! Main {_name()} hoon. Batao, kya karna hai?"
+            ),
+            LanguageStyle.HINDI: lambda m: (
+                f"नमस्ते! मैं {_name()} हूँ। बताइए, मैं क्या मदद करूँ?"
+            ),
+        },
     ),
     _Rule(
-        r"^(who are you|what are you|introduce yourself|tell me about yourself)\??$",
-        lambda m: (
-            f"I'm {_name()} — your personal desktop assistant. I can open apps and websites, control "
-            "volume and windows, search the web, check weather and news, set reminders, build "
-            "presentations and documents, write code, and much more. Try: \"open YouTube\" or "
-            "\"make a ppt about space travel\"."
-        ),
+        r"^(who are you|what are you|introduce yourself|tell me about yourself"
+        r"|tum kaun ho|aap kaun ho|kaun ho tum|तुम कौन हो|आप कौन हैं)\??$",
+        {
+            LanguageStyle.ENGLISH: lambda m: (
+                f"I'm {_name()} — your personal desktop assistant. I can open apps and websites, control "
+                "volume and windows, search the web, check weather and news, set reminders, build "
+                "presentations and documents, write code, and much more. Try: \"open YouTube\" or "
+                "\"make a ppt about space travel\"."
+            ),
+            LanguageStyle.HINGLISH: lambda m: (
+                f"Main {_name()} hoon — aapka personal desktop assistant. Apps aur websites kholna, "
+                "volume control, web search, weather, reminders, presentations, code — sab mujhse ho "
+                "jata hai. Try karo: \"youtube kholo\" ya \"space travel par ek ppt banao\"."
+            ),
+            LanguageStyle.HINDI: lambda m: (
+                f"मैं {_name()} हूँ — आपका निजी डेस्कटॉप असिस्टेंट। ऐप्स और वेबसाइट खोलना, "
+                "वॉल्यूम बदलना, वेब खोज, मौसम, रिमाइंडर, प्रेज़ेंटेशन और कोड — यह सब मुझसे कहिए। "
+                "आज़माइए: \"youtube kholo\"।"
+            ),
+        },
     ),
     _Rule(
         r"^(what can you do|help|what do you do|show me what you can do|capabilities)\??$",
@@ -85,12 +130,34 @@ _RULES = [
         lambda m: f"I'm {_name()} — nice to meet you.",
     ),
     _Rule(
-        r"^(how are you|how's it going|how are you doing|kaise ho)\??.{0,10}$",
-        lambda m: "Running at full capacity and happy to help. What's on your mind?",
+        r"^(how are you|how's it going|how are you doing|kaise ho|kya haal hai"
+        r"|aap kaise (ho|hain)|आप कैसे हैं|कैसे हो)\??.{0,10}$",
+        {
+            LanguageStyle.ENGLISH: lambda m: (
+                "Running at full capacity and happy to help. What's on your mind?"
+            ),
+            LanguageStyle.HINGLISH: lambda m: (
+                "Bas badhiya! Sab systems ready hain. Batao, kya karna hai?"
+            ),
+            LanguageStyle.HINDI: lambda m: (
+                "मैं बिल्कुल ठीक हूँ, धन्यवाद! बताइए, क्या मदद करूँ?"
+            ),
+        },
     ),
     _Rule(
-        r"^(thanks|thank you|thx|ty|great job|well done|awesome|nice|perfect)\b.{0,20}$",
-        lambda m: random.choice(("Anytime!", "Happy to help!", "You're welcome!", "Glad it worked!")),
+        r"^(thanks|thank you|thx|ty|great job|well done|awesome|nice|perfect"
+        r"|shukriya|dhanyavad|dhanyawad|शुक्रिया|धन्यवाद)(?=$|[\s!,.?]).{0,20}$",
+        {
+            LanguageStyle.ENGLISH: lambda m: random.choice(
+                ("Anytime!", "Happy to help!", "You're welcome!", "Glad it worked!")
+            ),
+            LanguageStyle.HINGLISH: lambda m: random.choice(
+                ("Koi baat nahi!", "Arre, kabhi bhi!", "Khushi hui madad karke!")
+            ),
+            LanguageStyle.HINDI: lambda m: random.choice(
+                ("कोई बात नहीं!", "आपका स्वागत है!", "खुशी हुई मदद करके!")
+            ),
+        },
     ),
     _Rule(
         r"^(bye|goodbye|good night|see you|later|gn)\b.{0,10}$",
@@ -115,13 +182,34 @@ _RULES = [
 ]
 
 
-def match_smalltalk(text: str) -> Optional[str]:
-    """Return an instant reply for conversational pleasantries, else ``None``."""
+def _normalize_style(style: Union[LanguageStyle, str, None]) -> LanguageStyle:
+    """Coerce the caller's style (enum or raw string) to a responder key."""
+    if isinstance(style, str):
+        try:
+            style = LanguageStyle(style.upper())
+        except ValueError:
+            style = LanguageStyle.ENGLISH
+    if style == LanguageStyle.MIXED:
+        return LanguageStyle.HINGLISH
+    if style in (LanguageStyle.HINDI, LanguageStyle.HINGLISH):
+        return style
+    return LanguageStyle.ENGLISH
+
+
+def match_smalltalk(
+    text: str, style: Union[LanguageStyle, str, None] = LanguageStyle.ENGLISH
+) -> Optional[str]:
+    """Return an instant reply for conversational pleasantries, else ``None``.
+
+    ``style`` selects the language register of the reply (MIXED maps to
+    HINGLISH; anything unrecognised falls back to ENGLISH).
+    """
     cleaned = (text or "").strip().rstrip(".!").strip()
     if not cleaned or len(cleaned) > 80:
         return None
+    resolved_style = _normalize_style(style)
     for rule in _RULES:
         m = rule.pattern.search(cleaned)
         if m:
-            return rule.responder(m)
+            return rule.respond(m, resolved_style)
     return None

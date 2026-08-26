@@ -87,6 +87,7 @@ SITE_SPECS: dict[str, SiteSpec] = {
                  "https://x.com/search?q={query}"),
         SiteSpec("instagram", "Instagram", "https://www.instagram.com"),
         SiteSpec("facebook", "Facebook", "https://www.facebook.com"),
+        SiteSpec("hotstar", "Hotstar", "https://www.hotstar.com"),
         SiteSpec("netflix", "Netflix", "https://www.netflix.com",
                  "https://www.netflix.com/search?q={query}"),
         SiteSpec("prime_video", "Prime Video", "https://www.primevideo.com"),

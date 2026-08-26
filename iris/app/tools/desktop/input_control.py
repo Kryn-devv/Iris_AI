@@ -24,7 +24,7 @@ import string
 from typing import Any, Callable, Dict
 
 from iris.app.core.logging import get_logger
-from iris.app.core.platform_info import try_import
+from iris.app.core.platform_info import is_macos, try_import
 from iris.app.core.security import PermissionLevel
 from iris.app.schemas.tools import ToolCategory, ToolExample, ToolParameterSchema
 from iris.app.tools.base import BaseTool, ToolError
@@ -201,10 +201,20 @@ def _load_pyautogui() -> Any:
     """
     pag = try_import("pyautogui")
     if pag is None:
-        raise ToolError(
+        hint = (
             "pyautogui is not usable on this machine. Install it with "
             "'pip install pyautogui' and make sure a graphical session "
-            "(DISPLAY/WAYLAND_DISPLAY) is running.",
+            "(DISPLAY/WAYLAND_DISPLAY) is running."
+        )
+        if is_macos():
+            hint += (
+                " On macOS, also grant Accessibility permission to the app "
+                "running IRIS (System Settings > Privacy & Security > "
+                "Accessibility) — without it key and mouse events are "
+                "silently dropped."
+            )
+        raise ToolError(
+            hint,
             speech="I can't control the keyboard or mouse on this machine.",
         )
     # Never disable the abort gesture, whatever a previous caller did.

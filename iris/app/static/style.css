@@ -23,6 +23,7 @@
   --ok: #34d399;
   --radius: 16px;
   --font: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --display: "Space Grotesk", "Inter", "Segoe UI", system-ui, sans-serif;
   --mono: "JetBrains Mono", "Cascadia Code", ui-monospace, monospace;
 }
 
@@ -112,6 +113,7 @@ html, body {
 }
 
 .brand-name {
+  font-family: var(--display);
   font-size: 14px;
   font-weight: 600;
   letter-spacing: 0.5em;
@@ -167,6 +169,26 @@ html, body {
 /* ─────────────── Hologram stage ─────────────── */
 .stage { position: relative; min-height: 0; }
 #holo { width: 100%; height: 100%; display: block; }
+
+/* Slow-spinning halo ring behind the sphere. */
+.halo {
+  position: absolute;
+  left: 50%; top: 50%;
+  width: min(46vh, 420px); height: min(46vh, 420px);
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: conic-gradient(from 0deg,
+    transparent 0deg, rgba(94, 234, 212, 0.12) 40deg, transparent 90deg,
+    transparent 180deg, rgba(129, 140, 248, 0.10) 230deg, transparent 290deg);
+  mask-image: radial-gradient(circle, transparent 58%, black 60%, black 63%, transparent 65%);
+  -webkit-mask-image: radial-gradient(circle, transparent 58%, black 60%, black 63%, transparent 65%);
+  animation: haloSpin 26s linear infinite;
+  pointer-events: none;
+}
+@keyframes haloSpin {
+  from { transform: translate(-50%, -50%) rotate(0deg); }
+  to   { transform: translate(-50%, -50%) rotate(360deg); }
+}
 
 /* Reflection floor under the sphere. */
 .stage::after {
@@ -225,6 +247,17 @@ html, body {
 }
 
 .welcome { text-align: center; padding: 20px 0 10px; }
+.welcome-title {
+  font-family: var(--display);
+  font-size: 22px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  margin-bottom: 8px;
+  background: linear-gradient(120deg, var(--text) 40%, var(--accent-dim));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
 .welcome-hi { color: var(--text-dim); font-size: 13.5px; margin-bottom: 16px; font-weight: 300; }
 .welcome-hi b { color: var(--text); font-weight: 600; }
 
@@ -276,7 +309,9 @@ html, body {
 }
 
 .msg.iris {
+  position: relative;
   align-self: flex-start;
+  margin-left: 16px;
   background: var(--panel);
   border: 1px solid var(--hairline);
   border-left: 2px solid rgba(94, 234, 212, 0.35);
@@ -286,7 +321,18 @@ html, body {
   box-shadow: 0 10px 34px rgba(0, 0, 0, 0.35);
 }
 
+.msg.iris::before {
+  content: "";
+  position: absolute;
+  left: -16px; top: 16px;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #b9fff1, var(--accent));
+  box-shadow: 0 0 8px var(--accent-dim);
+}
+
 .msg.iris.error { border-left-color: rgba(248, 113, 113, 0.6); }
+.msg.iris.error::before { background: var(--danger); box-shadow: 0 0 8px rgba(248,113,113,0.5); }
 
 .msg .meta {
   display: flex; gap: 8px; align-items: center;
@@ -398,11 +444,13 @@ html, body {
   transition: border-color .25s, box-shadow .25s;
 }
 .dock-inner:focus-within {
-  border-color: var(--line-strong);
+  border-color: transparent;
+  background:
+    linear-gradient(var(--panel-solid), var(--panel-solid)) padding-box,
+    linear-gradient(120deg, rgba(94,234,212,0.5), rgba(129,140,248,0.4), rgba(94,234,212,0.5)) border-box;
   box-shadow:
     0 18px 50px rgba(0, 0, 0, 0.5),
-    0 0 0 1px var(--line),
-    0 6px 44px rgba(94, 234, 212, 0.09),
+    0 6px 44px rgba(94, 234, 212, 0.10),
     inset 0 1px 0 rgba(232, 238, 250, 0.035);
 }
 
@@ -618,6 +666,14 @@ html, body {
   line-height: 1.5;
   word-break: break-word;
 }
+
+.device-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+.device-row .dev-toggle { margin-left: auto; }
 
 .tool-grid { display: flex; flex-wrap: wrap; gap: 6px; }
 .tool-pill {

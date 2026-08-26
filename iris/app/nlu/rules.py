@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, Match, Optional, Pattern
 
 # ---------------------------------------------------------------------------
@@ -96,23 +97,34 @@ KNOWN_SITES = frozenset(
 _DOMAIN_RX = re.compile(r"^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(/\S*)?$", re.IGNORECASE)
 
 #: Folder words the "open X" rule routes to the file manager.
+from iris.app.core import paths as _paths
+
 KNOWN_FOLDERS = {
     "downloads": "~/Downloads",
-    "downloads folder": "~/Downloads",
     "documents": "~/Documents",
-    "documents folder": "~/Documents",
     "desktop": "~/Desktop",
     "pictures": "~/Pictures",
     "photos": "~/Pictures",
     "music": "~/Music",
     "videos": "~/Videos",
+    "home": "~",
     "home folder": "~",
-    "iris folder": "~/Iris",
-    "my outputs": "~/Iris/outputs",
-    "outputs folder": "~/Iris/outputs",
-    "projects folder": "~/Iris/projects",
-    "screenshots folder": "~/Iris/screenshots",
+    # Workspace paths honour IRIS_WORKSPACE_DIR instead of hardcoding ~/Iris.
+    "iris": str(_paths.workspace_dir()),
+    "iris folder": str(_paths.workspace_dir()),
+    "outputs": str(_paths.outputs_dir()),
+    "my outputs": str(_paths.outputs_dir()),
+    "projects": str(_paths.projects_dir()),
+    "screenshots": str(_paths.screenshots_dir()),
 }
+
+#: File extensions that mark an "open X" target as a file, not a website.
+_FILE_EXTENSIONS = (
+    ".pdf", ".txt", ".md", ".docx", ".doc", ".xlsx", ".xls", ".csv", ".pptx",
+    ".ppt", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp4", ".mkv", ".mov",
+    ".mp3", ".wav", ".m4a", ".zip", ".rar", ".7z", ".py", ".js", ".html",
+    ".json", ".ino", ".exe", ".msi", ".apk", ".iso", ".svg", ".rtf", ".odt",
+)
 
 _NUMBER_WORDS = {
     "one": 1, "a": 1, "an": 1, "two": 2, "three": 3, "four": 4, "five": 5,
@@ -153,17 +165,82 @@ def parse_duration_seconds(amount: str, unit: str) -> Optional[int]:
 # ---------------------------------------------------------------------------
 
 def _build_open_target(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
-    """Decide website vs folder vs application for a bare 'open X' command."""
+    """Decide file vs folder vs website vs application for a bare 'open X'."""
     target = (m.group("target") or "").strip().rstrip(".")
     if not target:
         return None
     lowered = target.lower()
+
+    # A real file name ("report.pdf") or path ("downloads/report.pdf", "~/x")
+    # must never be treated as a web domain.
+    if lowered.endswith(_FILE_EXTENSIONS):
+        if "/" in target or "\\" in target or target.startswith("~"):
+            return {"__tool__": "open_path", "path": target}
+        return {"__tool__": "find_and_open", "name": Path(target).stem, "kind": "file"}
+    if "/" in target or "\\" in target or target.startswith("~"):
+        return {"__tool__": "open_path", "path": target}
+
     if lowered in KNOWN_SITES or _DOMAIN_RX.match(lowered) or lowered.startswith(("http://", "https://")):
         return {"__tool__": "open_website", "site": target}
-    folder = KNOWN_FOLDERS.get(lowered) or KNOWN_FOLDERS.get(lowered.removeprefix("my ").strip())
-    if folder:
-        return {"__tool__": "open_path", "path": folder}
+
+    # Known folders, tolerating "my X", "X folder" and "X directory".
+    for candidate in (
+        lowered,
+        lowered.removeprefix("my ").strip(),
+        lowered.removesuffix(" folder").strip(),
+        lowered.removesuffix(" directory").strip(),
+        lowered.removeprefix("my ").removesuffix(" folder").strip(),
+    ):
+        folder = KNOWN_FOLDERS.get(candidate)
+        if folder:
+            return {"__tool__": "open_path", "path": folder}
     return {"__tool__": "open_app", "app": target}
+
+
+#: Words after "turn on/off" that are NOT smart devices — those phrasings
+#: belong to other tools or to the agent, never to device_switch.
+_NON_DEVICE_WORDS = frozenset({
+    "volume", "sound", "audio", "music", "screen", "display", "monitor",
+    "wifi", "wi-fi", "bluetooth", "mic", "microphone", "camera", "pc",
+    "computer", "laptop", "notifications", "dark mode", "it", "that",
+    "the tv show", "captions",
+})
+
+
+def _build_device_switch(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
+    """'turn on the kitchen light' -> device_switch, skipping non-device nouns."""
+    device = (m.group("dev") or "").strip().rstrip(".")
+    state = (m.group("state") or "").strip().lower()
+    if not device or len(device) < 2 or state not in ("on", "off"):
+        return None
+    lowered = device.lower()
+    if lowered in _NON_DEVICE_WORDS or any(w in _NON_DEVICE_WORDS for w in (lowered.split()[-1],)):
+        return None
+    return {"device": device, "state": state}
+
+
+def _build_device_hinglish(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
+    """'light chalu karo' / 'fan band kar do' -> device_switch."""
+    device = (m.group("dev") or "").strip()
+    verb = (m.group("verb") or "").strip().lower()
+    if not device or device.lower() in _NON_DEVICE_WORDS:
+        return None
+    state = "off" if verb in ("band", "bandh") else "on"
+    return {"device": device, "state": state}
+
+
+def _build_motor(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
+    action = (m.group("action") or "").strip().lower()
+    aliases = {"back": "backward", "backwards": "backward", "ahead": "forward", "straight": "forward",
+               "ruko": "stop", "chalo": "forward", "aage": "forward", "peeche": "backward"}
+    action = aliases.get(action, action)
+    if action not in ("forward", "backward", "left", "right", "stop"):
+        return None
+    args: Dict[str, Any] = {"action": action}
+    speed = m.groupdict().get("speed")
+    if speed:
+        args["speed"] = max(0, min(255, int(speed)))
+    return args
 
 
 def _build_site_search(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
@@ -250,6 +327,153 @@ def _passthrough_query(key: str) -> Builder:
 # ---------------------------------------------------------------------------
 
 RULES: list[Rule] = [
+    # ------------------------------------------------- devices / home automation
+    Rule(
+        name="device_register",
+        intent="devices",
+        tool="register_device",
+        pattern=_rx(
+            r"^(?:add|register|pair|connect)\s+(?:a\s+|new\s+|my\s+)?(?:device|esp32|board|node)\s+"
+            r"(?P<name>.+?)\s+(?:at|@|on)\s+(?P<addr>[a-z0-9.:_-]+)"
+            r"(?:\s+as\s+(?:a\s+)?(?P<kind>relay|motor|generic))?$"
+        ),
+        builder=lambda m, c: {
+            "name": m.group("name").strip(),
+            "address": m.group("addr").strip(),
+            **({"kind": m.group("kind")} if m.group("kind") else {}),
+        },
+        confidence=0.98,
+    ),
+    Rule(
+        name="device_list",
+        intent="devices",
+        tool="list_devices",
+        pattern=_rx(r"^(?:list|show)(?:\s+(?:my|all))?\s+devices$|^what\s+devices\s+do\s+i\s+have$"),
+        confidence=0.98,
+    ),
+    Rule(
+        name="device_remove",
+        intent="devices",
+        tool="remove_device",
+        pattern=_rx(r"^(?:remove|forget|delete|unpair)\s+(?:the\s+)?device\s+(?P<name>.+)$"),
+        builder=lambda m, c: {"name": m.group("name").strip()},
+        confidence=0.98,
+    ),
+    Rule(
+        name="device_switch_on_off",
+        intent="devices",
+        tool="device_switch",
+        pattern=_rx(r"^(?:turn|switch|power)\s+(?P<state>on|off)\s+(?:the\s+|my\s+)?(?P<dev>.+)$"),
+        builder=_build_device_switch,
+        confidence=0.95,
+    ),
+    Rule(
+        name="device_switch_suffix",
+        intent="devices",
+        tool="device_switch",
+        pattern=_rx(r"^(?:turn|switch|power)\s+(?:the\s+|my\s+)?(?P<dev>.+?)\s+(?P<state>on|off)$"),
+        builder=_build_device_switch,
+        confidence=0.94,
+    ),
+    Rule(
+        name="device_switch_hinglish",
+        intent="devices",
+        tool="device_switch",
+        pattern=_rx(r"^(?P<dev>.+?)\s+(?:ko\s+)?(?P<verb>chalu|shuru|on|band|bandh|off)\s+kar(?:o|do|\s+do|\s+dijiye|na)?$"),
+        builder=_build_device_hinglish,
+        confidence=0.95,
+    ),
+    Rule(
+        name="device_toggle",
+        intent="devices",
+        tool="device_switch",
+        pattern=_rx(r"^toggle\s+(?:the\s+|my\s+)?(?P<dev>.+)$"),
+        builder=lambda m, c: (
+            {"device": m.group("dev").strip(), "state": "toggle"}
+            if m.group("dev").strip().lower() not in _NON_DEVICE_WORDS else None
+        ),
+        confidence=0.93,
+    ),
+    Rule(
+        name="robot_move",
+        intent="devices",
+        tool="device_motor",
+        pattern=_rx(
+            r"^(?:move|drive|make)?\s*(?:the\s+|my\s+)?robot\s*,?\s*"
+            r"(?:go\s+|move\s+|turn\s+)?(?P<action>forward|forwards|ahead|straight|back|backward|backwards|left|right|stop|ruko|chalo|aage|peeche)"
+            r"(?:\s+at\s+speed\s+(?P<speed>\d{1,3}))?$"
+        ),
+        builder=_build_motor,
+        confidence=0.96,
+    ),
+    Rule(
+        name="robot_stop_short",
+        intent="devices",
+        tool="device_motor",
+        pattern=_rx(r"^(?:stop(?:\s+the)?\s+robot|robot\s+stop|emergency\s+stop)$"),
+        static_args={"action": "stop"},
+        confidence=0.98,
+    ),
+    Rule(
+        name="device_status_query",
+        intent="devices",
+        tool="device_status",
+        pattern=_rx(r"^(?:is\s+(?:the\s+|my\s+)?(?P<dev>.+?)\s+(?:on(?:line)?|working|connected|alive)|check\s+(?:the\s+)?devices?|ping\s+(?:the\s+)?(?P<dev2>.+))$"),
+        builder=lambda m, c: (
+            {"device": (m.group("dev") or m.group("dev2")).strip()}
+            if (m.group("dev") or m.group("dev2")) else {}
+        ),
+        confidence=0.9,
+    ),
+    Rule(
+        name="hinglish_weather",
+        intent="web",
+        tool="weather",
+        pattern=_rx(r"^(?:(?P<q>.+?)\s+(?:ka|mein|me)\s+)?mausam(?:\s+kaisa\s+hai)?$|^weather\s+kaisa\s+hai$"),
+        builder=lambda m, c: (
+            {"location": m.group("q").strip()} if m.groupdict().get("q") else {}
+        ),
+        confidence=0.95,
+    ),
+    Rule(
+        name="hinglish_time",
+        intent="system",
+        tool="time",
+        pattern=_rx(r"^(?:kitne\s+baje(?:\s+(?:hain|hai))?|(?:samay|time)\s+kya\s+(?:hua|hai)(?:\s+hai)?|abhi\s+time\s+kya\s+hai)$"),
+        confidence=0.96,
+    ),
+    Rule(
+        name="hinglish_screenshot",
+        intent="desktop",
+        tool="take_screenshot",
+        pattern=_rx(r"^screenshot\s+(?:lo|le\s+lo|le|nikalo|kheecho)$"),
+        confidence=0.97,
+    ),
+    Rule(
+        name="hinglish_volume",
+        intent="media",
+        tool="volume",
+        pattern=_rx(r"^(?:awaa?z|volume|sound)\s+(?P<verb>badhao|badha\s+do|kam\s+karo|kam\s+kar\s+do|ghatao)$"),
+        builder=lambda m, c: {"action": "up" if "badha" in m.group("verb") else "down"},
+        confidence=0.96,
+    ),
+    Rule(
+        name="hinglish_play",
+        intent="entertainment",
+        tool="play_youtube",
+        pattern=_rx(r"^(?:(?P<q>.+?)\s+(?:bajao|baja\s+do|sunao|suna\s+do)|(?:gaana|music|song)\s+(?:chalao|bajao|lagao))$"),
+        builder=lambda m, c: {"query": (m.groupdict().get("q") or "music").strip()},
+        confidence=0.95,
+    ),
+    Rule(
+        name="open_kholo_hinglish",
+        intent="apps",
+        tool="open_app",
+        pattern=_rx(r"^(?P<target>.+?)\s+(?:kholo|khol\s+do|open\s+karo|chalao)$"),
+        builder=_build_open_target,
+        confidence=0.94,
+    ),
+
     # ------------------------------------------------------------- media/site
     Rule(
         name="play_on_youtube",
@@ -287,10 +511,53 @@ RULES: list[Rule] = [
 
     # ------------------------------------------------------------------ open
     Rule(
+        name="open_latest_kind",
+        intent="files",
+        tool="find_and_open",
+        pattern=_rx(
+            r"^open\s+(?:my\s+|the\s+)?(?:latest|last|newest|most\s+recent|recent)\s+"
+            r"(?P<kind>screenshot|screen\s+shot|photo|picture|image|pic|presentation|ppt|deck|slides|"
+            r"document|doc|pdf|spreadsheet|excel|sheet|video|movie|song|audio|download|downloaded\s+file|code|script|file)$"
+        ),
+        builder=lambda m, c: {"kind": " ".join(m.group("kind").split()), "latest": True},
+        confidence=0.97,
+    ),
+    Rule(
+        name="open_that_kind_i_made",
+        intent="files",
+        tool="find_and_open",
+        pattern=_rx(
+            r"^open\s+(?:that|the)\s+(?P<kind>screenshot|photo|picture|image|presentation|ppt|deck|"
+            r"document|doc|pdf|spreadsheet|sheet|video|song|file)"
+            r"(?:\s+(?:i|we|you)\s+(?:made|created|generated|took|saved))?"
+            r"(?:\s+(?:yesterday|today|earlier|just\s+now|last\s+\w+))?$"
+        ),
+        builder=lambda m, c: {"kind": m.group("kind"), "latest": True},
+        confidence=0.95,
+    ),
+    Rule(
+        name="find_and_open_by_name",
+        intent="files",
+        tool="find_and_open",
+        pattern=_rx(r"^(?:find\s+and\s+open|open\s+the\s+file)\s+(?P<name>.+)$"),
+        builder=lambda m, c: {"name": m.group("name").strip(), "kind": "file"},
+        confidence=0.95,
+    ),
+    Rule(
+        name="show_my_folder",
+        intent="files",
+        tool="open_path",
+        pattern=_rx(r"^(?:show(?:\s+me)?|display|browse)\s+(?:my\s+|the\s+)?(?P<target>.+)$"),
+        builder=lambda m, c: (
+            lambda built: built if built and built.get("__tool__") in ("open_path", "find_and_open") else None
+        )(_build_open_target(m, c)),
+        confidence=0.92,
+    ),
+    Rule(
         name="open_target",
         intent="desktop",
         tool="__dynamic__",
-        pattern=_rx(r"^(?:open|launch|start|run)\s+(?:up\s+)?(?:the\s+)?(?P<target>[\w .+&/:-]{2,60})$"),
+        pattern=_rx(r"^(?:open|launch|start|run)\s+(?:up\s+)?(?:the\s+)?(?P<target>[\w .+&/:~\\\\-]{1,80})$"),
         builder=_build_open_target,
         confidence=0.95,
     ),

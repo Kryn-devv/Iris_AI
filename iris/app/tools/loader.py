@@ -48,6 +48,8 @@ TOOL_MODULES: tuple[str, ...] = (
     "iris.app.tools.system.network",
     # Automation
     "iris.app.tools.automation.reminders",
+    # Devices (ESP32 / home automation / robot)
+    "iris.app.tools.devices.esp32",
     # Desktop shell
     "iris.app.desktop.tools",
     # Voice

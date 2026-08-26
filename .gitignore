@@ -49,3 +49,4 @@ htmlcov/
 nova.db
 iris.db
 .venv/
+.claude/
