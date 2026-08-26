@@ -258,6 +258,16 @@ add device robot at 192.168.1.74 as motor
 
 ## Troubleshooting
 
+- **Upload fails: "Failed to connect to ESP32: No serial data received"** —
+  the build and COM port are fine; the chip just didn't enter flash mode.
+  Click Upload again and, while the terminal prints `Connecting....`, press
+  and **hold the BOOT button** on the board until `Writing at 0x...` lines
+  appear. Stronger version: hold BOOT, tap EN/RST once, keep holding BOOT.
+  Still stuck? Disconnect driver/relay wiring for the first flash (a powered
+  BTS7960/relay can back-feed pins and block boot mode), use a direct USB
+  port and a known-good data cable, or add `upload_speed = 115200` under the
+  env in `platformio.ini`.
+
 - **"Could not reach the device"** — board and PC must be on the *same* WiFi
   network (not guest WiFi); check the IP in Serial Monitor; ping it from the PC.
 - **Relay clicks inverted** — flip `RELAY_ACTIVE_LOW` in the sketch.
