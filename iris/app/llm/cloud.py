@@ -309,6 +309,15 @@ class CloudLLMProvider(LLMProvider):
         return best_id
 
     @staticmethod
+    def _looks_like_per_model_limit(exc: "LLMProviderError") -> bool:
+        """True when a 429 is scoped to ONE model (Groq meters TPM per model),
+        so a sibling model on the same key has its own untouched budget."""
+        if getattr(exc, "status_code", None) != 429:
+            return False
+        message = str(exc).lower()
+        return "for model" in message or "tokens per minute" in message
+
+    @staticmethod
     def _looks_like_missing_model(exc: "LLMProviderError") -> bool:
         """True when the provider rejected the request because the model is gone."""
         if getattr(exc, "status_code", None) not in (400, 404):
@@ -365,21 +374,36 @@ class CloudLLMProvider(LLMProvider):
         try:
             data = await self._post_chat(payload)
         except LLMProviderError as exc:
-            # Self-heal a rotated catalog: the configured model no longer
-            # exists, so pick the best live replacement and retry once.
-            if not self._looks_like_missing_model(exc):
+            if self._looks_like_missing_model(exc):
+                # Self-heal a rotated catalog: the configured model no longer
+                # exists, so pick the best live replacement and remember it.
+                fallback = await self._resolve_fallback_model(exclude=target_model)
+                if not fallback:
+                    raise
+                logger.warning(
+                    "%s: model '%s' is gone from the catalog; auto-switching to '%s'.",
+                    self.provider_name, target_model, fallback,
+                )
+                self._resolved_model = fallback
+                target_model = fallback
+                payload["model"] = fallback
+                data = await self._post_chat(payload)
+            elif self._looks_like_per_model_limit(exc):
+                # Per-model rate limit: a sibling model's token budget is
+                # untouched, so serve THIS request from it (not remembered —
+                # the preferred model recovers within the minute).
+                alternate = await self._resolve_fallback_model(exclude=target_model)
+                if not alternate:
+                    raise
+                logger.info(
+                    "%s: '%s' is rate-limited; answering via '%s' (own quota).",
+                    self.provider_name, target_model, alternate,
+                )
+                target_model = alternate
+                payload["model"] = alternate
+                data = await self._post_chat(payload)
+            else:
                 raise
-            fallback = await self._resolve_fallback_model(exclude=target_model)
-            if not fallback:
-                raise
-            logger.warning(
-                "%s: model '%s' is gone from the catalog; auto-switching to '%s'.",
-                self.provider_name, target_model, fallback,
-            )
-            self._resolved_model = fallback
-            target_model = fallback
-            payload["model"] = fallback
-            data = await self._post_chat(payload)
         latency = (time.perf_counter() - start) * 1000.0
 
         choices = data.get("choices") or []
