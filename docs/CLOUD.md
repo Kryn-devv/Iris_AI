@@ -491,18 +491,29 @@ map hall light off command to /relay1off
 
 From then on "turn on the hall light" calls exactly `/relay1on`.
 
-### One catch in cloud mode
+### All three boards dial out
 
-A relay board running *your* firmware has no way to dial out — that is the part
-this project's firmware adds. So with IRIS on a VPS you have two choices:
+Every firmware in this repo can reach a VPS-hosted IRIS, because every one of
+them dials *out*:
 
-1. **Flash the IRIS relay firmware** on it, so it dials out too. Everything
-   then works from the cloud.
-2. **Keep IRIS at home** for appliance control and reach it from outside with a
-   tunnel (`TUNNEL_PROVIDER=cloudflared`) instead of hosting it remotely.
+| Board | Sketch | Set |
+|---|---|---|
+| sensors + eyes + voice | `esp32-s3-iris-sensors` | `CLOUD_HOST`, `CLOUD_TOKEN` |
+| relays + servo | `esp32-iris-node` | `CLOUD_HOST`, `CLOUD_TOKEN` |
+| robot base (2× BTS7960) | `esp32-iris-node-bts7960` | `CLOUD_HOST`, `CLOUD_TOKEN` |
 
-For a house full of relays already working, option 2 is usually less work and
-loses nothing.
+`CLOUD_TOKEN` must equal `NODE_LINK_TOKEN` in IRIS's `.env`. Leave `CLOUD_HOST`
+empty on any board you want to keep LAN-only — the two modes coexist, and the
+board's own web page keeps working either way.
+
+The robot node's **calibration endpoints work over the link too**, not just
+`/motor`. That matters precisely because the one time you cannot walk over to
+the robot and open its page is when it is somewhere else.
+
+**A board running *your own* firmware is the exception.** A custom sketch has
+no way to dial out, so with IRIS on a VPS you either flash one of the sketches
+above, or keep IRIS at home and reach it from outside with a tunnel
+(`TUNNEL_PROVIDER=cloudflared`).
 
 ---
 

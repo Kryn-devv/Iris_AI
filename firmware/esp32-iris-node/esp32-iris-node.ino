@@ -8,6 +8,16 @@
  *   STATUS : JSON self-description                      -> /status
  * Plus a built-in control page at /  so you can drive it from any browser.
  *
+ * TWO WAYS IT REACHES IRIS
+ *   A. IRIS ON YOUR LAN — leave CLOUD_HOST empty. IRIS calls this board's IP.
+ *   B. IRIS ON A VPS    — set CLOUD_HOST / CLOUD_TOKEN. This board then dials
+ *      OUT and holds a WebSocket open; commands come back down it. That is the
+ *      only direction that works: the board is behind your router's NAT, so no
+ *      address from the internet reaches it. Outbound is exactly what NAT
+ *      allows, so this needs no port-forwarding, no static IP, no dynamic DNS.
+ *   Both can be on at once, and the local page keeps working either way —
+ *   which is what makes a wiring fault diagnosable while the link is down.
+ *
  * SETUP
  *   1. Arduino IDE -> File > Preferences > Additional boards manager URLs:
  *        https://espressif.github.io/arduino-esp32/package_esp32_index.json
@@ -24,12 +34,23 @@
 #include <WebServer.h>
 #include <ESPmDNS.h>
 
+#include "node_args.h"
+#include "cloud.h"
+
 /* ─────────────────────────── CONFIG ─────────────────────────── */
 
 const char* WIFI_SSID   = "YOUR_WIFI_NAME";
 const char* WIFI_PASS   = "YOUR_WIFI_PASSWORD";
-const char* DEVICE_NAME = "iris-node";        // mDNS name + shown in /status
+const char* DEVICE_NAME = "relays";           // mDNS name + shown in /status
 const char* DEVICE_KIND = "relay";            // "relay" | "motor" | "generic"
+
+/* ── IRIS in the cloud. Leave CLOUD_HOST empty for a LAN-only setup. ──
+ * CLOUD_TOKEN must equal NODE_LINK_TOKEN in IRIS's .env. Without TLS the
+ * token crosses the internet in clear text; the board warns at boot. */
+const char* CLOUD_HOST  = "";                 // "iris.example.com" or an IP
+const uint16_t CLOUD_PORT = 443;              // 443 for https/wss, else yours
+const bool CLOUD_TLS    = true;               // false only on your own LAN
+const char* CLOUD_TOKEN = "";                 // = NODE_LINK_TOKEN
 
 /* Relays: list the GPIOs your relay module IN pins are wired to.
  * Channel numbers are 1-based in the API (ch=1 is RELAY_PINS[0]). */
@@ -60,6 +81,8 @@ const int  PIN_ENA = 25, PIN_IN1 = 13, PIN_IN2 = 12;
 const int  PIN_ENB = 14, PIN_IN3 = 21, PIN_IN4 = 22;
 const int  DEFAULT_SPEED = 200;      // 0..255
 
+#define WIFI_JOIN_MS 25000UL        // then carry on and keep retrying in loop()
+
 /* ─────────────────────────── STATE ──────────────────────────── */
 
 WebServer server(80);
@@ -69,6 +92,7 @@ unsigned long bootMillis  = 0;
 int  servoAngle = SERVO_BOOT_ANGLE;
 unsigned long servoPowerOffAt = 0;   // millis() deadline to drop servo power
 const int SERVO_LEDC_CH = 7;         // clear of the channels analogWrite() takes
+CloudLink cloud;
 
 /* ─────────────────────────── HELPERS ────────────────────────── */
 
@@ -121,14 +145,19 @@ void sendJson(int code, const String& body) {
   server.send(code, "application/json", body);
 }
 
-/* ─────────────────────────── HANDLERS ───────────────────────── */
+/* ───────────────────── COMMANDS (transport-agnostic) ─────────────────────
+ * Each returns a CmdResult and reads its arguments through Args, so the same
+ * code answers an HTTP request from a LAN-hosted IRIS and a frame from the
+ * cloud socket. Writing them twice is how the two transports drift apart.  */
 
-void handleStatus() {
+CmdResult cmdStatus(const Args&) {
   String json = "{\"name\":\"" + String(DEVICE_NAME) + "\",\"kind\":\"" + DEVICE_KIND +
                 "\",\"ip\":\"" + WiFi.localIP().toString() +
                 "\",\"rssi\":" + String(WiFi.RSSI()) +
                 ",\"uptime_s\":" + String((millis() - bootMillis) / 1000) +
-                ",\"relays\":[";
+                ",\"link\":\"" + String(cloud.enabled() ? (cloud.connected() ? "cloud" : "dialling")
+                                                        : "lan") +
+                "\",\"relays\":[";
   for (int i = 0; i < RELAY_COUNT; i++) {
     json += relayState[i] ? "\"on\"" : "\"off\"";
     if (i < RELAY_COUNT - 1) json += ",";
@@ -140,49 +169,92 @@ void handleStatus() {
             ",\"power_channel\":" + String(SERVO_POWER_CH) + "}";
   }
   json += "}";
-  sendJson(200, json);
+  return cmdOk(json);
 }
 
-void handleRelay() {
-  int ch = server.hasArg("ch") ? server.arg("ch").toInt() : 1;
-  String state = server.hasArg("state") ? server.arg("state") : "toggle";
-  if (ch < 1 || ch > RELAY_COUNT) { sendJson(400, "{\"error\":\"bad channel\"}"); return; }
-  int idx = ch - 1;
-  bool on = (state == "toggle") ? !relayState[idx] : (state == "on");
+CmdResult cmdRelay(const Args& args) {
+  long ch = 1;
+  bool given = false;
+  if (!args.number("ch", ch, 1, given)) return cmdErr(400, "ch must be a number");
+  if (ch < 1 || ch > RELAY_COUNT) return cmdErr(400, "bad channel");
+
+  const String state = args.has("state") ? args.get("state") : "toggle";
+  if (state != "on" && state != "off" && state != "toggle")
+    return cmdErr(400, "state must be on, off or toggle");
+
+  const int idx = (int)ch - 1;
+  const bool on = (state == "toggle") ? !relayState[idx] : (state == "on");
   applyRelay(idx, on);
-  sendJson(200, "{\"ch\":" + String(ch) + ",\"state\":\"" + (on ? "on" : "off") + "\"}");
+  return cmdOk("{\"ch\":" + String(ch) + ",\"state\":\"" + (on ? "on" : "off") + "\"}");
 }
 
-void handleServo() {
-  if (PIN_SERVO < 0) { sendJson(400, "{\"error\":\"no servo pin configured\"}"); return; }
-  if (!server.hasArg("angle")) { sendJson(400, "{\"error\":\"angle required (0-180)\"}"); return; }
-  const String raw = server.arg("angle");
-  /* toInt() answers 0 for "abc" and for "" — a silent slam to 0 degrees. */
-  for (unsigned i = 0; i < raw.length(); i++)
-    if (raw[i] < '0' || raw[i] > '9') { sendJson(400, "{\"error\":\"angle must be 0-180\"}"); return; }
-  const long angle = raw.toInt();
-  if (raw.length() == 0 || angle > 180) { sendJson(400, "{\"error\":\"angle must be 0-180\"}"); return; }
+CmdResult cmdServo(const Args& args) {
+  if (PIN_SERVO < 0) return cmdErr(400, "no servo pin configured");
+  if (!args.has("angle")) return cmdErr(400, "angle required (0-180)");
 
-  const bool hold = server.hasArg("hold") && server.arg("hold") != "0";
+  long angle = 0;
+  /* Refused rather than clamped: clamping parks the horn against an end stop
+   * and leaves the servo stalling there, which is how gears strip. */
+  if (!parseLong(args.get("angle"), angle) || angle < 0 || angle > 180)
+    return cmdErr(400, "angle must be 0-180");
+
+  const bool hold = args.has("hold") && args.get("hold") != "0";
   servoMove((int)angle, hold);
-  sendJson(200, "{\"servo\":" + String(servoAngle) + ",\"hold\":" +
-                String(hold ? "true" : "false") + "}");
+  return cmdOk("{\"servo\":" + String(servoAngle) + ",\"hold\":" +
+               String(hold ? "true" : "false") + "}");
 }
 
-void handleMotor() {
-  if (!MOTORS_ENABLED) { sendJson(400, "{\"error\":\"motors disabled in firmware\"}"); return; }
-  String dir = server.hasArg("dir") ? server.arg("dir") : "stop";
-  int speed  = server.hasArg("speed") ? constrain(server.arg("speed").toInt(), 0, 255) : DEFAULT_SPEED;
-  long ms    = server.hasArg("ms") ? server.arg("ms").toInt() : 0;
+CmdResult cmdMotor(const Args& args) {
+  if (!MOTORS_ENABLED) return cmdErr(400, "motors disabled in firmware");
 
+  const String dir = args.has("dir") ? args.get("dir") : "stop";
+
+  long speed = DEFAULT_SPEED, ms = 0;
+  bool given = false;
+  if (!args.number("speed", speed, DEFAULT_SPEED, given))
+    return cmdErr(400, "speed must be a number");
+  speed = constrain(speed, 0L, 255L);
+  if (!args.number("ms", ms, 0, given)) return cmdErr(400, "ms must be a number");
+  /* Clamping a negative duration to 0 inverts the intent — it would mean "run
+   * until something else stops you" when the caller asked for a bounded move. */
+  if (ms < 0) return cmdErr(400, "ms cannot be negative");
+
+  /* Validation before any state change: a typo used to cancel the pending
+   * auto-stop and THEN return 400, leaving the motors running with nothing
+   * scheduled to stop them. */
   if      (dir == "forward")  motorsWrite(HIGH, LOW,  HIGH, LOW,  speed);
   else if (dir == "backward") motorsWrite(LOW,  HIGH, LOW,  HIGH, speed);
   else if (dir == "left")     motorsWrite(LOW,  HIGH, HIGH, LOW,  speed);
   else if (dir == "right")    motorsWrite(HIGH, LOW,  LOW,  HIGH, speed);
-  else                        { motorsStop(); sendJson(200, "{\"motor\":\"stop\"}"); return; }
+  else if (dir == "stop")     { motorsStop(); return cmdOk("{\"motor\":\"stop\"}"); }
+  else                        return cmdErr(400, "dir must be forward, backward, left, right or stop");
 
   motorStopAt = (ms > 0) ? millis() + ms : 0;
-  sendJson(200, "{\"motor\":\"" + dir + "\",\"speed\":" + String(speed) + ",\"ms\":" + String(ms) + "}");
+  return cmdOk("{\"motor\":\"" + dir + "\",\"speed\":" + String(speed) +
+               ",\"ms\":" + String(ms) + "}");
+}
+
+CmdResult dispatch(const String& path, const Args& args) {
+  if (path == "/status" || path == "status") return cmdStatus(args);
+  if (path == "/relay"  || path == "relay")  return cmdRelay(args);
+  if (path == "/servo"  || path == "servo")  return cmdServo(args);
+  if (path == "/motor"  || path == "motor")  return cmdMotor(args);
+  return cmdErr(404, "unknown endpoint");
+}
+
+/* ─────────────────────────── HANDLERS ───────────────────────── */
+
+void serveDispatch(const char* path) {
+  const CmdResult r = dispatch(path, Args::fromServer());
+  sendJson(r.code, r.body);
+}
+
+/* The cloud socket's side of the same dispatch. A refusal reaches IRIS as a
+ * refusal rather than as data, so a bad command is not reported as success. */
+bool cloudCommand(const String& path, const String& query, String& out) {
+  const CmdResult r = dispatch(path, Args::fromQuery(query));
+  out = r.body;
+  return r.code < 400;
 }
 
 void handleRoot() {
@@ -240,23 +312,47 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   Serial.print("Connecting to WiFi");
-  while (WiFi.status() != WL_CONNECTED) { delay(400); Serial.print("."); }
+  /* Time-boxed. Waiting forever meant a wrong password produced a board that
+   * printed dots and nothing else — indistinguishable from dead hardware.
+   * loop() keeps retrying, so a router that comes up late still connects. */
+  const unsigned long joinUntil = millis() + WIFI_JOIN_MS;
+  while (WiFi.status() != WL_CONNECTED && millis() < joinUntil) {
+    delay(400);
+    Serial.print(".");
+  }
   Serial.println();
   Serial.println("=================================");
-  Serial.print  ("  IRIS node online:  http://");
-  Serial.println(WiFi.localIP());
-  Serial.println("  Register in IRIS:  add device " + String(DEVICE_NAME) + " at " + WiFi.localIP().toString());
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print  ("  IRIS node online:  http://");
+    Serial.println(WiFi.localIP());
+    Serial.println("  Register in IRIS:  add device " + String(DEVICE_NAME) + " at " + WiFi.localIP().toString());
+    if (MDNS.begin(DEVICE_NAME)) MDNS.addService("http", "tcp", 80);
+  } else {
+    Serial.println("  WiFi did NOT join. Check WIFI_SSID / WIFI_PASS.");
+    Serial.println("  Still retrying in the background; relays are safe (all off).");
+  }
   Serial.println("=================================");
 
-  if (MDNS.begin(DEVICE_NAME)) MDNS.addService("http", "tcp", 80);
-
   server.on("/", handleRoot);
-  server.on("/status", handleStatus);
-  server.on("/relay", handleRelay);
-  server.on("/servo", handleServo);
-  server.on("/motor", handleMotor);
+  server.on("/status", []() { serveDispatch("/status"); });
+  server.on("/relay",  []() { serveDispatch("/relay");  });
+  server.on("/servo",  []() { serveDispatch("/servo");  });
+  server.on("/motor",  []() { serveDispatch("/motor");  });
   server.onNotFound([]() { sendJson(404, "{\"error\":\"unknown endpoint\"}"); });
   server.begin();
+
+  cloud.begin(CLOUD_HOST, CLOUD_PORT, "/api/v1/nodes/link", CLOUD_TOKEN,
+              DEVICE_NAME, DEVICE_KIND, CLOUD_TLS, cloudCommand);
+  if (cloud.enabled()) {
+    Serial.println("  Cloud link:       dialling " + String(CLOUD_HOST) +
+                   ":" + String(CLOUD_PORT));
+    if (!CLOUD_TLS)
+      Serial.println("  ** CLOUD_TLS is off — the node token crosses the "
+                     "internet in clear text. **");
+  } else {
+    Serial.println("  Cloud link:       off (LAN only). Set CLOUD_HOST and "
+                   "CLOUD_TOKEN to reach a VPS-hosted IRIS.");
+  }
 }
 
 void loop() {
@@ -270,5 +366,7 @@ void loop() {
   if (WiFi.status() != WL_CONNECTED) {                        // WiFi self-heal
     WiFi.reconnect();
     delay(500);
+    return;                        /* no link to pump until WiFi is back */
   }
+  cloud.loop();                    /* dials out, reconnects, handles commands */
 }
