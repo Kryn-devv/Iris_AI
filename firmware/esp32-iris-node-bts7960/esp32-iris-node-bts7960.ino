@@ -78,12 +78,27 @@
 #include <Preferences.h>
 
 #include "robot_config.h"
+#include "cloud_args.h"
+#include "cloud.h"
 #include "page.h"
 
 /* ══════════════════════ EDIT THESE TWO LINES ══════════════════════ */
 const char* WIFI_SSID = "YOUR_WIFI_NAME";
 const char* WIFI_PASS = "YOUR_WIFI_PASSWORD";
 const char* DEVICE_NAME = "robot";      /* also becomes http://robot.local */
+
+/* ── IRIS in the cloud. Leave CLOUD_HOST empty for a LAN-only setup. ──
+ * The robot is behind your router's NAT, so a VPS-hosted IRIS cannot call it;
+ * with these set the board dials OUT instead and commands come back down the
+ * same socket. CLOUD_TOKEN must equal NODE_LINK_TOKEN in IRIS's .env. */
+const char* CLOUD_HOST  = "";           /* "iris.example.com" or an IP        */
+const uint16_t CLOUD_PORT = 443;        /* 443 for https/wss, else yours      */
+const bool CLOUD_TLS    = true;         /* false only on your own LAN         */
+const char* CLOUD_TOKEN = "";           /* = NODE_LINK_TOKEN                  */
+/* Optional CA (PEM, with the BEGIN/END lines). With it the certificate is
+ * checked; empty means encrypted but unverified, and the board says so. */
+const char* CLOUD_CA_CERT = "";
+CloudLink cloud;
 const char* AP_PASSWORD = "iriscalib";  /* fallback network, min 8 chars */
 /* ═════════════════════════════════════════════════════════════════ */
 
@@ -458,7 +473,29 @@ static void selfTestTick() {
 
 /* ───────────────────────── HTTP helpers ─────────────────────────── */
 
+/* ─────────────────── where a reply goes, where args come from ───────────────
+ * A command now arrives two ways: as an HTTP request when IRIS is on the LAN,
+ * and as a frame on the cloud socket when IRIS is on a VPS. Rather than write
+ * eleven handlers twice — and watch the copy nobody tests drift — the sink and
+ * the argument source are redirected around the existing handlers. Set while a
+ * cloud frame is being served, null the rest of the time.
+ *
+ * Requests are served one at a time from loop(), so a single slot is correct
+ * here for the same reason argFail below is.                                */
+static const Args* cloudArgs = nullptr;
+static String* cloudOut = nullptr;
+static int cloudCode = 200;
+
+static bool argHas(const char* name) {
+  return cloudArgs ? cloudArgs->has(name) : argHas(name);
+}
+
+static String argGet(const char* name) {
+  return cloudArgs ? cloudArgs->get(name) : argGet(name);
+}
+
 static void sendJson(int code, const String& body) {
+  if (cloudOut) { *cloudOut = body; cloudCode = code; return; }
   server.sendHeader("Access-Control-Allow-Origin", "*");
   server.send(code, "application/json", body);
 }
@@ -472,9 +509,9 @@ static const char* argFail = NULL;
  * caller's default is kept. Out of range is clamped, because "speed=300 means
  * full speed" is helpful whereas "speed=fast means stopped" is a trap. */
 static bool argClamp(const char* name, long lo, long hi, long& out) {
-  if (!server.hasArg(name)) return true;
+  if (!argHas(name)) return true;
   long v;
-  if (!parseLong(server.arg(name), v)) { argFail = name; return false; }
+  if (!parseLong(argGet(name), v)) { argFail = name; return false; }
   out = (v < lo) ? lo : (v > hi ? hi : v);
   return true;
 }
@@ -483,17 +520,17 @@ static bool argClamp(const char* name, long lo, long hi, long& out) {
  * silently substituting a neighbour changes the meaning (ms=-1 clamped to 0
  * would mean "no timed stop at all", the opposite of a short move). */
 static bool argRange(const char* name, long lo, long hi, long& out) {
-  if (!server.hasArg(name)) return true;
+  if (!argHas(name)) return true;
   long v;
-  if (!parseLong(server.arg(name), v)) { argFail = name; return false; }
+  if (!parseLong(argGet(name), v)) { argFail = name; return false; }
   if (v < lo || v > hi) { argFail = name; return false; }
   out = v;
   return true;
 }
 
 static bool argBool(const char* name, bool& out) {
-  if (!server.hasArg(name)) return true;
-  const String s = server.arg(name);
+  if (!argHas(name)) return true;
+  const String s = argGet(name);
   if (s == "true"  || s == "on"  || s == "yes") { out = true;  return true; }
   if (s == "false" || s == "off" || s == "no")  { out = false; return true; }
   long v;
@@ -566,7 +603,7 @@ static void acceptCommand(const char* label, long ms) {
 }
 
 static void handleMotor() {
-  String dir = server.hasArg("dir") ? server.arg("dir") : "stop";
+  String dir = argHas("dir") ? argGet("dir") : "stop";
   dir.toLowerCase();
 
   long speed = cfg.defaultSpeed, ms = 0;
@@ -630,8 +667,8 @@ static void handleDrive() {
 /* RAW per-side test: deliberately ignores swap/invert/trim so the answer to
  * "which physical module and which pin pair actually responds?" is unambiguous. */
 static void handleTest() {
-  String side = server.hasArg("side") ? server.arg("side") : "a";
-  String dir  = server.hasArg("dir")  ? server.arg("dir")  : "forward";
+  String side = argHas("side") ? argGet("side") : "a";
+  String dir  = argHas("dir")  ? argGet("dir")  : "forward";
   side.toLowerCase(); dir.toLowerCase();
 
   long speed = cfg.defaultSpeed, ms = 1200;
@@ -699,10 +736,10 @@ static void handleConfig() {
   bool pinsChanged = false, freqChanged = false, pinArgSeen = false;
 
   auto setPin = [&](const char* arg, uint8_t& field) -> bool {
-    if (!server.hasArg(arg)) return true;
+    if (!argHas(arg)) return true;
     pinArgSeen = true;
     long v;
-    if (!parseLong(server.arg(arg), v) || !pinUsable((int)v)) { argFail = arg; return false; }
+    if (!parseLong(argGet(arg), v) || !pinUsable((int)v)) { argFail = arg; return false; }
     if (field != (uint8_t)v) pinsChanged = true;
     field = (uint8_t)v;
     return true;
@@ -828,6 +865,43 @@ static void startFallbackAp() {
   Serial.println("=================================");
 }
 
+/* ───────────────────────── the cloud side of dispatch ─────────────────────
+ * Redirects the sink and the argument source, then calls the SAME handler the
+ * HTTP route would. Every endpoint is reachable from a VPS-hosted IRIS this
+ * way, calibration included — which matters because the one time you cannot
+ * walk over to the robot is when it is somewhere else.
+ *
+ * `/` is deliberately absent: it answers HTML to a browser, and there is no
+ * browser on the other end of this socket. */
+static bool cloudCommand(const String& path, const String& query, String& out) {
+  const Args args = Args::fromQuery(query);
+  cloudArgs = &args;
+  cloudOut = &out;
+  cloudCode = 200;
+  argFail = NULL;
+
+  String p = path;
+  if (!p.startsWith("/")) p = "/" + p;
+
+  if      (p == "/status")   handleStatus();
+  else if (p == "/motor")    handleMotor();
+  else if (p == "/tank")     handleTank();
+  else if (p == "/drive")    handleDrive();
+  else if (p == "/test")     handleTest();
+  else if (p == "/selftest") handleSelfTest();
+  else if (p == "/stop")     handleStop();
+  else if (p == "/config")   handleConfig();
+  else if (p == "/save")     handleSave();
+  else if (p == "/reset")    handleReset();
+  else sendJson(404, "{\"error\":\"unknown endpoint\"}");
+
+  /* Cleared unconditionally: leaving them set would send the NEXT HTTP reply
+   * into a dangling String instead of to the browser. */
+  cloudArgs = nullptr;
+  cloudOut = nullptr;
+  return cloudCode < 400;
+}
+
 void setup() {
   Serial.begin(115200);
   delay(80);
@@ -864,10 +938,29 @@ void setup() {
   server.onNotFound([]() { sendJson(404, "{\"error\":\"unknown endpoint\"}"); });
   server.begin();      /* unconditional: the dashboard must exist even with no
                         * router, otherwise a wiring fault cannot be diagnosed */
+
+  cloud.begin(CLOUD_HOST, CLOUD_PORT, "/api/v1/nodes/link", CLOUD_TOKEN,
+              DEVICE_NAME, "motor", CLOUD_TLS, cloudCommand, CLOUD_CA_CERT);
+  if (cloud.enabled()) {
+    Serial.println("  Cloud link:   dialling " + cloud.host() + ":" +
+                   String(cloud.port()) + (cloud.tls() ? " (wss)" : " (ws)"));
+    if (cloud.corrections().length())
+      Serial.println("  CLOUD_HOST fixed: " + cloud.corrections());
+    if (!cloud.tls())
+      Serial.println("  ** CLOUD_TLS is off — the node token crosses the "
+                     "internet in clear text. **");
+    else if (!cloud.verified())
+      Serial.println("  ** TLS on, certificate NOT checked: encrypted, but a "
+                     "man in the middle could still read the token. Paste your "
+                     "server's CA into CLOUD_CA_CERT to close that. **");
+  }
 }
 
 void loop() {
   server.handleClient();
+  /* Only pumped with a link up. A motor node whose WiFi dropped must keep
+   * running its failsafe and ramp ticks below regardless. */
+  if (WiFi.status() == WL_CONNECTED) cloud.loop();
   selfTestTick();
   rampTick();
 

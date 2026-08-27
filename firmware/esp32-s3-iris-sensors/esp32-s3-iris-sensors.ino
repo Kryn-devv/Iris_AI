@@ -90,7 +90,13 @@ const char* AP_PASSWORD = "iriscalib";     /* fallback network, min 8 chars */
 const char* CLOUD_HOST  = "";              /* "iris.example.com" or an IP    */
 const uint16_t CLOUD_PORT = 443;           /* 443 for https/wss, else yours  */
 const bool CLOUD_TLS    = true;            /* false only on your own LAN     */
-const bool CLOUD_TLS_VERIFY = false;       /* true needs a CA in the sketch  */
+/* Certificate checking, for BOTH the link and the voice upload.
+ *
+ * Empty: TLS still encrypts, but nothing authenticates the server — safe from a
+ * passive listener, wide open to an active one. Paste your server's CA (PEM,
+ * including the BEGIN/END lines) to close that. The board reports which of the
+ * two it got at boot rather than letting "TLS is on" imply the stronger one. */
+const char* CLOUD_CA_CERT = "";
 const char* CLOUD_TOKEN = "";              /* must equal NODE_LINK_TOKEN     */
 
 /* ── the eyes ── */
@@ -487,8 +493,11 @@ static void announceSta() {
   Serial.println(WiFi.localIP());
   Serial.println("  Test everything:  open that address in a browser");
   if (cloud.enabled()) {
-    Serial.println("  Cloud link:       dialling " + String(CLOUD_HOST) +
+    Serial.println("  Cloud link:       dialling " + cloud.host() + ":" +
+                   String(cloud.port()) + (cloud.tls() ? " (wss)" : " (ws)") +
                    " — IRIS registers me itself");
+    if (cloud.corrections().length())
+      Serial.println("  CLOUD_HOST fixed: " + cloud.corrections());
   } else {
     Serial.println("  Register in IRIS: add device " + String(DEVICE_NAME) +
                    " at " + WiFi.localIP().toString() + " as face");
@@ -583,11 +592,17 @@ void setup() {
   /* Dial out to IRIS, if a cloud host is configured. */
   cloud.helloSensors_ = sensors.namesJson();
   cloud.begin(CLOUD_HOST, CLOUD_PORT, "/api/v1/nodes/link", CLOUD_TOKEN,
-              DEVICE_NAME, "face", CLOUD_TLS, cloudCommand);
-  if (cloud.enabled() && !CLOUD_TLS) {
+              DEVICE_NAME, "face", CLOUD_TLS, cloudCommand, CLOUD_CA_CERT);
+  if (cloud.enabled() && !cloud.tls()) {
     Serial.println("  [warn] the cloud link is unencrypted (CLOUD_TLS=false).");
     Serial.println("         Fine on your own LAN; over the internet the token");
     Serial.println("         travels in clear text. Use 443 and TLS instead.");
+  } else if (cloud.enabled() && !cloud.verified()) {
+    Serial.println("  [warn] TLS is on but the certificate is NOT checked.");
+    Serial.println("         Safe from someone merely listening; a man in the");
+    Serial.println("         middle could still present his own certificate and");
+    Serial.println("         read the token. Paste your server's CA into");
+    Serial.println("         CLOUD_CA_CERT to close that.");
   }
   if (CLOUD_HOST[0] != '\0' && CLOUD_TOKEN[0] == '\0') {
     Serial.println("  [warn] CLOUD_HOST is set but CLOUD_TOKEN is empty — the");
@@ -607,7 +622,8 @@ void setup() {
   voiceCfg.host = CLOUD_HOST;
   voiceCfg.port = CLOUD_PORT;
   voiceCfg.tls = CLOUD_TLS;
-  voiceCfg.tlsVerify = CLOUD_TLS_VERIFY;
+  voiceCfg.tlsVerify = (CLOUD_CA_CERT[0] != '\0');
+  voiceCfg.caCert = CLOUD_CA_CERT;
   voiceCfg.token = CLOUD_TOKEN;
   voiceCfg.node = DEVICE_NAME;
   voice.onTick(animateOnce);

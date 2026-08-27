@@ -454,11 +454,30 @@
         els.wakeToggle.checked = false;
         els.btnMic.classList.remove("listening");
         setState("idle", "mic blocked");
-        addMessage("iris", "Microphone access is blocked. Allow it in your browser's site settings.", { error: true });
+        addMessage("iris", micBlockedReason(), { error: true });
       }
     };
     try { rec.start(); } catch { return null; }
     return rec;
+  }
+
+  /* Why the microphone was refused — the two causes need different fixes, and
+     naming the wrong one wastes the user's time.
+
+     Browsers only expose a microphone on a SECURE origin: https, or localhost.
+     Reached over plain http from another machine, the permission is not merely
+     denied, it is never offered — so "allow it in site settings" points at a
+     switch that is not there. Anything served over https, or opened locally on
+     the machine IRIS runs on, is a genuine permission problem. */
+  function micBlockedReason() {
+    if (!window.isSecureContext) {
+      return "**The microphone needs a secure connection.** This page is on " +
+        "`http://`, and browsers only allow microphone access over `https://` " +
+        "(or on localhost) — so there is no permission to grant in site " +
+        "settings. Put TLS in front of IRIS, or use the robot's own microphone. " +
+        "Typing works either way.";
+    }
+    return "Microphone access is blocked. Allow it in your browser's site settings.";
   }
 
   function onSpeechFinal(text) {

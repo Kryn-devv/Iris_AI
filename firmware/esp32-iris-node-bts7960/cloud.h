@@ -34,7 +34,7 @@
 #include <WebSocketsClient.h>
 
 #ifndef FIRMWARE_VERSION
-#define FIRMWARE_VERSION "iris-s3"
+#define FIRMWARE_VERSION "iris-bts7960"
 #endif
 
 /* Telemetry cadence. Fast enough that "is anyone there?" is current, slow

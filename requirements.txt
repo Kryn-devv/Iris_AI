@@ -7,7 +7,11 @@ httpx>=0.27.0
 sqlalchemy[asyncio]>=2.0.28
 aiosqlite>=0.20.0
 python-dotenv>=1.0.1
-truststore>=0.9.1
+# Routes TLS verification through the OS trust store. Marked for 3.10+ so a
+# panel's installer container — several run Python 3.8 — skips it instead of
+# failing the whole file over one package the code already treats as optional
+# (iris/app/core/tls.py falls back to Python's bundled CA list).
+truststore>=0.9.1; python_version >= "3.10"
 python-multipart>=0.0.9
 psutil>=5.9.0
 
