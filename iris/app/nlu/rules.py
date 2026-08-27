@@ -422,7 +422,11 @@ RULES: list[Rule] = [
         pattern=_rx(
             r"^(?:add|register|pair|connect)\s+(?:a\s+|new\s+|my\s+)?(?:device|esp32|board|node)\s+"
             r"(?P<name>.+?)\s+(?:at|@|on)\s+(?P<addr>[a-z0-9.:_-]+)"
-            r"(?:\s+as\s+(?:a\s+)?(?P<kind>relay|motor|generic))?$"
+            # All five kinds the registry accepts, not three. Two of the
+            # missing ones — sensor and face — are the exact words the docs
+            # tell people to type, so "add device face at <ip> as face" fell
+            # through to the LLM instead of registering anything.
+            r"(?:\s+as\s+(?:a\s+)?(?P<kind>relay|motor|sensor|face|generic))?$"
         ),
         builder=lambda m, c: {
             "name": m.group("name").strip(),
@@ -495,6 +499,28 @@ RULES: list[Rule] = [
         pattern=_rx(r"^(?:turn|switch|power)\s+(?:the\s+|my\s+)?(?P<dev>.+?)\s+(?P<state>on|off)$"),
         builder=_build_device_switch,
         confidence=0.94,
+    ),
+    Rule(
+        name="device_switch_bare",
+        intent="devices",
+        tool="device_switch",
+        # "lights on" is how people actually say it, and it matched nothing:
+        # both switch rules above require turn/switch/power, so the shortest and
+        # most natural form fell through to the LLM and looked like a dead app.
+        #
+        # A bare "<something> on" is greedy, so it is fenced in tightly: at most
+        # two words, and the first may not be one of the words that make an
+        # English phrase merely END in "on" — "hold on", "what's going on",
+        # "from now on". Those are the false positives that would make this rule
+        # worse than the gap it fills.
+        pattern=_rx(
+            r"^(?!(?:hold|come|carry|going|go|get|put|move|press|keep|right|"
+            r"later|now|so|and|based|early|from|what|who|why|is|its|it|that|"
+            r"this|volume|screen|dark|light\s+mode)\b)"
+            r"(?P<dev>[a-z][a-z0-9-]*(?:\s+[a-z0-9-]+)?)\s+(?P<state>on|off)$"
+        ),
+        builder=_build_device_switch,
+        confidence=0.90,
     ),
     Rule(
         name="device_switch_hinglish",

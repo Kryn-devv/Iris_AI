@@ -58,9 +58,23 @@ const char* CLOUD_TOKEN = "";                 // = NODE_LINK_TOKEN
 const char* CLOUD_CA_CERT = "";
 
 /* Relays: list the GPIOs your relay module IN pins are wired to.
- * Channel numbers are 1-based in the API (ch=1 is RELAY_PINS[0]). */
+ *
+ * CHANNEL NUMBERS COME FROM THIS ORDER, NOT FROM THE MODULE. Channel 1 is
+ * RELAY_PINS[0] — whichever relay you happened to wire to GPIO 26 — and the
+ * label silk-screened "IN1" on the board has no say in it. To renumber, either
+ * move a wire or reorder this list; nothing else needs to change.
+ *
+ * Reordering moves the NUMBER, so SERVO_POWER_CH below follows the number and
+ * not the pin. Put the servo's channel somewhere you will remember. */
 const int  RELAY_PINS[]      = {26, 27, 32, 33};
 const int  RELAY_COUNT       = sizeof(RELAY_PINS) / sizeof(RELAY_PINS[0]);
+
+/* What is actually plugged into each channel, in the same order. Names are
+ * reported by /status and printed on the board's own page, so "which relay is
+ * channel 2" is answered by looking rather than by clicking each one and
+ * listening. Rename freely — IRIS only ever sends numbers. */
+const char* RELAY_NAMES[]    = {"light", "fan", "servo power", "spare"};
+
 /* Most relay boards are ACTIVE-LOW: the relay closes when the pin is LOW. */
 const bool RELAY_ACTIVE_LOW  = true;
 
@@ -91,7 +105,16 @@ const int  DEFAULT_SPEED = 200;      // 0..255
 /* ─────────────────────────── STATE ──────────────────────────── */
 
 WebServer server(80);
-bool relayState[16] = {false};
+#define RELAY_MAX 16
+bool relayState[RELAY_MAX] = {false};
+
+/* Both of these would otherwise be silent memory bugs rather than build
+ * errors: more pins than relayState can hold, or a names list that does not
+ * line up with the pins it labels. */
+static_assert(RELAY_COUNT <= RELAY_MAX,
+              "RELAY_PINS has more entries than relayState can hold — raise RELAY_MAX");
+static_assert(sizeof(RELAY_NAMES) / sizeof(RELAY_NAMES[0]) == RELAY_COUNT,
+              "RELAY_NAMES must have exactly one entry per RELAY_PINS entry");
 unsigned long motorStopAt = 0;       // millis() deadline for timed moves
 unsigned long bootMillis  = 0;
 int  servoAngle = SERVO_BOOT_ANGLE;
@@ -165,6 +188,13 @@ CmdResult cmdStatus(const Args&) {
                 "\",\"relays\":[";
   for (int i = 0; i < RELAY_COUNT; i++) {
     json += relayState[i] ? "\"on\"" : "\"off\"";
+    if (i < RELAY_COUNT - 1) json += ",";
+  }
+  json += "],\"channels\":[";
+  for (int i = 0; i < RELAY_COUNT; i++) {
+    json += "{\"ch\":" + String(i + 1) + ",\"name\":\"" + RELAY_NAMES[i] +
+            "\",\"gpio\":" + String(RELAY_PINS[i]) +
+            ",\"state\":\"" + (relayState[i] ? "on" : "off") + "\"}";
     if (i < RELAY_COUNT - 1) json += ",";
   }
   json += "],\"motors\":" + String(MOTORS_ENABLED ? "true" : "false");
@@ -269,11 +299,22 @@ void handleRoot() {
     "body{font-family:system-ui;background:#05070f;color:#e6edf7;text-align:center;padding:24px}"
     "h1{font-size:18px;letter-spacing:.2em;color:#5eead4}"
     "button{margin:6px;padding:14px 22px;font-size:15px;border-radius:12px;border:1px solid #2dd4bf55;"
-    "background:#0d1224;color:#e6edf7;cursor:pointer} button:active{background:#5eead4;color:#05070f}"
+    "background:#0d1224;color:#e6edf7;cursor:pointer;min-width:118px;line-height:1.5}"
+    "button small{color:#8b96ad;font-size:11px} button:active{background:#5eead4;color:#05070f}"
+    "button:active small{color:#05070f}"
     "</style></head><body><h1>" + String(DEVICE_NAME) + "</h1><div id=r></div>";
-  html += "<script>const R=" + String(RELAY_COUNT) + ";const d=document.getElementById('r');";
-  html += "for(let i=1;i<=R;i++){const b=document.createElement('button');b.textContent='Relay '+i;"
-          "b.onclick=()=>fetch('/relay?ch='+i+'&state=toggle');d.appendChild(b);}";
+  /* Each button carries its channel number, its name and its GPIO, because
+     "Relay 3" alone does not tell you which thing in the room it switches. */
+  html += "<script>const C=[";
+  for (int i = 0; i < RELAY_COUNT; i++) {
+    html += "{n:" + String(i + 1) + ",s:'" + String(RELAY_NAMES[i]) +
+            "',g:" + String(RELAY_PINS[i]) + "}";
+    if (i < RELAY_COUNT - 1) html += ",";
+  }
+  html += "];const d=document.getElementById('r');";
+  html += "C.forEach(c=>{const b=document.createElement('button');"
+          "b.innerHTML='<b>'+c.n+'</b> &middot; '+c.s+'<br><small>GPIO '+c.g+'</small>';"
+          "b.onclick=()=>fetch('/relay?ch='+c.n+'&state=toggle');d.appendChild(b);});";
   if (PIN_SERVO >= 0)
     html += "d.appendChild(document.createElement('br'));const sl=document.createElement('input');"
             "sl.type='range';sl.min=0;sl.max=180;sl.value=" + String(servoAngle) + ";sl.style.width='80%';"
@@ -332,6 +373,12 @@ void setup() {
     Serial.println(WiFi.localIP());
     Serial.println("  Register in IRIS:  add device " + String(DEVICE_NAME) + " at " + WiFi.localIP().toString());
     if (MDNS.begin(DEVICE_NAME)) MDNS.addService("http", "tcp", 80);
+    Serial.println("  Relay channels:");
+    for (int i = 0; i < RELAY_COUNT; i++)
+      Serial.printf("    ch%d  GPIO %-2d  %s\n", i + 1, RELAY_PINS[i], RELAY_NAMES[i]);
+    if (PIN_SERVO >= 0)
+      Serial.printf("    servo signal GPIO %d, powered by ch%d\n",
+                    PIN_SERVO, SERVO_POWER_CH);
   } else {
     Serial.println("  WiFi did NOT join. Check WIFI_SSID / WIFI_PASS.");
     Serial.println("  Still retrying in the background; relays are safe (all off).");

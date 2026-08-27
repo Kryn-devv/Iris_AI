@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from iris.app.tools.devices.registry import (
+    DEVICE_KINDS,
     Device,
     DeviceError,
     DeviceRegistry,
@@ -197,6 +198,34 @@ class TestDeviceNLU:
         for key, value in expected.items():
             assert match.arguments.get(key) == value
 
+    @pytest.mark.parametrize("utterance,device,state", [
+        ("lights on", "lights", "on"),
+        ("light on", "light", "on"),
+        ("lights off", "lights", "off"),
+        ("fan off", "fan", "off"),
+        ("kitchen light on", "kitchen light", "on"),
+        ("hall lamp off", "hall lamp", "off"),
+    ])
+    def test_bare_on_off_is_the_form_people_actually_type(self, utterance, device, state):
+        """Both other switch rules require turn/switch/power, so the shortest
+        and most natural phrasing matched nothing and fell through to the LLM —
+        which reads as a dead app rather than a missing rule."""
+        match = self.engine.match(utterance)
+        assert match and match.tool_name == "device_switch", utterance
+        assert match.arguments.get("device") == device
+        assert match.arguments.get("state") == state
+
+    @pytest.mark.parametrize("utterance", [
+        # English phrases that merely END in "on". These are why a bare
+        # "<something> on" rule needs a fence, not just a pattern.
+        "hold on", "come on", "what's going on", "from now on", "and so on",
+        "carry on", "later on", "move on", "that's on", "why is it on",
+        "keep going on",
+    ])
+    def test_phrases_that_merely_end_in_on_are_not_devices(self, utterance):
+        match = self.engine.match(utterance)
+        assert match is None or match.tool_name != "device_switch", utterance
+
     @pytest.mark.parametrize("utterance,not_tool", [
         ("turn the volume up", "device_switch"),
         ("turn it up", "device_switch"),
@@ -206,6 +235,23 @@ class TestDeviceNLU:
     def test_non_device_phrases_do_not_route_to_devices(self, utterance, not_tool):
         match = self.engine.match(utterance)
         assert match is None or match.tool_name != not_tool
+
+    @pytest.mark.parametrize("kind", list(DEVICE_KINDS))
+    def test_every_registry_kind_can_be_typed(self, kind):
+        """The NLU must accept every kind the registry accepts.
+
+        It listed only relay/motor/generic, so "add device face at <ip> as
+        face" — the exact line docs/ESP32.md tells people to type — matched
+        nothing and fell through to the LLM instead of registering a device.
+        """
+        match = self.engine.match(f"add device myboard at 192.168.1.50 as {kind}")
+        assert match and match.tool_name == "register_device", kind
+        assert match.arguments.get("kind") == kind
+
+    def test_kind_is_optional(self):
+        match = self.engine.match("add device myboard at 192.168.1.50")
+        assert match and match.tool_name == "register_device"
+        assert "kind" not in match.arguments
 
     def test_hinglish_open(self):
         match = self.engine.match("notepad kholo")
