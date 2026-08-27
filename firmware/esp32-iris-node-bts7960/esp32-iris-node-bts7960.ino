@@ -100,6 +100,21 @@ const char* CLOUD_TOKEN = "";           /* = NODE_LINK_TOKEN                  */
 const char* CLOUD_CA_CERT = "";
 CloudLink cloud;
 const char* AP_PASSWORD = "iriscalib";  /* fallback network, min 8 chars */
+
+/* AP_ONLY: skip the router entirely and serve just my own WiFi.
+ *
+ * Worth it for a robot. Its own AP is the strongest link it will ever have —
+ * you are standing next to it — with no router hop, no phone-hotspot client
+ * isolation, and no 25 s join wait before the calibration page exists. That
+ * matters most in exactly the situation where you need the page: a robot that
+ * drives away from the access point.
+ *
+ * The cost is real and worth stating: a laptop joined to this AP is on the
+ * robot's network and nothing else. IRIS running on that laptop can drive the
+ * robot, but cannot reach the sensor or relay boards on your house WiFi, and
+ * has no internet — so no LLM. Use AP_ONLY to calibrate and drive by hand;
+ * leave it false for voice control alongside the other boards. */
+const bool AP_ONLY = false;
 /* ═════════════════════════════════════════════════════════════════ */
 
 /* ───────────────────────── PWM back end ─────────────────────────── */
@@ -849,19 +864,23 @@ static void announceSta() {
  * to make a wiring problem impossible to diagnose. */
 static void startFallbackAp() {
   const String ssid = String("iris-") + DEVICE_NAME;
-  WiFi.mode(WIFI_AP_STA);
+  /* AP_STA on the fallback path so the router keeps being retried; pure AP
+   * when this is the chosen mode, because a station interface nobody asked
+   * for still scans and still costs airtime. */
+  WiFi.mode(AP_ONLY ? WIFI_AP : WIFI_AP_STA);
   if (!WiFi.softAP(ssid.c_str(), AP_PASSWORD)) {
-    Serial.println("  could not start fallback WiFi either — check the board");
+    Serial.println("  could not start my own WiFi either — check the board");
     return;
   }
   apMode = true;
   Serial.println();
   Serial.println("=================================");
-  Serial.println("  No router reached. Serving my own WiFi:");
+  Serial.println(AP_ONLY ? "  AP_ONLY: serving my own WiFi."
+                         : "  No router reached. Serving my own WiFi:");
   Serial.println("    network:  " + ssid);
   Serial.println("    password: " + String(AP_PASSWORD));
   Serial.println("    then open http://" + WiFi.softAPIP().toString());
-  Serial.println("  Still retrying your router in the background.");
+  if (!AP_ONLY) Serial.println("  Still retrying your router in the background.");
   Serial.println("=================================");
 }
 
@@ -912,17 +931,21 @@ void setup() {
   configLoad();
   armHardware();
 
-  WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);                /* motor commands must not wait on power save */
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  Serial.print("Connecting to WiFi");
-  const unsigned long joinDeadline = millis() + WIFI_JOIN_MS;
-  while (WiFi.status() != WL_CONNECTED && (long)(millis() - joinDeadline) < 0) {
-    delay(250);
-    Serial.print(".");
+  if (AP_ONLY) {
+    startFallbackAp();                 /* no join attempt, so no 25 s wait */
+  } else {
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(WIFI_SSID, WIFI_PASS);
+    Serial.print("Connecting to WiFi");
+    const unsigned long joinDeadline = millis() + WIFI_JOIN_MS;
+    while (WiFi.status() != WL_CONNECTED && (long)(millis() - joinDeadline) < 0) {
+      delay(250);
+      Serial.print(".");
+    }
+    if (WiFi.status() == WL_CONNECTED) announceSta();
+    else startFallbackAp();
   }
-  if (WiFi.status() == WL_CONNECTED) announceSta();
-  else startFallbackAp();
 
   server.on("/",         handleRoot);
   /* Browsers ask for /favicon.ico on every page load. Without a handler each
@@ -985,7 +1008,12 @@ void loop() {
     doStop(cfg.brakeOnStop);
   }
 
-  if (WiFi.status() != WL_CONNECTED) {
+  /* AP_ONLY has no station side at all: WiFi.status() is permanently not
+   * connected, and calling WiFi.begin() here would switch the radio out of
+   * pure AP mode and drop the very network someone is driving from. */
+  if (AP_ONLY) {
+    // nothing to watch — the AP is up or the board is broken.
+  } else if (WiFi.status() != WL_CONNECTED) {
     /* Losing the router is an instant stop only when the router is what was
      * carrying commands. In AP fallback there is no router to lose, and
      * stopping there would cut off someone driving from the fallback network. */
