@@ -925,6 +925,12 @@ void setup() {
   else startFallbackAp();
 
   server.on("/",         handleRoot);
+  /* Browsers ask for /favicon.ico on every page load. Without a handler each
+   * one becomes a 404 plus an "[E] request handler not found" line, which
+   * looks like a fault and is not one — and on a weak link that wasted round
+   * trip competes with the 700 ms status poll the page depends on. 204 is the
+   * correct answer: "there is no icon, stop asking." */
+  server.on("/favicon.ico", []() { server.send(204); });
   server.on("/status",   handleStatus);
   server.on("/motor",    handleMotor);
   server.on("/tank",     handleTank);
