@@ -176,6 +176,40 @@ points at an interpreter that has the dependencies installed — moving or
 deleting the `.venv` breaks it. Re-run `autostart enable` after moving the
 project folder.
 
+## Flashing a board: "the port is busy or doesn't exist"
+
+```
+A fatal error occurred: Could not open /dev/cu.usbmodem...,
+the port is busy or doesn't exist.
+[Errno 35] Could not exclusively lock port
+```
+
+**The Serial Monitor still has it open.** Only one program can hold a serial
+port, and the monitor does not release it while an upload starts. Close it —
+the plug icon in PlatformIO's toolbar, or Ctrl+C in the terminal running it —
+and upload again.
+
+If it persists, find the holder:
+
+```bash
+lsof | grep usbmodem          # macOS / Linux
+```
+
+or clear the usual suspects and re-seat the cable:
+
+```bash
+pkill -f "pio device monitor" ; pkill screen
+```
+
+Other causes, in order of likelihood:
+
+| | |
+|---|---|
+| Two editors open on the same board | Arduino IDE and PlatformIO both claim the port; close one |
+| An `iris` autostart is polling the board | not the serial port — ignore this row unless you wrote a script that opens it |
+| A charge-only USB cable | no data lines, so the port never appears at all. `ls /dev/cu.*` before and after plugging in — if nothing changes, swap the cable |
+| ESP32-S3 in the wrong mode | hold **BOOT**, tap **RESET**, release BOOT, then upload |
+
 ## Nothing at http://127.0.0.1:8756
 
 - Confirm the log ends with `IRIS is ready at http://127.0.0.1:8756`.
