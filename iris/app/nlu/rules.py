@@ -422,7 +422,11 @@ RULES: list[Rule] = [
         pattern=_rx(
             r"^(?:add|register|pair|connect)\s+(?:a\s+|new\s+|my\s+)?(?:device|esp32|board|node)\s+"
             r"(?P<name>.+?)\s+(?:at|@|on)\s+(?P<addr>[a-z0-9.:_-]+)"
-            r"(?:\s+as\s+(?:a\s+)?(?P<kind>relay|motor|generic))?$"
+            # All five kinds the registry accepts, not three. Two of the
+            # missing ones — sensor and face — are the exact words the docs
+            # tell people to type, so "add device face at <ip> as face" fell
+            # through to the LLM instead of registering anything.
+            r"(?:\s+as\s+(?:a\s+)?(?P<kind>relay|motor|sensor|face|generic))?$"
         ),
         builder=lambda m, c: {
             "name": m.group("name").strip(),
