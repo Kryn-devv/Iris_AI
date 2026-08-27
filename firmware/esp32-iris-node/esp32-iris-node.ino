@@ -51,6 +51,11 @@ const char* CLOUD_HOST  = "";                 // "iris.example.com" or an IP
 const uint16_t CLOUD_PORT = 443;              // 443 for https/wss, else yours
 const bool CLOUD_TLS    = true;               // false only on your own LAN
 const char* CLOUD_TOKEN = "";                 // = NODE_LINK_TOKEN
+/* Optional. With your server's CA here the certificate is actually checked,
+ * which is what stops a man in the middle presenting his own and reading the
+ * token. Empty means encrypted-but-unverified, and the board says so at boot.
+ * Paste the PEM including the BEGIN/END lines. */
+const char* CLOUD_CA_CERT = "";
 
 /* Relays: list the GPIOs your relay module IN pins are wired to.
  * Channel numbers are 1-based in the API (ch=1 is RELAY_PINS[0]). */
@@ -342,13 +347,19 @@ void setup() {
   server.begin();
 
   cloud.begin(CLOUD_HOST, CLOUD_PORT, "/api/v1/nodes/link", CLOUD_TOKEN,
-              DEVICE_NAME, DEVICE_KIND, CLOUD_TLS, cloudCommand);
+              DEVICE_NAME, DEVICE_KIND, CLOUD_TLS, cloudCommand, CLOUD_CA_CERT);
   if (cloud.enabled()) {
-    Serial.println("  Cloud link:       dialling " + String(CLOUD_HOST) +
-                   ":" + String(CLOUD_PORT));
-    if (!CLOUD_TLS)
+    Serial.println("  Cloud link:       dialling " + cloud.host() + ":" +
+                   String(cloud.port()) + (cloud.tls() ? " (wss)" : " (ws)"));
+    if (cloud.corrections().length())
+      Serial.println("  CLOUD_HOST fixed: " + cloud.corrections());
+    if (!cloud.tls())
       Serial.println("  ** CLOUD_TLS is off — the node token crosses the "
                      "internet in clear text. **");
+    else if (!cloud.verified())
+      Serial.println("  ** TLS on, certificate NOT checked: encrypted, but a "
+                     "man in the middle could still read the token. Paste your "
+                     "server's CA into CLOUD_CA_CERT to close that. **");
   } else {
     Serial.println("  Cloud link:       off (LAN only). Set CLOUD_HOST and "
                    "CLOUD_TOKEN to reach a VPS-hosted IRIS.");

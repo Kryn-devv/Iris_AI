@@ -84,6 +84,7 @@ struct VoiceConfig {
   uint16_t port = 443;
   bool tls = true;
   bool tlsVerify = false;
+  const char* caCert = nullptr;   /* PEM; when set, the certificate is checked */
   String path = "/api/v1/nodes/voice";
   String token;
   String node = "face";
@@ -326,7 +327,11 @@ class NodeVoice {
       /* Without verification a network attacker could impersonate the server
        * and collect the token. Fine on a LAN, a real (if unlikely) risk over
        * the internet — hence the boot warning and the tlsVerify option. */
-      if (!cfg_.tlsVerify) secure->setInsecure();
+      /* setInsecure() was the only branch here, so "tlsVerify = true" left the
+       * client with no CA and no fingerprint — it did not verify, it failed to
+       * connect. A CA makes the true case actually mean something. */
+      if (cfg_.tlsVerify && cfg_.caCert && *cfg_.caCert) secure->setCACert(cfg_.caCert);
+      else secure->setInsecure();
       client_ = secure;
     } else {
       client_ = new WiFiClient();

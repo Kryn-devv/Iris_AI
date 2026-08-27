@@ -53,13 +53,22 @@ typedef bool (*CommandHandler)(const String& path, const String& query, String& 
 
 class CloudLink {
  public:
-  /* host: "iris.example.com" or an IP. port: 443 for wss, else your port. */
+  /* host: "iris.example.com" or an IP. port: 443 for wss, else your port.
+   *
+   * A full URL is accepted too. CLOUD_HOST wants a bare hostname, but
+   * "https://iris.example.com:7731/" is the form you copy out of a browser's
+   * address bar, and the WebSocket client would take that literally: the DNS
+   * lookup fails and the board retries forever with nothing in the log that
+   * points at the cause. So a scheme, a port and a trailing path are parsed
+   * off instead, and every correction is announced — see corrections(). */
   void begin(const char* host, uint16_t port, const char* path,
              const char* token, const char* name, const char* kind,
-             bool useTls, CommandHandler handler) {
+             bool useTls, CommandHandler handler, const char* caCert = nullptr) {
     host_ = host; port_ = port; token_ = token;
     name_ = name; kind_ = kind; useTls_ = useTls;
     handler_ = handler;
+    ca_ = (caCert && *caCert) ? caCert : nullptr;
+    parseHost();
     /* The token travels in the query string, which is inside the TLS tunnel
      * when useTls is on. Over plain ws:// on the open internet it is readable —
      * hence the warning setup() prints. */
@@ -73,12 +82,31 @@ class CloudLink {
     ws_.onEvent([this](WStype_t type, uint8_t* payload, size_t length) {
       this->onEvent(type, payload, length);
     });
-    if (useTls_) ws_.beginSSL(host_.c_str(), port_, url_.c_str());
-    else         ws_.begin(host_.c_str(), port_, url_.c_str());
+    /* With a CA the certificate is actually checked, so a man in the middle
+     * cannot present his own and read the token. Without one, beginSSL()
+     * encrypts but authenticates nothing: the traffic is unreadable to a
+     * passive listener and wide open to an active one. That is a real
+     * distinction, so verified() reports which of the two you got rather than
+     * letting "TLS is on" stand in for "the link is safe". */
+    if (useTls_ && ca_)      ws_.beginSslWithCA(host_.c_str(), port_, url_.c_str(), ca_);
+    else if (useTls_)        ws_.beginSSL(host_.c_str(), port_, url_.c_str());
+    else                     ws_.begin(host_.c_str(), port_, url_.c_str());
     started_ = true;
   }
 
   bool enabled() const { return host_.length() > 0 && token_.length() > 0; }
+
+  /* What begin() had to fix in CLOUD_HOST, or "" when it was already clean.
+   * Reported at boot rather than silently applied: a board dialling a port the
+   * sketch does not appear to name is worse than a board that will not dial. */
+  const String& corrections() const { return fixes_; }
+
+  const String& host() const { return host_; }
+  uint16_t port() const { return port_; }
+  bool tls() const { return useTls_; }
+  /* True only when the server's certificate is checked against a CA. TLS
+   * without this is encrypted but unauthenticated. */
+  bool verified() const { return useTls_ && ca_ != nullptr; }
   /* Not const: the library's isConnected() is not. */
   bool connected() { return started_ && ws_.isConnected(); }
   uint32_t commandsHandled() const { return commands_; }
@@ -111,6 +139,65 @@ class CloudLink {
   }
 
  private:
+  /* Turns whatever was pasted into CLOUD_HOST into a bare hostname, adopting
+   * the scheme and port it carried. Adopting rather than ignoring is the safer
+   * half of the trade: "https://host:7731" with CLOUD_PORT left at 443 states
+   * its intent unambiguously, and dialling 443 anyway would fail for a reason
+   * the user already told us about. */
+  void parseHost() {
+    String h = host_;
+    h.trim();
+    fixes_ = "";
+
+    const struct { const char* prefix; bool tls; } schemes[] = {
+      {"https://", true}, {"wss://", true}, {"http://", false}, {"ws://", false},
+    };
+    for (auto& s : schemes) {
+      if (h.startsWith(s.prefix)) {
+        h = h.substring(strlen(s.prefix));
+        if (useTls_ != s.tls) {
+          fixes_ += String("scheme in CLOUD_HOST implies TLS ") +
+                    (s.tls ? "ON" : "OFF") + "; using that. ";
+          useTls_ = s.tls;
+        }
+        fixes_ += "dropped the scheme. ";
+        break;
+      }
+    }
+
+    /* A path or query has no meaning here — the link's own path is passed
+     * separately — so anything from the first slash is dropped. */
+    const int slash = h.indexOf('/');
+    if (slash >= 0) { h = h.substring(0, slash); fixes_ += "dropped a path. "; }
+
+    /* An IPv6 literal is [::1]:port, so only split on a colon that follows the
+     * closing bracket — or on the sole colon when there are no brackets. */
+    const int rbracket = h.lastIndexOf(']');
+    const int colon = h.indexOf(':', rbracket >= 0 ? rbracket : 0);
+    if (colon >= 0) {
+      const String tail = h.substring(colon + 1);
+      long p = 0;
+      bool digits = tail.length() > 0;
+      for (unsigned i = 0; i < tail.length(); i++)
+        if (tail[i] < '0' || tail[i] > '9') { digits = false; break; }
+      if (digits) p = tail.toInt();
+      if (digits && p > 0 && p <= 65535) {
+        if ((uint16_t)p != port_) {
+          fixes_ += "took port " + String(p) + " from CLOUD_HOST. ";
+          port_ = (uint16_t)p;
+        } else {
+          fixes_ += "dropped a duplicate port. ";
+        }
+        h = h.substring(0, colon);
+      }
+      /* A non-numeric tail is left alone: it is not a port, and guessing what
+       * it was would be worse than dialling the name as written and failing
+       * with a DNS error that names it. */
+    }
+
+    host_ = h;
+  }
+
   void onEvent(WStype_t type, uint8_t* payload, size_t length) {
     switch (type) {
       case WStype_CONNECTED:
@@ -284,6 +371,8 @@ class CloudLink {
   uint16_t port_ = 443;
   bool useTls_ = true;
   bool started_ = false;
+  const char* ca_ = nullptr;
+  String fixes_;
   CommandHandler handler_ = nullptr;
   uint32_t lastTelemetryAt_ = 0;
   uint32_t commands_ = 0;

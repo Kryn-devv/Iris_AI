@@ -95,6 +95,9 @@ const char* CLOUD_HOST  = "";           /* "iris.example.com" or an IP        */
 const uint16_t CLOUD_PORT = 443;        /* 443 for https/wss, else yours      */
 const bool CLOUD_TLS    = true;         /* false only on your own LAN         */
 const char* CLOUD_TOKEN = "";           /* = NODE_LINK_TOKEN                  */
+/* Optional CA (PEM, with the BEGIN/END lines). With it the certificate is
+ * checked; empty means encrypted but unverified, and the board says so. */
+const char* CLOUD_CA_CERT = "";
 CloudLink cloud;
 const char* AP_PASSWORD = "iriscalib";  /* fallback network, min 8 chars */
 /* ═════════════════════════════════════════════════════════════════ */
@@ -937,13 +940,19 @@ void setup() {
                         * router, otherwise a wiring fault cannot be diagnosed */
 
   cloud.begin(CLOUD_HOST, CLOUD_PORT, "/api/v1/nodes/link", CLOUD_TOKEN,
-              DEVICE_NAME, "motor", CLOUD_TLS, cloudCommand);
+              DEVICE_NAME, "motor", CLOUD_TLS, cloudCommand, CLOUD_CA_CERT);
   if (cloud.enabled()) {
-    Serial.println("  Cloud link:   dialling " + String(CLOUD_HOST) + ":" +
-                   String(CLOUD_PORT));
-    if (!CLOUD_TLS)
+    Serial.println("  Cloud link:   dialling " + cloud.host() + ":" +
+                   String(cloud.port()) + (cloud.tls() ? " (wss)" : " (ws)"));
+    if (cloud.corrections().length())
+      Serial.println("  CLOUD_HOST fixed: " + cloud.corrections());
+    if (!cloud.tls())
       Serial.println("  ** CLOUD_TLS is off — the node token crosses the "
                      "internet in clear text. **");
+    else if (!cloud.verified())
+      Serial.println("  ** TLS on, certificate NOT checked: encrypted, but a "
+                     "man in the middle could still read the token. Paste your "
+                     "server's CA into CLOUD_CA_CERT to close that. **");
   }
 }
 
