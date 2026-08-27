@@ -501,6 +501,28 @@ RULES: list[Rule] = [
         confidence=0.94,
     ),
     Rule(
+        name="device_switch_bare",
+        intent="devices",
+        tool="device_switch",
+        # "lights on" is how people actually say it, and it matched nothing:
+        # both switch rules above require turn/switch/power, so the shortest and
+        # most natural form fell through to the LLM and looked like a dead app.
+        #
+        # A bare "<something> on" is greedy, so it is fenced in tightly: at most
+        # two words, and the first may not be one of the words that make an
+        # English phrase merely END in "on" — "hold on", "what's going on",
+        # "from now on". Those are the false positives that would make this rule
+        # worse than the gap it fills.
+        pattern=_rx(
+            r"^(?!(?:hold|come|carry|going|go|get|put|move|press|keep|right|"
+            r"later|now|so|and|based|early|from|what|who|why|is|its|it|that|"
+            r"this|volume|screen|dark|light\s+mode)\b)"
+            r"(?P<dev>[a-z][a-z0-9-]*(?:\s+[a-z0-9-]+)?)\s+(?P<state>on|off)$"
+        ),
+        builder=_build_device_switch,
+        confidence=0.90,
+    ),
+    Rule(
         name="device_switch_hinglish",
         intent="devices",
         tool="device_switch",
