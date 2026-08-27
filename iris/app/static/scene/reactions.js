@@ -408,6 +408,12 @@
 
     return {
       group: group,
+      /* Ring colour is mixed from accent toward the secondary every frame, so
+       * setting the two Colors is enough — no uniform needs touching. */
+      setAccent: function (hex, hex2) {
+        accent.set(hex);
+        if (hex2) violet.set(hex2);
+      },
       dispatch: dispatch,
       setBusy: setBusy,
       dock: dock,

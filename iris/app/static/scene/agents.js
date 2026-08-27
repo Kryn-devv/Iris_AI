@@ -29,6 +29,8 @@
    * processing rings Tier 5 puts at ~1.7. */
   var R_MIN = 2.22;
   var R_MAX = 2.58;
+  /* labelDrop spans 0.30..0.62, and `drop` below maps that to 22..41 px. */
+  var MAX_LABEL_DROP_PX = 22 + (0.62 - 0.30) * 60;
 
   var LABEL_CSS = [
     ".iris-labels{position:fixed;inset:0;z-index:2;pointer-events:none;overflow:hidden}",
@@ -225,6 +227,7 @@
       var rawName = def.name || def.id || "?";
       var agent = {
         id: def.id,
+        idx: i,
         name: rawName,
         initial: initials[i],
         specialty: def.specialty || "",
@@ -330,14 +333,22 @@
         var angle = ctx.reducedMotion ? o.phase : o.phase + t * o.speed * Math.PI * 2 * motion;
 
         var spread = ctx.spread || { x: 1, y: 1 };
-        var ex = Math.cos(angle) * o.radius * spread.x;
-        var ey = Math.sin(angle) * o.radius * o.squash * spread.y;
+        var ex = Math.cos(angle) * o.radius;
+        var ey = Math.sin(angle) * o.radius * o.squash;
         /* Roll the ellipse into its own plane, so five paths never look like
          * five copies of one path. */
         var cr = Math.cos(o.roll), sr = Math.sin(o.roll);
+        var rx = ex * cr - ey * sr;
+        var ry = ex * sr + ey * cr;
+        /* Spread is applied AFTER the roll, and that order is the whole point.
+         * Applied before, a path rolled near 90 degrees turns the wide X
+         * stretch into its VERTICAL extent — so widening the constellation to
+         * fit a letterbox row made one agent swing far below the row and print
+         * its name across the welcome copy. Scaling the rolled path bounds the
+         * vertical reach by spread.y no matter how a path is rolled. */
         a.pos.set(
-          ex * cr - ey * sr,
-          ex * sr + ey * cr,
+          rx * spread.x,
+          ry * spread.y,
           Math.sin(angle + o.zPhase) * o.zDepth
         );
 
@@ -380,10 +391,15 @@
 
         var labelOpacity = behindOrb ? 0 : 1 - depth * 0.80;
         var drop = 22 + (a.labelDrop - 0.30) * 60;
-        a.label.style.transform = "translate(" + Math.round(sx) + "px," +
-          Math.round(sy2 + drop) + "px) translate(-50%,0)";
+        var lx = Math.round(sx), ly = Math.round(sy2 + drop);
+        a.label.style.transform = "translate(" + lx + "px," + ly +
+          "px) translate(-50%,0)";
         /* Near agents' names sit over far ones'. */
         a.label.style.zIndex = String(1000 - Math.round(depth * 900));
+
+        /* Remember where this one landed so the declutter pass below can see
+         * which names are printing on top of each other this frame. */
+        a.lx = lx; a.ly = ly; a.labelOpacity = labelOpacity; a.depth = depth;
         a.label.style.opacity = labelOpacity.toFixed(3);
         if (!a.placed) {
           a.placed = true;
@@ -393,6 +409,61 @@
         }
         if (a.busy) a.label.classList.add("busy");
         else a.label.classList.remove("busy");
+      }
+
+      declutter();
+    }
+
+    /* Five independent orbits will sometimes bring two agents close together,
+     * and two names printed across each other are worse than one name. When
+     * that happens the FURTHER label fades out and the nearer one stays fully
+     * readable — which is the same rule the depth fade already follows, so it
+     * reads as depth rather than as flicker.
+     *
+     * Measured against the labels' own boxes rather than a fixed radius: the
+     * names are different lengths, so "Relay" and "Sentinel" collide at very
+     * different distances. */
+    function declutter() {
+      var vis = [];
+      for (var i = 0; i < agents.length; i++) {
+        var a = agents[i];
+        if (a.labelOpacity > 0.08 && a.label.offsetWidth) vis.push(a);
+      }
+      /* Nearest first, so a label only ever yields to something in front —
+       * with depth QUANTIZED and ties broken by a fixed index.
+       *
+       * Sorting on raw depth was unstable exactly where it mattered: two
+       * agents passing each other sit at near-identical depth, the order
+       * flipped every frame, and the pair took turns yielding. Both names then
+       * flickered at half opacity instead of one staying readable. */
+      vis.sort(function (p, q) {
+        return (Math.round(p.depth * 20) - Math.round(q.depth * 20)) || (p.idx - q.idx);
+      });
+
+      for (var j = 0; j < vis.length; j++) {
+        var b = vis[j];
+        var fade = 0;
+        for (var k = 0; k < j; k++) {
+          var front = vis[k];
+          /* No check for whether `front` is itself faded. Reading that back
+           * from the previous frame made a pair oscillate — A hid B, then B
+           * saw A "hidden" and stopped yielding, so both came back solid and
+           * the collision never resolved. Sorting nearest-first already gives
+           * a stable total order: a label yields to anything in front of it,
+           * full stop. */
+          var halfW = (b.label.offsetWidth + front.label.offsetWidth) / 2;
+          var dx = Math.abs(b.lx - front.lx);
+          var dy = Math.abs(b.ly - front.ly);
+          var maxH = Math.max(b.label.offsetHeight, front.label.offsetHeight);
+          if (dx < halfW && dy < maxH) {
+            /* Ease over the last third of the approach so it dissolves. */
+            var closeness = 1 - Math.max(dx / Math.max(halfW, 1), dy / Math.max(maxH, 1));
+            fade = Math.max(fade, Math.min(1, closeness / 0.18));
+          }
+        }
+        if (fade > 0) {
+          b.label.style.opacity = (b.labelOpacity * (1 - fade)).toFixed(3);
+        }
       }
     }
 
@@ -417,6 +488,8 @@
       resolveAvatar: resolveAvatar,
       R_MIN: R_MIN,
       R_MAX: R_MAX,
+      /* Largest value `drop` can take below, so the layout can reserve it. */
+      MAX_LABEL_DROP_PX: MAX_LABEL_DROP_PX,
     };
   }
 

@@ -197,14 +197,15 @@
     var cx = w / 2;
     var cy = h * 0.42;
     var boxPx = Math.min(w, h) * 0.46;
+    var halfPx = boxPx / 2;
 
-    /* The hologram row is much wider than it is tall, so circular orbits sized
-     * to its height spill out of the bottom and into the welcome copy. The
-     * spread stretches them to the row's proportions — applied to the orbit
-     * maths rather than as a group scale, because a non-uniform scale would
-     * stretch the avatar sprites too. */
+    /* Depends only on the camera and the viewport, so it is available before
+     * anything that needs to convert a pixel budget into world units. */
+    var vFov = (this.camera.fov * Math.PI) / 180;
+    var visibleH = 2 * Math.tan(vFov / 2) * this.camera.position.z;
+    var worldPerPx = visibleH / h;
+
     var spreadX = 1.0;
-    var spreadY = 1.0;
 
     var stage = document.getElementById("stage") || document.querySelector(".stage");
     if (stage) {
@@ -214,16 +215,52 @@
         cx = rect.left + rect.width / 2;
         cy = rect.top + rect.height / 2;
         boxPx = Math.min(rect.height, rect.width);
-        var ratio = rect.width / rect.height;
-        spreadX = Math.max(1.0, Math.min(1.70, 0.85 + ratio * 0.16));
-        spreadY = Math.max(0.58, Math.min(1.05, 1.08 - ratio * 0.11));
+        halfPx = rect.height / 2;
+        /* The hologram row is much wider than it is tall, so orbits sized to
+         * its height leave the sides empty. Stretching X fills the row. */
+        /* The hologram row is much wider than it is tall, so orbits sized to
+         * its height leave the sides empty. Stretching X fills the row. */
+        spreadX = Math.max(1.0, Math.min(1.70, 0.85 + rect.width / rect.height * 0.16));
       }
     }
+
+    /* The orb is 2 world units across; aim it at a little over half the row. */
+    var focusScale = Math.max(0.18, (boxPx * 0.50 * worldPerPx) / 2);
+
+    /* Vertical spread is SOLVED from the space available, not guessed from the
+     * row's aspect ratio.
+     *
+     * A ratio-based guess was wrong in the way that matters: a label hangs
+     * BELOW its avatar by a fixed number of pixels and then occupies a few
+     * lines of its own, and none of that scales with the row, so the lowest
+     * agent printed its name across the welcome copy underneath. Here the
+     * label's real height is measured and subtracted, then the remaining
+     * pixels are converted into the largest spread that fits:
+     *
+     *   agentReachPx = R_MAX * spreadY * focusScale / worldPerPx  <=  usablePx
+     */
+    var labelPx = this._labelReservePx();
+
+    /* The reserve is only needed at the BOTTOM — a label hangs below its
+     * avatar, never above it. So instead of shrinking the orbit from both ends,
+     * the constellation is biased upward into the empty space over the orb and
+     * keeps its height. Subtracting the reserve from both halves was the naive
+     * version and it flattened all five paths onto one line, which trades an
+     * overlap with the welcome copy for the labels overlapping each other. */
+    var bandHalfPx = Math.max(24, (halfPx * 2 - labelPx) / 2);
+    var reach = (global.IrisAgents && global.IrisAgents.R_MAX) || 2.58;
+    var spreadY = (bandHalfPx * worldPerPx) / (reach * focusScale);
+    spreadY = Math.max(0.16, Math.min(1.05, spreadY));
+
     this._spread = { x: spreadX, y: spreadY };
 
-    var vFov = (this.camera.fov * Math.PI) / 180;
-    var visibleH = 2 * Math.tan(vFov / 2) * this.camera.position.z;
-    var worldPerPx = visibleH / h;
+    /* Lift the constellation by half the reserve so the band it sweeps is
+     * centred on the space the labels can actually use. The orb is a sibling
+     * and stays exactly where the layout put it. */
+    if (this.constellation && this.constellation.group) {
+      this.constellation.group.position.y =
+        (labelPx / 2) * worldPerPx / Math.max(focusScale, 0.0001);
+    }
 
     /* World position of that screen point on the z = 0 plane. */
     this.focus.position.set(
@@ -231,13 +268,25 @@
       -(cy - h / 2) * worldPerPx,
       0
     );
-
-    /* The orb is 2 world units across; aim it at a little over half the row. */
-    var desired = boxPx * 0.50 * worldPerPx;
-    this.focus.scale.setScalar(Math.max(0.18, desired / 2));
+    this.focus.scale.setScalar(focusScale);
 
     /* Tell the sky where the orb now is, so its glow pools in the right place. */
     this._orbUv.set(cx / w, 1 - cy / h);
+  };
+
+  /* Pixels below an avatar that its label needs: the drop plus the tallest
+   * rendered label. Measured rather than assumed, because the label's height
+   * depends on the specialty text, the font and the user's zoom — and it is
+   * measured once per layout, not per frame. */
+  IrisScene.prototype._labelReservePx = function () {
+    var maxDrop = (global.IrisAgents && global.IrisAgents.MAX_LABEL_DROP_PX) || 54;
+    var tallest = 0;
+    var labels = document.querySelectorAll(".iris-agent-label");
+    for (var i = 0; i < labels.length; i++) {
+      tallest = Math.max(tallest, labels[i].offsetHeight || 0);
+    }
+    /* Before the labels exist, assume a name plus two lines of specialty. */
+    return maxDrop + (tallest || 56);
   };
 
   /* The stage row changes height when the welcome screen collapses after the
@@ -248,6 +297,24 @@
     var self = this;
     this._stageObserver = new global.ResizeObserver(function () { self._layout(); });
     this._stageObserver.observe(stage);
+  };
+
+  /* Re-tint the whole scene for a theme change, without rebuilding it.
+   *
+   * Recreating the scene would have been the shorter route and it is the wrong
+   * one: it means disposing and recreating two WebGL contexts on a user click,
+   * and browsers cap how many a page may create. Every layer that carries the
+   * accent takes a setter instead, and because the orb eases toward whatever
+   * the state machine hands it, the switch reads as the colour flowing rather
+   * than a cut. */
+  IrisScene.prototype.setTheme = function (theme) {
+    theme = theme || {};
+    var accent = theme.accent || this.accent;
+    var accent2 = theme.accent2 || null;
+    this.accent = accent;
+    if (this.states && this.states.setAccent) this.states.setAccent(accent, accent2);
+    if (this.sky && this.sky.setAccent) this.sky.setAccent(accent);
+    if (this.reactions && this.reactions.setAccent) this.reactions.setAccent(accent, accent2);
   };
 
   IrisScene.prototype._visibility = function () {
@@ -438,16 +505,40 @@
     document.body.classList.remove("iris-scene-active");
   };
 
-  if (!THREE || !webglAvailable()) {
-    if (Fallback) {
-      console.info("[iris] WebGL unavailable — using the canvas-2D hologram.");
-    } else {
-      console.warn("[iris] WebGL unavailable and no fallback hologram present.");
-    }
+  /* Why the scene is or is not running, in a form the UI can show the user.
+   *
+   * This used to be a console.info and nothing else, which is the same silent
+   * fallback this project treats as a defect elsewhere: the old flat hologram
+   * appears, everything "works", and there is no way to tell a stale install
+   * from switched-off WebGL without opening devtools. */
+  var status = { active: false, reason: "", detail: "" };
+
+  if (!THREE) {
+    status.reason = "three-missing";
+    status.detail = "three.js did not load, so the 3D scene cannot start. "
+                  + "/static/vendor/three.min.js is missing or was blocked — "
+                  + "check that your copy of IRIS is up to date.";
+  } else if (!webglAvailable()) {
+    status.reason = "no-webgl";
+    status.detail = "This browser has WebGL switched off, so the 3D scene "
+                  + "cannot start. In Chrome: Settings \u2192 System \u2192 "
+                  + "\u201cUse graphics acceleration when available\u201d.";
   } else {
+    status.active = true;
     if (global.IrisWiring) global.IrisWiring.install(IrisScene);
     global.IrisHologram = IrisScene;
     global.IrisScene = IrisScene;
   }
+
+  if (!status.active) {
+    if (Fallback) {
+      console.warn("[iris] " + status.detail + " Falling back to the flat hologram.");
+    } else {
+      console.warn("[iris] " + status.detail + " No fallback hologram present.");
+      status.detail += " There is no fallback either, so the stage is empty.";
+    }
+  }
+
+  global.IrisSceneStatus = status;
   global.IrisHologramFallback = Fallback;
 })(window);

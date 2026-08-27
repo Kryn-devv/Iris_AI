@@ -7,7 +7,7 @@ import uuid
 import webbrowser
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncGenerator, Awaitable, Callable
+from typing import Any, AsyncGenerator, Awaitable, Callable
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -235,15 +235,37 @@ async def auth_and_context_middleware(
         correlation_id_ctx.reset(token_ctx)
 
 
+class RevalidatingStaticFiles(StaticFiles):
+    """StaticFiles that makes the browser check before reusing a cached asset.
+
+    Without a Cache-Control header the browser is free to guess a lifetime, and
+    it guesses generously for .js and .css. The symptom is brutal to diagnose:
+    a user updates IRIS, restarts it, and the browser still runs the previous
+    UI — so a fixed bug looks unfixed and a new interface never appears.
+
+    ``no-cache`` does not mean "do not store", it means "revalidate first".
+    ETag and Last-Modified still do their job, so an unchanged file costs one
+    304 and no body — cheap on localhost, and correct after an update.
+    """
+
+    def file_response(self, *args: Any, **kwargs: Any) -> Response:
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 # Static assets + UI
 if static_dir.exists():
-    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+    app.mount("/static", RevalidatingStaticFiles(directory=str(static_dir)), name="static")
 
 
 @app.get("/", include_in_schema=False)
 async def index() -> FileResponse:
     """Serve the IRIS web interface."""
-    return FileResponse(str(static_dir / "index.html"))
+    return FileResponse(
+        str(static_dir / "index.html"),
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 @app.get("/chat", include_in_schema=False)

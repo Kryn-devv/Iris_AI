@@ -79,16 +79,38 @@
       var m = Object.assign({}, MOODS[key]);
       ["core", "rim", "halo"].forEach(function (slot) {
         if (m[slot] === ACCENT) m[slot] = accent;
+        else if (m[slot] === VIOLET) m[slot] = opts.accent2 || VIOLET;
       });
       moods[key] = m;
     });
 
     var current = "idle";
     var cycleT = 0;
+    var secondary = opts.accent2 || VIOLET;
     var tealC = new THREE.Color(accent);
-    var violetC = new THREE.Color(VIOLET);
+    var violetC = new THREE.Color(secondary);
     var mixC = new THREE.Color();
     var coreC = new THREE.Color();
+
+    /* Re-tint for a theme change at runtime. The moods are rebuilt rather than
+     * patched so the amber/red exemption above holds on every switch, and the
+     * orb is not touched here: it eases toward whatever targets apply() hands
+     * it next frame, so a theme change is a colour that flows rather than a
+     * cut. */
+    function setAccent(nextAccent, nextSecondary) {
+      accent = nextAccent || accent;
+      secondary = nextSecondary || secondary;
+      Object.keys(MOODS).forEach(function (key) {
+        var m = Object.assign({}, MOODS[key]);
+        ["core", "rim", "halo"].forEach(function (slot) {
+          if (m[slot] === ACCENT) m[slot] = accent;
+          else if (m[slot] === VIOLET) m[slot] = secondary;
+        });
+        moods[key] = m;
+      });
+      tealC.set(accent);
+      violetC.set(secondary);
+    }
 
     function set(name) {
       current = resolve(name);
@@ -137,6 +159,7 @@
     return {
       set: set,
       apply: apply,
+      setAccent: setAccent,
       currentName: function () { return current; },
       isSpeaking: function () { return current === "speaking"; },
       isListening: function () { return current === "listening"; },
