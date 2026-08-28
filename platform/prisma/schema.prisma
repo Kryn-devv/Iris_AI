@@ -1,0 +1,543 @@
+// NOVARIS platform data model.
+// PostgreSQL is the primary datastore. `prisma db push` for dev, migrations for prod.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Identity & tenancy
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String?
+  avatarUrl    String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  memberships   Membership[]
+  sessions      Session[]
+  posts         Post[]
+  votes         Vote[]
+  comments      Comment[]
+  changelogs    ChangelogEntry[]
+  notifications Notification[]
+  activities    Activity[]
+  surveyResponses SurveyResponse[]
+  changelogComments ChangelogComment[]
+  changelogReactions ChangelogReaction[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model Organization {
+  id         String   @id @default(cuid())
+  name       String
+  slug       String   @unique
+  logoUrl    String?
+  brandColor String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  // Public portal configuration
+  portalEnabled  Boolean @default(true)
+  portalHeadline String?
+  portalIntro    String?
+  widgetKey      String  @unique @default(cuid())
+
+  memberships Membership[]
+  invites     Invite[]
+  boards      Board[]
+  posts       Post[]
+  categories  Category[]
+  tags        Tag[]
+  clusters    Cluster[]
+  insights    Insight[]
+  surveys     Survey[]
+  changelogs  ChangelogEntry[]
+  webhooks    Webhook[]
+  apiKeys     ApiKey[]
+  activities  Activity[]
+  notifications Notification[]
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+model Membership {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orgId     String
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  role      Role     @default(MEMBER)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, orgId])
+  @@index([orgId])
+}
+
+model Invite {
+  id         String    @id @default(cuid())
+  orgId      String
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  email      String
+  role       Role      @default(MEMBER)
+  token      String    @unique @default(cuid())
+  expiresAt  DateTime
+  acceptedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([orgId])
+}
+
+// ---------------------------------------------------------------------------
+// Feedback & feature requests
+// ---------------------------------------------------------------------------
+
+model Board {
+  id          String  @id @default(cuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name        String
+  slug        String
+  description String?
+  isPublic    Boolean @default(true)
+  createdAt   DateTime @default(now())
+
+  posts Post[]
+
+  @@unique([orgId, slug])
+}
+
+enum PostType {
+  FEEDBACK
+  FEATURE_REQUEST
+}
+
+enum PostStatus {
+  OPEN
+  UNDER_CONSIDERATION
+  PLANNED
+  IN_PROGRESS
+  SHIPPED
+  CLOSED
+}
+
+enum PostSource {
+  DASHBOARD
+  PORTAL
+  WIDGET
+  IMPORT
+  API
+  EMAIL
+}
+
+enum Sentiment {
+  POSITIVE
+  NEUTRAL
+  NEGATIVE
+}
+
+model Post {
+  id      String     @id @default(cuid())
+  orgId   String
+  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  boardId String?
+  board   Board?     @relation(fields: [boardId], references: [id], onDelete: SetNull)
+
+  type   PostType   @default(FEEDBACK)
+  title  String
+  body   String
+  status PostStatus @default(OPEN)
+  source PostSource @default(DASHBOARD)
+
+  authorId   String?
+  author     User?   @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  guestName  String?
+  guestEmail String?
+
+  categoryId String?
+  category   Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  // AI enrichment
+  sentiment      Sentiment?
+  sentimentScore Float?
+  aiSummary      String?
+  clusterId      String?
+  cluster        Cluster? @relation(fields: [clusterId], references: [id], onDelete: SetNull)
+
+  // Prioritization signals
+  voteCount     Int    @default(0)
+  commentCount  Int    @default(0)
+  priorityScore Float  @default(0)
+  impact        Int?   // 1..5
+  effort        Int?   // 1..5
+  revenueImpact Int?   // rough $ value attached by the team
+
+  // Roadmap
+  showOnRoadmap Boolean @default(false)
+  roadmapOrder  Float   @default(0)
+  shippedAt     DateTime?
+
+  // Duplicate handling: when merged, this post points at the canonical one.
+  mergedIntoId String?
+  mergedInto   Post?   @relation("MergedPosts", fields: [mergedIntoId], references: [id], onDelete: SetNull)
+  mergedPosts  Post[]  @relation("MergedPosts")
+
+  pinned    Boolean  @default(false)
+  archived  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  votes       Vote[]
+  comments    Comment[]
+  tags        PostTag[]
+  attachments Attachment[]
+
+  @@index([orgId, status])
+  @@index([orgId, type])
+  @@index([orgId, createdAt])
+  @@index([clusterId])
+}
+
+model Category {
+  id    String @id @default(cuid())
+  orgId String
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name  String
+  color String @default("#8b8bf5")
+
+  posts Post[]
+
+  @@unique([orgId, name])
+}
+
+model Tag {
+  id    String @id @default(cuid())
+  orgId String
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name  String
+  color String @default("#5eead4")
+
+  posts PostTag[]
+
+  @@unique([orgId, name])
+}
+
+model PostTag {
+  postId String
+  post   Post   @relation(fields: [postId], references: [id], onDelete: Cascade)
+  tagId  String
+  tag    Tag    @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([postId, tagId])
+}
+
+model Vote {
+  id        String   @id @default(cuid())
+  postId    String
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  guestId   String? // anonymous voter cookie id
+  weight    Int      @default(1)
+  createdAt DateTime @default(now())
+
+  @@unique([postId, userId])
+  @@unique([postId, guestId])
+  @@index([postId])
+}
+
+model Comment {
+  id        String    @id @default(cuid())
+  postId    String
+  post      Post      @relation(fields: [postId], references: [id], onDelete: Cascade)
+  authorId  String?
+  author    User?     @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  guestName String?
+  body      String
+  isTeam    Boolean   @default(false)
+  parentId  String?
+  parent    Comment?  @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies   Comment[] @relation("CommentReplies")
+  createdAt DateTime  @default(now())
+
+  @@index([postId])
+}
+
+model Attachment {
+  id       String @id @default(cuid())
+  postId   String
+  post     Post   @relation(fields: [postId], references: [id], onDelete: Cascade)
+  url      String
+  filename String
+  mimeType String @default("image/png")
+  size     Int    @default(0)
+
+  @@index([postId])
+}
+
+// ---------------------------------------------------------------------------
+// AI intelligence
+// ---------------------------------------------------------------------------
+
+model Cluster {
+  id        String   @id @default(cuid())
+  orgId     String
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  label     String
+  summary   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  posts Post[]
+
+  @@index([orgId])
+}
+
+enum InsightKind {
+  TREND
+  SUMMARY
+  ALERT
+  OPPORTUNITY
+}
+
+model Insight {
+  id        String      @id @default(cuid())
+  orgId     String
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  kind      InsightKind @default(SUMMARY)
+  title     String
+  body      String
+  data      Json?
+  dismissed Boolean     @default(false)
+  createdAt DateTime    @default(now())
+
+  @@index([orgId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Surveys
+// ---------------------------------------------------------------------------
+
+enum SurveyStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  COMPLETED
+}
+
+enum QuestionKind {
+  NPS
+  RATING
+  SINGLE_CHOICE
+  MULTIPLE_CHOICE
+  OPEN_TEXT
+}
+
+model Survey {
+  id          String       @id @default(cuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  status      SurveyStatus @default(DRAFT)
+  // Targeting/scheduling
+  audience    Json? // e.g. {"segment":"all","urlContains":"/app"}
+  startsAt    DateTime?
+  endsAt      DateTime?
+  allowMultipleResponses Boolean @default(false)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  questions SurveyQuestion[]
+  responses SurveyResponse[]
+
+  @@index([orgId, status])
+}
+
+model SurveyQuestion {
+  id       String       @id @default(cuid())
+  surveyId String
+  survey   Survey       @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+  order    Int          @default(0)
+  kind     QuestionKind @default(OPEN_TEXT)
+  prompt   String
+  required Boolean      @default(true)
+  options  Json? // choice questions: {"choices":["A","B"]}
+  // Conditional display: {"questionId":"...","equals":"A"}
+  condition Json?
+
+  answers SurveyAnswer[]
+
+  @@index([surveyId])
+}
+
+model SurveyResponse {
+  id          String    @id @default(cuid())
+  surveyId    String
+  survey      Survey    @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+  userId      String?
+  user        User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  guestId     String?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  answers SurveyAnswer[]
+
+  @@index([surveyId])
+}
+
+model SurveyAnswer {
+  id         String         @id @default(cuid())
+  responseId String
+  response   SurveyResponse @relation(fields: [responseId], references: [id], onDelete: Cascade)
+  questionId String
+  question   SurveyQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  value      Json // number for NPS/RATING, string for choices/text, string[] for multi
+
+  @@unique([responseId, questionId])
+}
+
+// ---------------------------------------------------------------------------
+// Changelog
+// ---------------------------------------------------------------------------
+
+enum ChangelogLabel {
+  NEW
+  IMPROVED
+  FIXED
+  DEPRECATED
+  SECURITY
+}
+
+model ChangelogEntry {
+  id            String    @id @default(cuid())
+  orgId         String
+  org           Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  title         String
+  slug          String
+  version       String?
+  body          String // markdown
+  coverImageUrl String?
+  videoUrl      String?
+  labels        ChangelogLabel[]
+  authorId      String?
+  author        User?     @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  publishedAt   DateTime?
+  notifiedAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  reactions ChangelogReaction[]
+  comments  ChangelogComment[]
+
+  @@unique([orgId, slug])
+  @@index([orgId, publishedAt])
+}
+
+model ChangelogReaction {
+  id      String @id @default(cuid())
+  entryId String
+  entry   ChangelogEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  emoji   String
+  userId  String?
+  user    User?  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  guestId String?
+
+  @@unique([entryId, emoji, userId])
+  @@unique([entryId, emoji, guestId])
+}
+
+model ChangelogComment {
+  id        String   @id @default(cuid())
+  entryId   String
+  entry     ChangelogEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  authorId  String?
+  author    User?    @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  guestName String?
+  body      String
+  createdAt DateTime @default(now())
+
+  @@index([entryId])
+}
+
+// ---------------------------------------------------------------------------
+// Integrations & audit
+// ---------------------------------------------------------------------------
+
+model Webhook {
+  id        String   @id @default(cuid())
+  orgId     String
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  url       String
+  secret    String
+  events    String[] // e.g. ["post.created","post.status_changed"]
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  @@index([orgId])
+}
+
+model ApiKey {
+  id         String    @id @default(cuid())
+  orgId      String
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name       String
+  prefix     String // first 8 chars, shown in UI
+  keyHash    String    @unique
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([orgId])
+}
+
+model Activity {
+  id        String   @id @default(cuid())
+  orgId     String
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  actorId   String?
+  actor     User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  type      String // "post.created" | "post.status_changed" | "vote.added" | ...
+  meta      Json?
+  createdAt DateTime @default(now())
+
+  @@index([orgId, createdAt])
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orgId     String?
+  org       Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  title     String
+  body      String?
+  href      String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, readAt])
+}

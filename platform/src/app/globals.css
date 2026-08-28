@@ -1,0 +1,96 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------------------------------------------------------------------------
+ * Brand tokens. Rebranding the product = changing these values + brand.ts.
+ * Values are space-separated RGB channels for Tailwind <alpha-value> support.
+ * ------------------------------------------------------------------------- */
+:root {
+  --c-void: 7 8 14; /* deepest background (the universe) */
+  --c-surface: 13 15 24; /* page background */
+  --c-surface-raised: 19 22 34; /* cards */
+  --c-surface-overlay: 26 30 46; /* popovers, modals */
+  --c-line: 39 44 66; /* hairline borders */
+  --c-line-strong: 58 64 92;
+  --c-ink: 235 238 248; /* primary text */
+  --c-ink-muted: 154 162 186; /* secondary text */
+  --c-ink-faint: 100 108 134; /* tertiary text */
+  --c-accent: 124 108 255; /* electric violet */
+  --c-accent-soft: 158 146 255;
+  --c-accent-strong: 99 79 255;
+  --c-aurora: 66 214 235; /* cyan companion */
+  --c-ember: 255 122 89; /* warm highlight (shipped / energy) */
+  --c-success: 74 222 128;
+  --c-warning: 250 204 21;
+  --c-danger: 248 113 113;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-surface text-ink antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: rgb(var(--c-accent) / 0.35);
+}
+
+/* Scrollbars that match the theme */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--c-line-strong)) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgb(var(--c-line-strong));
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Utility: hairline glass panel used across marketing + app */
+.glass {
+  background: rgb(var(--c-surface-raised) / 0.66);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgb(var(--c-line) / 0.9);
+}
+
+.text-gradient {
+  background: linear-gradient(
+    120deg,
+    rgb(var(--c-accent-soft)),
+    rgb(var(--c-aurora))
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Focus rings */
+:where(button, a, input, textarea, select, [tabindex]):focus-visible {
+  outline: 2px solid rgb(var(--c-accent) / 0.8);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
