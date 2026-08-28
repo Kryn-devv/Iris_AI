@@ -240,3 +240,9 @@ python -m pytest -q
 </div>
 > **Something not working?** See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — covers missing dependencies, the port-already-in-use error, and `.env` keys being ignored.
 
+
+---
+
+## Also in this repository
+
+**[`platform/`](platform/README.md)** — Novaris, a standalone SaaS product-feedback platform (Next.js 15 + PostgreSQL): an immersive scroll-driven 3D landing experience plus a full product app for feedback collection, voting, AI insights, roadmaps, surveys, and changelogs. See [platform/README.md](platform/README.md) for setup.
