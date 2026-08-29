@@ -145,6 +145,7 @@ export function SurveyBuilder({
   const [statusBusy, setStatusBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [saved, setSaved] = React.useState(false);
+  const [activateOnCreate, setActivateOnCreate] = React.useState(false);
   const status: SurveyStatus = survey?.status ?? "DRAFT";
 
   const update = (fn: (qs: DraftQuestion[]) => DraftQuestion[]) => {
@@ -211,6 +212,10 @@ export function SurveyBuilder({
         ...(urlContains.trim() ? { urlContains: urlContains.trim() } : {}),
       },
     };
+    const createStatus =
+      !isEdit && activateOnCreate && questions.length > 0
+        ? { status: "ACTIVE" as const }
+        : {};
     if (locked) {
       // Copy-only edits: prompts by id, plus settings.
       return {
@@ -222,6 +227,7 @@ export function SurveyBuilder({
     }
     return {
       ...base,
+      ...createStatus,
       questions: questions.map((q) => ({
         key: q.key,
         kind: q.kind,
@@ -395,11 +401,23 @@ export function SurveyBuilder({
               )}
             </div>
           ) : (
-            <p className="text-xs text-ink-muted">
-              The survey is created as a{" "}
-              <Badge tone="neutral">Draft</Badge> — activate it from this page
-              once you have added questions.
-            </p>
+            <label className="flex cursor-pointer items-center gap-2.5 text-sm text-ink">
+              <input
+                type="checkbox"
+                checked={activateOnCreate}
+                disabled={questions.length === 0}
+                onChange={(e) => setActivateOnCreate(e.target.checked)}
+                className="h-4 w-4 rounded border-line bg-surface accent-[rgb(var(--c-accent))]"
+              />
+              <span>
+                Activate immediately
+                <span className="block text-xs text-ink-muted">
+                  {questions.length === 0
+                    ? "Add at least one question to enable activation — otherwise it is created as a draft."
+                    : "When off, the survey is created as a draft you can activate later."}
+                </span>
+              </span>
+            </label>
           )}
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
