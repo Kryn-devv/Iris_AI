@@ -489,25 +489,27 @@ static void selfTestTick() {
 /* ───────────────────────── HTTP helpers ─────────────────────────── */
 
 /* ─────────────────── where a reply goes, where args come from ───────────────
- * A command now arrives two ways: as an HTTP request when IRIS is on the LAN,
- * and as a frame on the cloud socket when IRIS is on a VPS. Rather than write
- * eleven handlers twice — and watch the copy nobody tests drift — the sink and
- * the argument source are redirected around the existing handlers. Set while a
- * cloud frame is being served, null the rest of the time.
+ * A command arrives four ways: an HTTP request, a UDP datagram, a frame on the
+ * page's control socket, and a frame on the cloud socket. Rather than write
+ * eleven handlers four times — and watch the copies nobody tests drift — the
+ * argument source and the reply sink are redirected around one set of handlers.
  *
- * Requests are served one at a time from loop(), so a single slot is correct
+ * curArgs is never null. It points at httpArgs (which reads the live
+ * WebServer request) except while a non-HTTP frame is being served. The
+ * previous version branched on a nullable pointer instead, and the HTTP arm of
+ * that branch was written `argHas(name)` where it meant `server.hasArg(name)`:
+ * an infinite self-call that hung the board on the first drive command and
+ * looked exactly like dead wiring. See cloud_args.h.
+ *
+ * Commands are served one at a time from loop(), so a single slot is correct
  * here for the same reason argFail below is.                                */
-static const Args* cloudArgs = nullptr;
+static const Args httpArgs = Args::fromServer();
+static const Args* curArgs = &httpArgs;
 static String* cloudOut = nullptr;
 static int cloudCode = 200;
 
-static bool argHas(const char* name) {
-  return cloudArgs ? cloudArgs->has(name) : argHas(name);
-}
-
-static String argGet(const char* name) {
-  return cloudArgs ? cloudArgs->get(name) : argGet(name);
-}
+static bool argHas(const char* name) { return curArgs->has(name); }
+static String argGet(const char* name) { return curArgs->get(name); }
 
 static void sendJson(int code, const String& body) {
   if (cloudOut) { *cloudOut = body; cloudCode = code; return; }
@@ -884,17 +886,20 @@ static void startFallbackAp() {
   Serial.println("=================================");
 }
 
-/* ───────────────────────── the cloud side of dispatch ─────────────────────
- * Redirects the sink and the argument source, then calls the SAME handler the
- * HTTP route would. Every endpoint is reachable from a VPS-hosted IRIS this
- * way, calibration included — which matters because the one time you cannot
- * walk over to the robot is when it is somewhere else.
+/* ───────────────────────── one dispatcher, four transports ────────────────
+ * Redirects the argument source and the reply sink, then calls the SAME
+ * handler the HTTP route would. Used by the cloud socket, the UDP fast path
+ * and the page's control socket, so every endpoint — calibration included — is
+ * reachable over all of them without a second copy of any handler.
  *
- * `/` is deliberately absent: it answers HTML to a browser, and there is no
- * browser on the other end of this socket. */
-static bool cloudCommand(const String& path, const String& query, String& out) {
+ * `/` is deliberately absent: it answers HTML to a browser, and none of these
+ * transports has a browser on the far end.
+ *
+ * `out` is filled with the JSON the HTTP route would have sent; the return
+ * value is true for a 2xx/3xx. */
+static bool dispatchCommand(const String& path, const String& query, String& out) {
   const Args args = Args::fromQuery(query);
-  cloudArgs = &args;
+  curArgs = &args;
   cloudOut = &out;
   cloudCode = 200;
   argFail = NULL;
@@ -914,9 +919,10 @@ static bool cloudCommand(const String& path, const String& query, String& out) {
   else if (p == "/reset")    handleReset();
   else sendJson(404, "{\"error\":\"unknown endpoint\"}");
 
-  /* Cleared unconditionally: leaving them set would send the NEXT HTTP reply
-   * into a dangling String instead of to the browser. */
-  cloudArgs = nullptr;
+  /* Restored unconditionally: left redirected, the NEXT HTTP reply would go
+   * into a dangling String instead of to the browser, and the next HTTP
+   * request would read its arguments out of a dead stack frame. */
+  curArgs = &httpArgs;
   cloudOut = nullptr;
   return cloudCode < 400;
 }
@@ -969,7 +975,7 @@ void setup() {
                         * router, otherwise a wiring fault cannot be diagnosed */
 
   cloud.begin(CLOUD_HOST, CLOUD_PORT, "/api/v1/nodes/link", CLOUD_TOKEN,
-              DEVICE_NAME, "motor", CLOUD_TLS, cloudCommand, CLOUD_CA_CERT);
+              DEVICE_NAME, "motor", CLOUD_TLS, dispatchCommand, CLOUD_CA_CERT);
   if (cloud.enabled()) {
     Serial.println("  Cloud link:   dialling " + cloud.host() + ":" +
                    String(cloud.port()) + (cloud.tls() ? " (wss)" : " (ws)"));

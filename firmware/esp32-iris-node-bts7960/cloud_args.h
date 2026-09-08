@@ -1,23 +1,51 @@
 /*
- * Arguments parsed out of a command arriving over the cloud socket.
+ * Command arguments, whichever transport the command arrived on.
  *
- * The robot's handlers read arguments through argHas()/argGet() in the sketch,
- * which pick between the live HTTP request and one of these. That indirection
- * is why all eleven endpoints — calibration included — work over the cloud link
- * without being written a second time.
+ * A command now reaches this board four ways — an HTTP request, a UDP datagram,
+ * a frame on the page's control socket, and a frame on the cloud socket — and
+ * every handler reads its arguments through one of these. That is why all
+ * eleven endpoints, calibration included, are written once and work over all
+ * four.
  *
- * Purely a parsed query bag: the HTTP side is served straight from WebServer,
- * so there is no "from the server" mode here to keep in sync. Nor a parseLong —
- * robot_config.h already has one, and two copies of a parser is how they drift.
+ * WHY THERE IS A fromServer() MODE HERE
+ * An earlier version left HTTP out of this class, on the theory that WebServer
+ * already holds the parameters so the sketch could just branch:
+ *
+ *     static bool argHas(const char* n) { return cloudArgs ? cloudArgs->has(n)
+ *                                                          : argHas(n); }
+ *
+ * That is a typo for server.hasArg(n), it compiles without a warning on GCC 8,
+ * and it is an infinite self-call: the board locked up on the FIRST drive
+ * command and never wrote a single duty cycle, which read exactly like dead
+ * wiring. Routing HTTP through this class instead removes the branch that the
+ * typo lived in — Args::has() names server.hasArg() explicitly and nothing
+ * called argHas() can reach itself. A shape that cannot express the bug beats
+ * a comment asking the next reader not to write it.
+ *
+ * No parseLong here — robot_config.h already has one, and two copies of a
+ * parser is how they drift.
  */
 #pragma once
 
 #include <Arduino.h>
+#include <WebServer.h>
+
+/* Defined in the sketch. Read directly for the HTTP case rather than copying
+ * every parameter, because WebServer already holds them. */
+extern WebServer server;
 
 class Args {
  public:
+  /* The live HTTP request. */
+  static Args fromServer() {
+    Args a;
+    a.fromServer_ = true;
+    return a;
+  }
+
   static Args fromQuery(const String& query) {
     Args a;
+    a.fromServer_ = false;
     int at = 0;
     while (at < (int)query.length() && a.count_ < MAX_ARGS) {
       int amp = query.indexOf('&', at);
@@ -34,11 +62,13 @@ class Args {
   }
 
   bool has(const char* name) const {
+    if (fromServer_) return server.hasArg(name);
     for (uint8_t i = 0; i < count_; i++) if (keys_[i] == name) return true;
     return false;
   }
 
   String get(const char* name) const {
+    if (fromServer_) return server.arg(name);
     for (uint8_t i = 0; i < count_; i++) if (keys_[i] == name) return values_[i];
     return "";
   }
@@ -61,6 +91,7 @@ class Args {
    * the calibration flags, and they are sent in batches rather than all at once.
    */
   static const uint8_t MAX_ARGS = 10;
+  bool fromServer_ = true;
   uint8_t count_ = 0;
   String keys_[MAX_ARGS];
   String values_[MAX_ARGS];
