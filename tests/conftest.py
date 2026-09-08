@@ -24,6 +24,18 @@ from iris.app.core.security import PermissionManager
 
 
 @pytest.fixture(autouse=True)
+def forget_device_fast_paths():
+    """Whether a node has a UDP fast path is learned once and cached by
+    address. Two tests using the same address would otherwise inherit each
+    other's answer, so the cache is cleared around every test."""
+    from iris.app.tools.devices.transport import forget_fast_paths
+
+    forget_fast_paths()
+    yield
+    forget_fast_paths()
+
+
+@pytest.fixture(autouse=True)
 def setup_builtin_tools():
     """Ensure builtin tools are always registered for test runs."""
     default_tool_registry.register(CalculatorTool())

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
@@ -15,7 +16,9 @@ from iris.app.tools.devices.registry import (
     normalize_base_url,
     normalize_name,
 )
+from iris.app.tools.base import ToolError
 from iris.app.tools.devices import esp32 as esp32_mod
+from iris.app.tools.devices import transport as transport_mod
 from iris.app.tools.devices.esp32 import (
     DeviceCommandTool,
     DeviceMotorTool,
@@ -537,3 +540,230 @@ class TestMapDeviceCommand:
     def test_map_command_does_not_collide_with_switch(self):
         match = IntentEngine().match("turn on the kitchen light")
         assert match and match.tool_name == "device_switch"
+
+
+# ------------------------------------------------------------ the fast path
+class _FakeNodeUdp(asyncio.DatagramProtocol):
+    """A stand-in for the robot node's UDP command listener (fastlink.h)."""
+
+    def __init__(self, answer=None, silent=False, raw=None):
+        self.seen: list[str] = []
+        self._answer = answer if answer is not None else {"motor": "forward"}
+        self._silent = silent
+        self._raw = raw
+        self._transport = None
+
+    def connection_made(self, transport):
+        self._transport = transport
+
+    def datagram_received(self, data, addr):
+        self.seen.append(data.decode())
+        if self._silent:
+            return                      # a board that never answers
+        body = self._raw if self._raw is not None else json.dumps(self._answer).encode()
+        self._transport.sendto(body, addr)
+
+
+async def _serve_udp(silent=False, answer=None, raw=None):
+    loop = asyncio.get_running_loop()
+    transport, proto = await loop.create_datagram_endpoint(
+        lambda: _FakeNodeUdp(answer=answer, silent=silent, raw=raw),
+        local_addr=("127.0.0.1", 0),
+    )
+    return transport, proto, transport.get_extra_info("sockname")[1]
+
+
+def _mock_http(monkeypatch, handler):
+    """Point the LAN transport at a handler, returning the URLs it saw."""
+    seen: list[str] = []
+
+    def wrapped(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return handler(request)
+
+    mock = httpx.MockTransport(wrapped)
+    real = httpx.AsyncClient
+    monkeypatch.setattr(
+        transport_mod.httpx, "AsyncClient",
+        lambda **kw: real(**{**kw, "transport": mock}),
+    )
+    return seen
+
+
+class TestFastPath:
+    """The UDP command path: how it is discovered, used and given up on."""
+
+    def test_port_is_read_from_what_the_node_advertises(self):
+        assert transport_mod.read_fast_port({"fast": {"udp": 8267}}) == 8267
+        assert transport_mod.read_fast_port({"fast": {"udp": "8267"}}) == 8267
+
+    def test_a_node_that_does_not_advertise_gets_no_datagram(self):
+        # Every one of these must read as "no fast path" rather than as a
+        # port, because guessing one means firing a stray packet at whatever
+        # the user actually has on that port.
+        for status in (
+            {},                                   # older firmware
+            {"fast": None},
+            {"fast": {}},
+            {"fast": {"udp": None}},
+            {"fast": {"udp": "soon"}},
+            {"fast": {"udp": 0}},                 # out of range
+            {"fast": {"udp": 70000}},
+            "not even a dict",
+        ):
+            assert transport_mod.read_fast_port(status) is None
+
+    @pytest.mark.asyncio
+    async def test_udp_command_round_trip(self):
+        srv, node, port = await _serve_udp(answer={"motor": "forward", "speed": 200})
+        try:
+            answer = await transport_mod.udp_command(
+                "127.0.0.1", port, "/motor?dir=forward&speed=200"
+            )
+        finally:
+            srv.close()
+        assert answer == {"motor": "forward", "speed": 200}
+        assert node.seen == ["/motor?dir=forward&speed=200"]
+
+    @pytest.mark.asyncio
+    async def test_non_json_answer_is_carried_not_raised(self):
+        """Custom firmware answering plain text must read as a reply, not as
+        a transport failure that sends the same command a second time."""
+        srv, _node, port = await _serve_udp(raw=b"OK, moving")
+        try:
+            answer = await transport_mod.udp_command("127.0.0.1", port, "/motor?dir=forward")
+        finally:
+            srv.close()
+        assert answer == {"response": "OK, moving"}
+
+    @pytest.mark.asyncio
+    async def test_a_bare_json_value_is_wrapped(self):
+        srv, _node, port = await _serve_udp(raw=b"42")
+        try:
+            answer = await transport_mod.udp_command("127.0.0.1", port, "/status")
+        finally:
+            srv.close()
+        assert answer == {"response": 42}
+
+    @pytest.mark.asyncio
+    async def test_silence_raises_rather_than_hanging(self):
+        srv, _node, port = await _serve_udp(silent=True)
+        try:
+            with pytest.raises((asyncio.TimeoutError, TimeoutError)):
+                await transport_mod.udp_command(
+                    "127.0.0.1", port, "/motor?dir=forward", timeout=0.05
+                )
+        finally:
+            srv.close()
+
+    @pytest.mark.asyncio
+    async def test_commands_go_by_udp_once_the_node_advertises_one(self, monkeypatch):
+        srv, node, port = await _serve_udp(answer={"motor": "forward"})
+        try:
+            http = _mock_http(monkeypatch, lambda r: httpx.Response(
+                200, json={"name": "robot", "kind": "motor", "fast": {"udp": port}}))
+            dev = Device(name="robot", base_url="http://127.0.0.1", kind="motor")
+
+            first = await transport_mod.device_request(
+                dev, "/motor", {"dir": "forward", "speed": 200})
+            second = await transport_mod.device_request(dev, "/motor", {"dir": "stop"})
+        finally:
+            srv.close()
+
+        assert first == {"motor": "forward"}
+        assert second == {"motor": "forward"}
+        # Both commands arrived as datagrams, carrying their parameters.
+        assert node.seen == ["/motor?dir=forward&speed=200", "/motor?dir=stop"]
+        # HTTP was used exactly once, to ask the board what port to use.
+        assert http == ["http://127.0.0.1/status"]
+
+    @pytest.mark.asyncio
+    async def test_an_unanswered_datagram_falls_back_to_http(self, monkeypatch):
+        """A lost datagram must not become a lost command."""
+        srv, node, port = await _serve_udp(silent=True)
+        monkeypatch.setattr(transport_mod, "FAST_TIMEOUT", 0.05)
+        try:
+            http = _mock_http(monkeypatch, lambda r: httpx.Response(
+                200, json={"fast": {"udp": port}, "motor": "forward"}))
+            dev = Device(name="robot", base_url="http://127.0.0.1", kind="motor")
+            answer = await transport_mod.device_request(dev, "/motor", {"dir": "forward"})
+        finally:
+            srv.close()
+
+        assert answer["motor"] == "forward"
+        assert node.seen == ["/motor?dir=forward"]          # it was tried
+        assert any("dir=forward" in url for url in http)    # and then done over HTTP
+
+    @pytest.mark.asyncio
+    async def test_a_relay_is_never_interrogated_on_the_off_chance(self, monkeypatch):
+        """Only kinds whose firmware has a listener are worth asking. A light
+        that comes on 30 ms later is a light that came on, so a relay must not
+        pay a round trip to find out it has no fast path."""
+        http = _mock_http(monkeypatch, lambda r: httpx.Response(
+            200, json={"name": "relay", "kind": "relay", "relays": ["off"]}))
+        dev = Device(name="lamp", base_url="http://127.0.0.1", kind="relay")
+
+        await transport_mod.device_request(dev, "/relay", {"ch": 1, "state": "on"})
+        await transport_mod.device_request(dev, "/relay", {"ch": 1, "state": "off"})
+
+        assert not any("/status" in u for u in http)
+        assert any("state=on" in u for u in http) and any("state=off" in u for u in http)
+
+    @pytest.mark.asyncio
+    async def test_a_motor_node_on_older_firmware_is_asked_once_only(self, monkeypatch):
+        http = _mock_http(monkeypatch, lambda r: httpx.Response(
+            200, json={"name": "robot", "kind": "motor", "motors": True}))
+        dev = Device(name="robot", base_url="http://127.0.0.1", kind="motor")
+
+        await transport_mod.device_request(dev, "/motor", {"dir": "forward"})
+        await transport_mod.device_request(dev, "/motor", {"dir": "stop"})
+
+        # The "no fast path" answer is remembered, so the board is asked once
+        # and every command after that goes straight out over HTTP.
+        assert http.count("http://127.0.0.1/status") == 1
+        assert any("dir=forward" in u for u in http) and any("dir=stop" in u for u in http)
+
+    @pytest.mark.asyncio
+    async def test_any_kind_picks_up_a_fast_path_it_advertises(self, monkeypatch):
+        """No round trip is spent asking a relay, but if one of its own
+        /status answers mentions a port, it gets datagrams from then on. That
+        is what stops this module from having to be edited when another
+        firmware grows the listener."""
+        srv, node, port = await _serve_udp(answer={"relay": "on"})
+        try:
+            _mock_http(monkeypatch, lambda r: httpx.Response(
+                200, json={"kind": "relay", "relays": ["off"], "fast": {"udp": port}}))
+            dev = Device(name="lamp", base_url="http://127.0.0.1", kind="relay")
+
+            await transport_mod.device_request(dev, "/status")     # over HTTP
+            assert node.seen == []
+            await transport_mod.device_request(dev, "/relay", {"ch": 1, "state": "on"})
+        finally:
+            srv.close()
+        assert node.seen == ["/relay?ch=1&state=on"]
+
+    @pytest.mark.asyncio
+    async def test_an_offline_board_is_not_written_off_as_slow(self, monkeypatch):
+        """A board unplugged at the moment we first ask must still get the
+        fast path once it is back, rather than being cached as HTTP-only."""
+        srv, node, port = await _serve_udp(answer={"motor": "forward"})
+        try:
+            state = {"up": False}
+
+            def handler(_request):
+                if not state["up"]:
+                    raise httpx.ConnectError("no route to host")
+                return httpx.Response(200, json={"fast": {"udp": port}})
+
+            _mock_http(monkeypatch, handler)
+            dev = Device(name="robot", base_url="http://127.0.0.1", kind="motor")
+
+            with pytest.raises(ToolError):
+                await transport_mod.device_request(dev, "/motor", {"dir": "forward"})
+            assert node.seen == []                  # nothing guessed at while down
+
+            state["up"] = True
+            await transport_mod.device_request(dev, "/motor", {"dir": "forward"})
+        finally:
+            srv.close()
+        assert node.seen == ["/motor?dir=forward"]
