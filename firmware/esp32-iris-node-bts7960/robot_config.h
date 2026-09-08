@@ -110,15 +110,20 @@ inline int pinConflict(const Config& c) {
 inline void configApplyClamps(Config& c) {
   if (c.trimA > 100) c.trimA = 100;
   if (c.trimB > 100) c.trimB = 100;
-  /* A stored zero in either gain scales that side to nothing: every command
-   * afterwards answers 200 and no wheel turns, across reboots, with no way to
-   * tell it from a dead driver. Older builds accepted 0 here, so a saved one
-   * has to be undone rather than merely rejected next time — restored to the
-   * default rather than to 1, because "barely creeps" is not a better guess at
-   * what was meant than "normal". */
-  if (c.trimA < 1) c.trimA = 100;
-  if (c.trimB < 1) c.trimB = 100;
-  if (c.defaultSpeed < 1) c.defaultSpeed = 200;
+  /* Gains below these cannot turn a loaded wheel, so a stored one is another
+   * "answers 200, nothing moves" that survives reboots and reads as a dead
+   * driver. The floors are what the page's own sliders already assume (trim
+   * 40-100, speed 60-255); a value under them is restored to the default,
+   * because "barely creeps" is not a better guess at what was meant than
+   * "normal". Zero used to be accepted here, so this undoes it rather than
+   * merely refusing it next time. */
+  if (c.trimA < 40) c.trimA = 100;
+  if (c.trimB < 40) c.trimB = 100;
+  if (c.defaultSpeed < 60) c.defaultSpeed = 200;
+  /* 0 keeps its documented meaning of "no failsafe". Anything shorter than
+   * this auto-stops every command before a wheel can turn — a permanently
+   * dead robot that answers 200 to everything. */
+  if (c.failsafeMs && c.failsafeMs < 200) c.failsafeMs = 10000;
   if (c.pwmFreq < 100 || c.pwmFreq > 25000) c.pwmFreq = 20000;
   if (c.failsafeMs > 60000) c.failsafeMs = 60000;
   if (c.rampMs > 3000) c.rampMs = 3000;

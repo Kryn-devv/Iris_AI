@@ -196,6 +196,9 @@ static void pwmDetach(uint8_t pin) {
 
 static Config cfg;
 static Preferences prefs;
+/* True when the stored pin set had to be rejected at boot. Surfaced in
+ * /status so the dashboard can say it, rather than only the serial console. */
+static bool configReverted = false;
 
 static void configDefaults() { configFillDefaults(cfg); }
 
@@ -221,29 +224,57 @@ static void configLoad() {
   cfg.brakeOnStop = prefs.getBool("brake", cfg.brakeOnStop);
   prefs.end();
 
-  /* A corrupt or hand-edited pin set must not brick the board on boot. */
+  /* A corrupt or hand-edited pin set must not brick the board on boot — but
+   * only the PINS are suspect, so only the pins go back. The old recovery
+   * called configDefaults() and threw away swap, invert, trim, ramp, freq,
+   * min_duty and failsafe as well: a whole afternoon of calibration lost to
+   * one bad GPIO number.
+   *
+   * Reported through /status too, not just Serial. Someone driving from a
+   * phone on the fallback AP has no console, and "the robot forgot its
+   * calibration" is not something to leave them to deduce. */
   if (!pinsAllUsable(cfg) || pinConflict(cfg) >= 0) {
-    Serial.println("[cfg] stored pins invalid or clashing — reverting to defaults");
-    configDefaults();
+    Serial.println("[cfg] stored pins invalid or clashing — reverting the PINS "
+                   "to defaults (the rest of your calibration is kept)");
+    Config d;
+    configFillDefaults(d);
+    cfg.aR = d.aR; cfg.aL = d.aL; cfg.aEn = d.aEn;
+    cfg.bR = d.bR; cfg.bL = d.bL; cfg.bEn = d.bEn;
+    configReverted = true;
   }
   configApplyClamps(cfg);
 }
 
+/* Every put* answers the number of bytes written, and 0 when it did not write
+ * — NVS full, a corrupt page, a handle opened read-only. Dropping those and
+ * returning true meant the page said "saved to flash" over a calibration that
+ * was partly or wholly still the old one, and you would only find out on the
+ * next power-up, by which time the SAVE you remember pressing is evidence
+ * against the wiring. Each put commits on its own, so a partial write is a
+ * real state, not a theoretical one. */
 static bool configSave() {
   if (!prefs.begin("irisbot", false)) return false;
-  prefs.putUChar("aR", cfg.aR);   prefs.putUChar("aL", cfg.aL);   prefs.putUChar("aEn", cfg.aEn);
-  prefs.putUChar("bR", cfg.bR);   prefs.putUChar("bL", cfg.bL);   prefs.putUChar("bEn", cfg.bEn);
-  prefs.putBool("swap", cfg.swapSides);
-  prefs.putBool("invA", cfg.invA);   prefs.putBool("invB", cfg.invB);
-  prefs.putUChar("trimA", cfg.trimA); prefs.putUChar("trimB", cfg.trimB);
-  prefs.putUShort("freq", cfg.pwmFreq);
-  prefs.putUShort("fail", cfg.failsafeMs);
-  prefs.putUShort("ramp", cfg.rampMs);
-  prefs.putUChar("dspd", cfg.defaultSpeed);
-  prefs.putUChar("mind", cfg.minDuty);
-  prefs.putBool("brake", cfg.brakeOnStop);
+  bool ok = true;
+  ok &= prefs.putUChar("aR", cfg.aR) > 0;
+  ok &= prefs.putUChar("aL", cfg.aL) > 0;
+  ok &= prefs.putUChar("aEn", cfg.aEn) > 0;
+  ok &= prefs.putUChar("bR", cfg.bR) > 0;
+  ok &= prefs.putUChar("bL", cfg.bL) > 0;
+  ok &= prefs.putUChar("bEn", cfg.bEn) > 0;
+  ok &= prefs.putBool("swap", cfg.swapSides) > 0;
+  ok &= prefs.putBool("invA", cfg.invA) > 0;
+  ok &= prefs.putBool("invB", cfg.invB) > 0;
+  ok &= prefs.putUChar("trimA", cfg.trimA) > 0;
+  ok &= prefs.putUChar("trimB", cfg.trimB) > 0;
+  ok &= prefs.putUShort("freq", cfg.pwmFreq) > 0;
+  ok &= prefs.putUShort("fail", cfg.failsafeMs) > 0;
+  ok &= prefs.putUShort("ramp", cfg.rampMs) > 0;
+  ok &= prefs.putUChar("dspd", cfg.defaultSpeed) > 0;
+  ok &= prefs.putUChar("mind", cfg.minDuty) > 0;
+  ok &= prefs.putBool("brake", cfg.brakeOnStop) > 0;
   prefs.end();
-  return true;
+  if (!ok) Serial.println("[cfg] SAVE FAILED — flash write refused");
+  return ok;
 }
 
 /* ───────────────────────── motor state ──────────────────────────── */
@@ -682,6 +713,7 @@ static void handleStatus() {
        ",\"b\":" + String((sharedEnable ? anyBridge : enB) ? "true" : "false") +
        ",\"shared_enable\":" + String(sharedEnable ? "true" : "false") + "}";
   j += ",\"failsafe_tripped\":" + String(failsafeTripped ? "true" : "false");
+  j += ",\"config_reverted\":" + String(configReverted ? "true" : "false");
   j += ",\"raw_mode\":" + String(rawMode ? "true" : "false");
   j += ",\"selftest_step\":" + String(selfStep);
   j += ",\"selftest_label\":\"" + String(selfStep >= 0 && selfStep < SELF_STEPS ? SELF_LABELS[selfStep] : "idle") + "\"";
@@ -899,21 +931,35 @@ static void handleConfig() {
   long trimA = next.trimA, trimB = next.trimB, fail = next.failsafeMs,
        ramp = next.rampMs, dspd = next.defaultSpeed, mind = next.minDuty,
        freq = next.pwmFreq;
-  /* Trim and default_speed floor at 1, not 0. A stored 0 in any of them makes
-   * every subsequent command answer 200 and move nothing — and it survives a
-   * reboot, so the robot looks permanently, inexplicably dead. There is no
-   * calibration that wants a side scaled to zero; that is what /stop is. */
-  if (!argClamp("trim_a", 1, 100, trimA) ||
-      !argClamp("trim_b", 1, 100, trimB) ||
+  /* The gain floors are the page's own slider ranges. Below them a side
+   * cannot turn a loaded wheel, so a stored value under one is another
+   * "answers 200 and nothing moves" that survives a reboot and looks exactly
+   * like a dead driver. There is no calibration that wants a side scaled to
+   * nothing; that is what /stop is for. */
+  if (!argClamp("trim_a", 40, 100, trimA) ||
+      !argClamp("trim_b", 40, 100, trimB) ||
       !argClamp("failsafe_ms", 0, 60000, fail) ||
       !argClamp("ramp_ms", 0, 3000, ramp) ||
-      !argClamp("default_speed", 1, PWM_DUTY_MAX, dspd) ||
+      !argClamp("default_speed", 60, PWM_DUTY_MAX, dspd) ||
       !argClamp("min_duty", 0, MIN_DUTY_MAX, mind) ||
       !argClamp("pwm_freq", 100, 25000, freq) ||
       !argBool("swap_sides", next.swapSides) ||
       !argBool("invert_a", next.invA) ||
       !argBool("invert_b", next.invB) ||
       !argBool("brake_on_stop", next.brakeOnStop)) { sendBadArg(); return; }
+
+  /* 0 means "no failsafe" and is a deliberate choice. A value between there
+   * and a fifth of a second is not: it auto-stops every command before a
+   * wheel can turn, /save writes it to flash, and the robot is then
+   * permanently dead while answering 200 to everything. Refused with the
+   * reason rather than quietly rounded up, because a calibration that was
+   * silently changed is a calibration you will fight later. */
+  if (fail > 0 && fail < 200) {
+    sendJson(400, "{\"error\":\"failsafe_ms must be 0 (off) or at least 200\","
+                  "\"hint\":\"below that, every command stops itself before a "
+                  "wheel can turn\"}");
+    return;
+  }
 
   next.trimA = (uint8_t)trimA;   next.trimB = (uint8_t)trimB;
   next.failsafeMs = (uint16_t)fail;
@@ -1091,6 +1137,14 @@ static bool dispatchCommand(const String& path, const String& query, String& out
   cloudOut = &out;
   cloudCode = 200;
   argFail = NULL;
+
+  if (args.truncated()) {
+    sendJson(400, "{\"error\":\"too many arguments\",\"hint\":\"send the "
+                  "calibration in smaller batches\"}");
+    curArgs = &httpArgs;
+    cloudOut = nullptr;
+    return false;
+  }
 
   String p = path;
   if (!p.startsWith("/")) p = "/" + p;

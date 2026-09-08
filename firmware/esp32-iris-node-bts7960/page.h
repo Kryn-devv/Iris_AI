@@ -231,11 +231,16 @@ function render(j){
  +'\nswap '+j.config.swap_sides+'  invA '+j.config.invert_a+'  invB '+j.config.invert_b
  +'\ntrim '+j.config.trim_a+'% / '+j.config.trim_b+'%   pwm '+j.config.pwm_freq+'Hz'
  +'   ramp '+j.config.ramp_ms+'ms'
+ +'\ndeadband '+j.config.min_duty+'   failsafe '
+   +(j.config.failsafe_ms?j.config.failsafe_ms+'ms':'off')
  +'\nlink '+j.link+(j.ap_mode?' (own network)':'')+'  '+j.rssi+'dBm  up '+j.uptime_s+'s'
  +'\ncmds '+j.commands+'  heap '+j.free_heap
  +'\nround trip '+(rtt===null?'--':rtt+' ms')+'  over '+(wsReady?'the control socket':'plain HTTP')
  +(j.bridges.shared_enable?'\nnote both modules share one EN pin, so the side not being\n'
    +'     tested is braked rather than coasting — expect it to drag':'')
+ +(j.config_reverted?'\n** the saved GPIO numbers were unusable, so the PINS went\n'
+   +'   back to defaults at boot. The rest of your calibration was\n'
+   +'   kept. Set the pins again and SAVE. **':'')
  +(j.failsafe_tripped?'\n** failsafe stopped the motors **':'')}
 
 /* Only used while the socket is down. With it up, the board PUSHES status

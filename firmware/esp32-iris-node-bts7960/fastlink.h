@@ -129,8 +129,17 @@ class FastLink {
     const IPAddress from = udp_.remoteIP();
     const uint16_t fromPort = udp_.remotePort();
 
+    /* Trimmed, like the control socket does. Almost everything that sends a
+     * datagram from a shell or a microcontroller terminates it —
+     * `echo "/motor?dir=forward" | nc -u` sends a newline — and that newline
+     * lands inside the LAST argument's value, where the strict number parser
+     * rejects it and the whole drive command comes back 400. The one way most
+     * people will first try this must not be the one way it does not work. */
+    String payload(buf_);
+    payload.trim();
+
     String reply;
-    serveTarget(String(buf_), reply);
+    serveTarget(payload, reply);
 
     /* Best effort. A caller that has already gone away must not become an
      * error on this side, and must certainly not block the loop. */

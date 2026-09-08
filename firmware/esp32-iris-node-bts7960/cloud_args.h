@@ -47,7 +47,8 @@ class Args {
     Args a;
     a.fromServer_ = false;
     int at = 0;
-    while (at < (int)query.length() && a.count_ < MAX_ARGS) {
+    while (at < (int)query.length()) {
+      if (a.count_ >= MAX_ARGS) { a.truncated_ = true; break; }
       int amp = query.indexOf('&', at);
       if (amp < 0) amp = query.length();
       const int eq = query.indexOf('=', at);
@@ -60,6 +61,13 @@ class Args {
     }
     return a;
   }
+
+  /* True when the query carried more arguments than this can hold. The
+   * dispatcher refuses such a request outright: dropping the tail silently
+   * meant a whole-calibration push applied the first ten settings, ignored
+   * the rest, and answered 200 — the caller believing it had saved something
+   * the board never saw. */
+  bool truncated() const { return truncated_; }
 
   bool has(const char* name) const {
     if (fromServer_) return server.hasArg(name);
@@ -87,11 +95,13 @@ class Args {
     return out;
   }
 
-  /* Enough for the widest endpoint here: /config takes six pin arguments plus
-   * the calibration flags, and they are sent in batches rather than all at once.
-   */
-  static const uint8_t MAX_ARGS = 10;
+  /* Wider than the widest endpoint, which is /config: six pin arguments plus
+   * eleven calibration fields. Ten was chosen on the assumption that the page
+   * always sends them in batches — true of the page, not true of anything
+   * else that might push a whole calibration in one request. */
+  static const uint8_t MAX_ARGS = 20;
   bool fromServer_ = true;
+  bool truncated_ = false;
   uint8_t count_ = 0;
   String keys_[MAX_ARGS];
   String values_[MAX_ARGS];
