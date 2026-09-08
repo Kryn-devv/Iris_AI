@@ -1,0 +1,1096 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Every wire from an ESP32 to two BTS7960 drivers on a four-wheel skid-steer robot, which mistakes destroy hardware, and which ones the calibration page fixes without re-wiring.">
+<style>*,*::before,*::after{box-sizing:border-box}html,body{margin:0}</style>
+<title>Six Wires, Two Drivers</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+
+<style>
+  /* ── Same drafting-paper system as wiring-12v.html, deliberately: these two
+     sheets describe one machine and should read as one set. The load-bearing
+     rule is carried over unchanged — ONE HUE PER VOLTAGE RAIL — because
+     "12 V red landing where 5 V amber belongs" is the mistake that costs a
+     board, and a colour you can trust across two sheets is worth more than a
+     colour that is merely pretty on one. ──────────────────────────────────── */
+  :root {
+    --paper:  #F6F7F9;
+    --panel:  #ECEFF3;
+    --panel-2:#E2E7ED;
+    --ink:    #16202B;
+    --ink-2:  #5A6875;
+    --ink-3:  #8A97A4;
+    --rule:   #C9D2DC;
+    --rule-2: #DDE3EA;
+
+    --v12: #D62828;
+    --v5:  #D97400;
+    --v3:  #A88700;
+    --sig: #1B5FBF;
+    --gnd: var(--ink);
+
+    --v12-wash: #D628281a;
+    --v5-wash:  #D974001a;
+    --v3-wash:  #A887001f;
+    --sig-wash: #1B5FBF14;
+
+    --shadow: 0 1px 2px #16202b0f, 0 8px 24px -16px #16202b26;
+
+    --verdict-bg: var(--ink);
+    --verdict-fg: var(--paper);
+    --verdict-fg-2: #ffffffc7;
+
+    --display: "Barlow Condensed", "Arial Narrow", system-ui, sans-serif;
+    --body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:  #10151B;
+      --panel:  #171E27;
+      --panel-2:#1E2731;
+      --ink:    #E6ECF2;
+      --ink-2:  #96A3B1;
+      --ink-3:  #6D7B89;
+      --rule:   #2C3742;
+      --rule-2: #222C36;
+
+      --v12: #FF6259;
+      --v5:  #FFA23D;
+      --v3:  #EBCE4A;
+      --sig: #6BA5FF;
+
+      --v12-wash: #FF62591f;
+      --v5-wash:  #FFA23D1f;
+      --v3-wash:  #EBCE4A1c;
+      --sig-wash: #6BA5FF1a;
+
+      --shadow: 0 1px 2px #0006, 0 10px 30px -18px #000a;
+
+      --verdict-bg: var(--ink);
+      --verdict-fg: var(--paper);
+      --verdict-fg-2: #10151bc9;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:  #10151B;
+    --panel:  #171E27;
+    --panel-2:#1E2731;
+    --ink:    #E6ECF2;
+    --ink-2:  #96A3B1;
+    --ink-3:  #6D7B89;
+    --rule:   #2C3742;
+    --rule-2: #222C36;
+
+    --v12: #FF6259;
+    --v5:  #FFA23D;
+    --v3:  #EBCE4A;
+    --sig: #6BA5FF;
+
+    --v12-wash: #FF62591f;
+    --v5-wash:  #FFA23D1f;
+    --v3-wash:  #EBCE4A1c;
+    --sig-wash: #6BA5FF1a;
+
+    --shadow: 0 1px 2px #0006, 0 10px 30px -18px #000a;
+
+    --verdict-bg: var(--ink);
+    --verdict-fg: var(--paper);
+    --verdict-fg-2: #10151bc9;
+  }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 16.5px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* One grid owns all horizontal space. Prose sits in `main`; figures and wide
+     tables break out to `full`. Nothing uses side margins, so nothing can
+     collapse or double against anything else. */
+  .sheet {
+    display: grid;
+    grid-template-columns:
+      [full-start] minmax(1.15rem, 1fr)
+      [main-start] min(69ch, calc(100% - 2.3rem))
+      [main-end] minmax(1.15rem, 1fr)
+      [full-end];
+    row-gap: 1.05rem;
+    padding: 0 0 5rem;
+  }
+  .sheet > * { grid-column: main; }
+  .sheet > .wide { grid-column: full; justify-self: center; width: min(100%, 1140px); }
+
+  header.titleblock {
+    grid-column: full;
+    justify-self: center;
+    width: min(100%, 1140px);
+    margin: 3.2rem 0 1.6rem;
+    padding: 0 1.15rem;
+  }
+  .titleblock .hair { border-top: 2px solid var(--ink); }
+  .titleblock .hair + .hair { border-top: 1px solid var(--ink); margin-top: 3px; }
+  h1 {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: clamp(2.6rem, 8vw, 4.5rem);
+    line-height: 0.95;
+    letter-spacing: -0.005em;
+    text-wrap: balance;
+    margin: 0.5rem 0 0.35rem;
+  }
+  .standfirst {
+    font-size: 1.09rem;
+    color: var(--ink-2);
+    max-width: 56ch;
+    margin: 0 0 1.15rem;
+  }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 2.1rem;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    padding: 0.5rem 0;
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+  }
+  .meta b { color: var(--ink-2); font-weight: 600; }
+
+  h2 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: clamp(1.7rem, 4vw, 2.15rem);
+    line-height: 1.08;
+    text-wrap: balance;
+    margin: 2.9rem 0 0.15rem;
+  }
+  h2 .num {
+    font-family: var(--mono);
+    font-size: 0.52em;
+    font-weight: 500;
+    color: var(--ink-3);
+    letter-spacing: 0.1em;
+    display: block;
+    margin-bottom: 0.35rem;
+  }
+  h3 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 1.34rem;
+    margin: 2rem 0 0.1rem;
+  }
+  p { margin: 0; }
+  strong { font-weight: 600; }
+  code, .m {
+    font-family: var(--mono);
+    font-size: 0.87em;
+    background: var(--panel);
+    border: 1px solid var(--rule-2);
+    border-radius: 3px;
+    padding: 0.06em 0.34em;
+  }
+
+  .verdict {
+    background: var(--verdict-bg);
+    color: var(--verdict-fg);
+    padding: 1.5rem 1.6rem;
+    border-radius: 2px;
+    margin-top: 0.6rem;
+  }
+  .verdict .lede {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: clamp(1.5rem, 4.4vw, 2rem);
+    line-height: 1.1;
+    margin: 0 0 0.55rem;
+    text-wrap: balance;
+  }
+  .verdict p { font-size: 1rem; color: var(--verdict-fg-2); }
+  .verdict strong { color: var(--verdict-fg); }
+  .verdict code {
+    background: #ffffff1f;
+    border-color: #ffffff2e;
+    color: var(--verdict-fg);
+  }
+
+  figure {
+    margin: 1.5rem 0 0.4rem;
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  figure .canvas { overflow-x: auto; padding: 1.15rem 1.15rem 0.5rem; }
+  figure svg { display: block; max-width: 100%; height: auto; min-width: 560px; }
+  figcaption {
+    font-size: 0.9rem;
+    line-height: 1.5;
+    color: var(--ink-2);
+    padding: 0.75rem 1.15rem 1rem;
+    border-top: 1px solid var(--rule-2);
+    background: var(--paper);
+  }
+  figcaption b { color: var(--ink); font-weight: 600; }
+  .fignum {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    display: block;
+    margin-bottom: 0.2rem;
+  }
+
+  .tablewrap { overflow-x: auto; margin: 1.2rem 0 0.3rem; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 460px;
+    font-size: 0.95rem;
+  }
+  caption {
+    text-align: left;
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    padding-bottom: 0.45rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.5rem 0.85rem 0.5rem 0;
+    border-bottom: 1px solid var(--rule-2);
+    vertical-align: baseline;
+  }
+  thead th {
+    font-family: var(--mono);
+    font-weight: 500;
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: 1px solid var(--rule); }
+  td.n, th.n { font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.pin { font-family: var(--mono); font-weight: 500; white-space: nowrap; }
+  td.sideA, td.sideB { font-family: var(--display); font-weight: 600; font-size: 1.05rem; }
+
+  /* Rail identity travels with the voltage everywhere it appears. */
+  .chip {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    padding: 0.12em 0.45em;
+    border-radius: 2px;
+    white-space: nowrap;
+    border: 1px solid currentColor;
+  }
+  .r12 { color: var(--v12); background: var(--v12-wash); }
+  .r5  { color: var(--v5);  background: var(--v5-wash); }
+  .r3  { color: var(--v3);  background: var(--v3-wash); }
+  .rs  { color: var(--sig); background: var(--sig-wash); }
+  .rg  { color: var(--ink-2); background: var(--panel-2); }
+
+  /* Numbering is earned here: the order really matters, and two of the steps
+     are the ones where parts get destroyed by being done early. */
+  ol.steps { list-style: none; counter-reset: s; margin: 1.2rem 0 0.4rem; padding: 0; }
+  ol.steps > li {
+    counter-increment: s;
+    position: relative;
+    padding: 0 0 1.05rem 3.3rem;
+    border-left: 1px solid var(--rule);
+    margin-left: 1.05rem;
+  }
+  ol.steps > li:last-child { border-left-color: transparent; padding-bottom: 0.2rem; }
+  ol.steps > li::before {
+    content: counter(s);
+    position: absolute;
+    left: -1.05rem;
+    top: -0.1rem;
+    width: 2.1rem;
+    height: 2.1rem;
+    display: grid;
+    place-items: center;
+    font-family: var(--mono);
+    font-size: 0.86rem;
+    font-weight: 600;
+    color: var(--ink-2);
+    background: var(--paper);
+    border: 1px solid var(--rule);
+    border-radius: 50%;
+  }
+  ol.steps > li.critical::before {
+    background: var(--ink);
+    color: var(--paper);
+    border-color: var(--ink);
+  }
+  ol.steps > li h4 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 1.17rem;
+    margin: 0 0 0.1rem;
+  }
+  ol.steps > li p { font-size: 0.97rem; color: var(--ink-2); }
+  ol.steps > li p strong { color: var(--ink); }
+
+  .flag {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 0.63rem;
+    font-weight: 600;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    background: var(--ink);
+    color: var(--paper);
+    padding: 0.16em 0.44em;
+    border-radius: 2px;
+    vertical-align: 0.15em;
+    margin-left: 0.4rem;
+  }
+
+  .note {
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--ink);
+    border-radius: 0 3px 3px 0;
+    padding: 1rem 1.15rem;
+    margin: 1.15rem 0 0.3rem;
+  }
+  .note h4 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 1.15rem;
+    margin: 0 0 0.15rem;
+  }
+  .note p { font-size: 0.97rem; color: var(--ink-2); }
+  .note p strong { color: var(--ink); }
+  .note.danger { border-left-color: var(--v12); }
+  .note.danger h4 { color: var(--v12); }
+
+  /* The three ways to destroy something. Not cards — one object, three rows,
+     because they are a single list of consequences and reading them as
+     separate panels invites skipping two of them. */
+  ul.kill { list-style: none; margin: 1.2rem 0 0.3rem; padding: 0; border-top: 1px solid var(--v12); }
+  ul.kill > li {
+    display: grid;
+    grid-template-columns: 1.9rem 1fr;
+    gap: 0 0.85rem;
+    padding: 0.85rem 0;
+    border-bottom: 1px solid var(--rule-2);
+  }
+  ul.kill > li::before {
+    content: "✕";
+    font-family: var(--mono);
+    font-weight: 600;
+    color: var(--v12);
+    line-height: 1.5;
+  }
+  ul.kill b { font-weight: 600; display: block; }
+  ul.kill span { font-size: 0.95rem; color: var(--ink-2); }
+
+  pre.say {
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    line-height: 1.85;
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 1rem 1.15rem;
+    margin: 1.1rem 0 0.3rem;
+    overflow-x: auto;
+    color: var(--ink);
+  }
+  pre.say .hi { color: var(--sig); }
+
+  footer {
+    grid-column: full;
+    justify-self: center;
+    width: min(100%, 1140px);
+    padding: 2.6rem 1.15rem 0;
+    margin-top: 3rem;
+    border-top: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+
+  a { color: var(--sig); text-underline-offset: 0.18em; }
+  a:focus-visible, [tabindex]:focus-visible {
+    outline: 2px solid var(--sig);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+
+  /* SVG text inherits the sheet's ink and rail colours in both themes. */
+  svg text { font-family: var(--mono); fill: var(--ink); }
+  svg .lbl { font-size: 10.5px; letter-spacing: 0.04em; }
+  svg .lbl-sm { font-size: 9px; letter-spacing: 0.05em; fill: var(--ink-2); }
+  svg .lbl-dim { font-size: 9.5px; fill: var(--ink-2); }
+  svg .name { font-family: "Barlow Condensed", "Arial Narrow", sans-serif; font-size: 15px; font-weight: 600; letter-spacing: 0.02em; }
+  svg .big { font-family: "Barlow Condensed", "Arial Narrow", sans-serif; font-size: 20px; font-weight: 700; }
+  svg .box { fill: var(--paper); stroke: var(--ink); stroke-width: 1.6; }
+  svg .box-soft { fill: var(--paper); stroke: var(--rule); stroke-width: 1.4; }
+  svg .w { fill: none; stroke-width: 3.2; stroke-linecap: round; stroke-linejoin: round; }
+  svg .w12 { stroke: var(--v12); }
+  svg .w5  { stroke: var(--v5); }
+  svg .w3  { stroke: var(--v3); }
+  svg .wg  { stroke: var(--gnd); }
+  svg .ws  { stroke: var(--sig); }
+  svg .dead { stroke: var(--ink-3); }
+  svg .term { fill: var(--paper); stroke: var(--ink); stroke-width: 1.8; }
+  svg .gnd-bar { stroke: var(--gnd); stroke-width: 3.4; stroke-linecap: round; fill: none; }
+  svg .hatch { fill: var(--panel-2); stroke: var(--rule); stroke-width: 1.2; }
+
+  /* Defined LAST on purpose. An SVG presentation attribute loses to any
+     stylesheet rule, so `fill="..."` on an element that also carries .lbl-sm
+     is silently overridden by the .lbl-sm fill above. These win. */
+  svg .thin { stroke-width: 2.4; }
+  svg .dot12 { fill: var(--v12); stroke: none; }
+  svg .dot5  { fill: var(--v5); stroke: none; }
+  svg .dotg  { fill: var(--gnd); stroke: none; }
+  svg .dots  { fill: var(--sig); stroke: none; }
+  svg .c12 { fill: var(--v12); }
+  svg .c5  { fill: var(--v5); }
+  svg .c3  { fill: var(--v3); }
+  svg .cs  { fill: var(--sig); }
+  svg .cq  { fill: var(--ink-2); }
+  svg .cf  { fill: var(--ink-3); }
+</style>
+</head>
+<body>
+<div class="sheet">
+
+<header class="titleblock">
+  <div class="hair"></div>
+  <div class="hair"></div>
+  <h1>Six Wires, Two&nbsp;Drivers</h1>
+  <p class="standfirst">Every connection from the ESP32 to two BTS7960 modules on
+  a four-wheel skid-steer robot — and, just as usefully, the four mistakes you
+  cannot make because the calibration page undoes them for you.</p>
+  <div class="meta">
+    <span><b>Board</b> ESP32 DevKit</span>
+    <span><b>Drivers</b> 2 × BTS7960</span>
+    <span><b>Motors</b> 4, two per side</span>
+    <span><b>Firmware</b> esp32-iris-node-bts7960</span>
+  </div>
+</header>
+
+<div class="verdict">
+  <p class="lede">Six signal wires, one 5 V, one ground. Everything else is the battery.</p>
+  <p>Three wires per driver — <strong>RPWM</strong>, <strong>LPWM</strong> and one
+  <strong>enable</strong> — plus <strong>5 V</strong> and a <strong>shared ground</strong>.
+  The 12 V battery never touches the ESP32. And you do not have to get the sides or
+  the directions right: <code>swap</code>, <code>invert A</code>, <code>invert B</code>
+  and the two <code>trim</code> sliders on the board's own page fix all of that
+  afterwards, without moving a wire.</p>
+</div>
+
+<h2><span class="num">01</span>The pin list, if that is all you need</h2>
+
+<p>These are the firmware's defaults, straight out of <code>configFillDefaults()</code>.
+Side&nbsp;A and side&nbsp;B are just "the first module" and "the second" — which one
+ends up driving the left wheels is something you set on the page later, not something
+you have to guess now.</p>
+
+<div class="tablewrap">
+<table>
+  <caption>ESP32 → driver modules</caption>
+  <thead>
+    <tr><th>Module</th><th>Its RPWM</th><th>Its LPWM</th><th>Its R_EN + L_EN</th></tr>
+  </thead>
+  <tbody>
+    <tr><td class="sideA">A</td><td class="pin">GPIO 25</td><td class="pin">GPIO 26</td><td class="pin">GPIO 27</td></tr>
+    <tr><td class="sideB">B</td><td class="pin">GPIO 32</td><td class="pin">GPIO 33</td><td class="pin">GPIO 14</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="tablewrap">
+<table>
+  <caption>The rest of each module's 8-pin logic header</caption>
+  <thead>
+    <tr><th>Pin</th><th>Goes to</th><th>Why</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="pin">VCC</td>
+      <td><span class="chip r5">5 V</span></td>
+      <td><strong>Required.</strong> This pin <em>consumes</em> 5 V — it does not
+      produce it, and you cannot power anything from it. A module with VCC
+      unconnected looks completely, convincingly dead. It draws only a few
+      milliamps, so the ESP32's own 5 V pin can feed both modules easily.</td>
+    </tr>
+    <tr>
+      <td class="pin">GND</td>
+      <td><span class="chip rg">GND</span></td>
+      <td>Its own thin wire, straight to the ESP32's GND. This is a
+      <em>reference</em>, not a return path — see Figure 3.</td>
+    </tr>
+    <tr>
+      <td class="pin">R_IS</td>
+      <td><span class="chip rg">—</span></td>
+      <td>Current sense <em>out</em>. Leave it empty; nothing here reads it. Don't
+      be tempted onto an ESP32 analogue pin — it goes above 3.3 V at only a couple
+      of amps.</td>
+    </tr>
+    <tr>
+      <td class="pin">L_IS</td>
+      <td><span class="chip rg">—</span></td>
+      <td>Same.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note danger">
+  <h4>The DevKit has a pin labelled EN. It is not that EN.</h4>
+  <p>The ESP32 board's own <code>EN</code> pin is the chip's <strong>reset</strong>.
+  The modules' enable inputs go to <strong>GPIO 27</strong> and
+  <strong>GPIO 14</strong>. This is worth saying out loud precisely because
+  "connect EN to EN" is such a reasonable thing to read off a diagram.</p>
+</div>
+
+<h2><span class="num">02</span>One module, pin by pin</h2>
+
+<p>Both modules are wired identically — only the three GPIO numbers differ. So this
+is the drawing to work from: do it once for module A with 25/26/27, then again for
+module B with 32/33/14.</p>
+
+<figure class="wide">
+  <div class="canvas">
+    <svg viewBox="0 0 620 400" role="img"
+         aria-label="One BTS7960 module. On its left, the eight-pin logic header: RPWM and LPWM go to two ESP32 GPIOs, R_EN and L_EN are joined together and go to one more GPIO, R_IS and L_IS are left empty, VCC takes 5 volts in, and GND joins the common ground. On its right, the four screw terminals: B plus and B minus go to the 12 volt battery, M plus and M minus go to that side's two motors wired in parallel.">
+      <defs>
+        <marker id="into" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M0,1 L9,5 L0,9 z" fill="var(--v5)"></path>
+        </marker>
+      </defs>
+
+      <!-- the module -->
+      <rect class="box" x="230" y="46" width="176" height="316" rx="3"></rect>
+      <text class="name" x="318" y="34" text-anchor="middle">BTS7960 — ONE MODULE</text>
+      <text class="lbl-sm cf" x="318" y="378" text-anchor="middle">the other module is identical, with its own three GPIOs</text>
+
+      <!-- logic header, inside the box on the left -->
+      <line class="w wg thin" x1="243" y1="60" x2="243" y2="300" stroke-dasharray="2 4"></line>
+      <text class="lbl-sm cf" x="252" y="322">8-pin logic header</text>
+
+      <text class="lbl" x="252" y="96">RPWM</text>
+      <text class="lbl" x="252" y="128">LPWM</text>
+      <text class="lbl" x="252" y="160">R_EN</text>
+      <text class="lbl" x="252" y="184">L_EN</text>
+      <text class="lbl cf" x="252" y="216">R_IS</text>
+      <text class="lbl cf" x="252" y="240">L_IS</text>
+      <text class="lbl" x="252" y="272">VCC</text>
+      <text class="lbl" x="252" y="296">GND</text>
+
+      <!-- signal wires out to the left -->
+      <path class="w ws" d="M230,92 H150"></path>
+      <path class="w ws" d="M230,124 H150"></path>
+      <text class="lbl cs" x="142" y="96" text-anchor="end">GPIO 25</text>
+      <text class="lbl cs" x="142" y="128" text-anchor="end">GPIO 26</text>
+      <text class="lbl-sm cf" x="142" y="110" text-anchor="end">module B: 32</text>
+      <text class="lbl-sm cf" x="142" y="142" text-anchor="end">module B: 33</text>
+
+      <!-- the two enables, joined -->
+      <path class="w ws" d="M230,156 H196"></path>
+      <path class="w ws" d="M230,180 H196"></path>
+      <path class="w ws" d="M196,156 V180"></path>
+      <path class="w ws" d="M196,168 H150"></path>
+      <circle class="dots" cx="196" cy="168" r="4"></circle>
+      <text class="lbl cs" x="142" y="164" text-anchor="end">GPIO 27</text>
+      <text class="lbl-sm cf" x="142" y="180" text-anchor="end">module B: 14</text>
+      <text class="lbl-sm cs" x="196" y="143" text-anchor="middle">joined</text>
+
+      <!-- unused sense pins -->
+      <path class="w dead thin" d="M230,212 H206" stroke-dasharray="3 4"></path>
+      <path class="w dead thin" d="M230,236 H206" stroke-dasharray="3 4"></path>
+      <text class="lbl-sm cf" x="198" y="228" text-anchor="end">leave empty</text>
+
+      <!-- 5V in, arrow pointing INTO the module -->
+      <path class="w w5" d="M150,268 H228" marker-end="url(#into)"></path>
+      <text class="lbl c5" x="142" y="264" text-anchor="end">5 V in</text>
+      <text class="lbl-sm cf" x="142" y="280" text-anchor="end">it consumes this</text>
+
+      <!-- ground -->
+      <path class="w wg" d="M230,292 H150"></path>
+      <text class="lbl" x="142" y="296" text-anchor="end">GND</text>
+
+      <!-- power terminals, right -->
+      <text class="lbl-sm cf" x="396" y="62" text-anchor="end">screw terminals</text>
+      <rect class="term" x="398" y="98" width="16" height="14" rx="2"></rect>
+      <rect class="term" x="398" y="132" width="16" height="14" rx="2"></rect>
+      <rect class="term" x="398" y="242" width="16" height="14" rx="2"></rect>
+      <rect class="term" x="398" y="276" width="16" height="14" rx="2"></rect>
+      <text class="lbl" x="392" y="110" text-anchor="end">B+</text>
+      <text class="lbl" x="392" y="144" text-anchor="end">B−</text>
+      <text class="lbl" x="392" y="254" text-anchor="end">M+</text>
+      <text class="lbl" x="392" y="288" text-anchor="end">M−</text>
+
+      <path class="w w12" d="M414,105 H500"></path>
+      <path class="w wg"  d="M414,139 H500"></path>
+      <text class="lbl c12" x="508" y="101">12 V battery +</text>
+      <text class="lbl" x="508" y="143">battery −</text>
+      <text class="lbl-sm cf" x="508" y="116">not the ESP32's</text>
+      <text class="lbl-sm cf" x="508" y="128">5 V pin, ever</text>
+
+      <path class="w wg" d="M414,249 H470"></path>
+      <path class="w wg" d="M414,283 H470"></path>
+      <rect class="hatch" x="470" y="228" width="118" height="76" rx="3"></rect>
+      <text class="name" x="529" y="258" text-anchor="middle">2 MOTORS</text>
+      <text class="lbl-sm cq" x="529" y="276" text-anchor="middle">this side's pair,</text>
+      <text class="lbl-sm cq" x="529" y="290" text-anchor="middle">in parallel</text>
+    </svg>
+  </div>
+  <figcaption>
+    <span class="fignum">Figure 1 — one driver, everything it touches</span>
+    Two things on this drawing are the ones people get wrong. <b>VCC is an input:</b>
+    the logic side of a BTS7960 runs on 5 V that you supply, and a module missing it
+    behaves exactly like a module with a dead chip — this is the single most common
+    cause of "one whole side of my robot does nothing". And <b>R_EN and L_EN are
+    joined to each other</b>, then to one GPIO; they are not two separate controls.
+  </figcaption>
+</figure>
+
+<div class="note">
+  <h4>If a module ever responds <em>sometimes</em></h4>
+  <p>The ESP32's logic is 3.3 V and the module's is nominally 5 V, and most of these
+  boards accept that happily — <strong>yours already did</strong>, when the plain
+  test sketch drove these motors. But if one module is ever intermittent when the
+  signal is provably good, read the marking on the wide 20-pin chip next to the
+  eight-pin header. A <code>74HC244</code> or <code>74AC244</code> running on a 5 V
+  rail wants 3.5 V to call an input high, which your 3.3 V is not; moving
+  <em>that module's VCC</em> to the ESP32's <strong>3.3 V</strong> pin puts the whole
+  chain back in spec. A <code>74HCT244</code> is happy as it is and wants to stay on
+  5 V. This is the one real explanation for "it worked yesterday".</p>
+</div>
+
+<h2><span class="num">03</span>The signal side: ESP32 to both modules</h2>
+
+<p>Six blue wires and one amber one. Nothing crosses, nothing branches except the
+5&nbsp;V, and every wire is a straight run — this is genuinely the whole logic side
+of the robot.</p>
+
+<figure class="wide">
+  <div class="canvas">
+    <svg viewBox="0 0 620 300" role="img"
+         aria-label="The ESP32 DevKit along the top. Six straight wires drop from it: GPIO 25, 26 and 27 to module A's RPWM, LPWM and enable; GPIO 32, 33 and 14 to module B's RPWM, LPWM and enable. One 5 volt wire drops from the ESP32 and branches to both modules' VCC pins. Ground is drawn separately in the next figure.">
+      <rect class="box" x="60" y="34" width="500" height="72" rx="3"></rect>
+      <text class="big" x="310" y="66" text-anchor="middle">ESP32 DEVKIT</text>
+      <text class="lbl-sm cf" x="310" y="86" text-anchor="middle">pins along its edge — either side of the board, whichever is easier to reach</text>
+
+      <!-- six signal drops, all straight -->
+      <path class="w ws" d="M115,106 V184"></path>
+      <path class="w ws" d="M160,106 V184"></path>
+      <path class="w ws" d="M205,106 V184"></path>
+      <path class="w ws" d="M400,106 V184"></path>
+      <path class="w ws" d="M445,106 V184"></path>
+      <path class="w ws" d="M490,106 V184"></path>
+
+      <text class="lbl cs" x="124" y="128">25</text>
+      <text class="lbl cs" x="169" y="128">26</text>
+      <text class="lbl cs" x="214" y="128">27</text>
+      <text class="lbl cs" x="409" y="128">32</text>
+      <text class="lbl cs" x="454" y="128">33</text>
+      <text class="lbl cs" x="499" y="128">14</text>
+
+      <!-- 5V: down, then one branch left-to-right that clears every drop -->
+      <path class="w w5" d="M250,106 V184"></path>
+      <path class="w w5" d="M250,150 H355 V184"></path>
+      <circle class="dot5" cx="250" cy="150" r="4.5"></circle>
+      <text class="lbl c5" x="259" y="128">5 V</text>
+      <text class="lbl-sm c5" x="262" y="142">one pin, both modules</text>
+
+      <!-- module A -->
+      <rect class="box" x="86" y="184" width="192" height="80" rx="3"></rect>
+      <text class="name" x="182" y="228" text-anchor="middle">MODULE A</text>
+      <text class="lbl-sm cq" x="182" y="246" text-anchor="middle">first side</text>
+      <text class="lbl-sm" x="115" y="200" text-anchor="middle">RPWM</text>
+      <text class="lbl-sm" x="160" y="200" text-anchor="middle">LPWM</text>
+      <text class="lbl-sm" x="205" y="200" text-anchor="middle">EN</text>
+      <text class="lbl-sm c5" x="250" y="200" text-anchor="middle">VCC</text>
+
+      <!-- module B -->
+      <rect class="box" x="332" y="184" width="192" height="80" rx="3"></rect>
+      <text class="name" x="428" y="228" text-anchor="middle">MODULE B</text>
+      <text class="lbl-sm cq" x="428" y="246" text-anchor="middle">second side</text>
+      <text class="lbl-sm c5" x="355" y="200" text-anchor="middle">VCC</text>
+      <text class="lbl-sm" x="400" y="200" text-anchor="middle">RPWM</text>
+      <text class="lbl-sm" x="445" y="200" text-anchor="middle">LPWM</text>
+      <text class="lbl-sm" x="490" y="200" text-anchor="middle">EN</text>
+
+      <text class="lbl-sm cf" x="310" y="288" text-anchor="middle">ground and the battery: Figure 3</text>
+    </svg>
+  </div>
+  <figcaption>
+    <span class="fignum">Figure 2 — the logic side, complete</span>
+    The <b>enable</b> wire is the one whose purpose is least obvious, and the one
+    most worth getting right. It is each driver chip's <em>inhibit</em> input, and
+    dropping it is the <b>only</b> way to make a side genuinely free-wheel: there is
+    no combination of RPWM and LPWM that coasts. Both low is a brake — the motor
+    shorted through the low-side transistors — which is why the usual tutorial line
+    "set both PWM pins to zero to stop" is wrong if what you wanted was to roll to a
+    halt. Give each module <b>its own</b> enable GPIO, 27 and 14. Sharing one across
+    both is supported, but it brakes the idle side during the single-side test, which
+    is the one measurement whose entire job is to show you each module alone.
+  </figcaption>
+</figure>
+
+<div class="note danger">
+  <h4>Don't save two wires by tying the enables to 3.3 V</h4>
+  <p>It works, and it is what a lot of wiring guides suggest, and it costs you more
+  than it looks. The BTS7960's <strong>over-temperature and short-circuit shutdown
+  latches</strong>, and the only thing that clears the latch is taking the enable
+  <em>low</em> again. Tie it permanently high and your first thermal trip is
+  permanent until you unplug the battery. You also lose coasting entirely — every
+  stop and every failsafe becomes locked wheels — and during a current-limit event
+  the PWM inputs are ignored, so a stalled motor cannot be stopped at all. Two
+  wires. Worth it.</p>
+</div>
+
+<h2><span class="num">04</span>Power and ground</h2>
+
+<p>This is the half that can destroy something, and it is also the half with only
+one real rule: <strong>every ground in the robot is the same ground.</strong> The
+battery minus, both modules' GND, both modules' B−, and the ESP32's GND all meet.</p>
+
+<figure class="wide">
+  <div class="canvas">
+    <svg viewBox="0 0 620 300" role="img"
+         aria-label="The 12 volt battery on the left. Its positive runs up and across the top to both modules' B plus terminals. Its negative, both modules' B minus terminals, and the ESP32's ground all drop onto one common ground bar along the bottom.">
+      <!-- 12V+ across the top, above both modules -->
+      <path class="w w12" d="M164,112 H185 V52 H465"></path>
+      <path class="w w12" d="M250,52 V74"></path>
+      <path class="w w12" d="M465,52 V74"></path>
+      <circle class="dot12" cx="250" cy="52" r="4.5"></circle>
+      <text class="lbl c12" x="325" y="44" text-anchor="middle">12 V to both B+</text>
+
+      <!-- battery -->
+      <rect class="box" x="44" y="88" width="120" height="72" rx="3"></rect>
+      <text class="name" x="104" y="120" text-anchor="middle">12 V</text>
+      <text class="name" x="104" y="138" text-anchor="middle">BATTERY</text>
+      <text class="lbl c12" x="157" y="104" text-anchor="end">+</text>
+      <text class="lbl" x="157" y="156" text-anchor="end">−</text>
+
+      <!-- battery minus down to the bus -->
+      <path class="w wg" d="M164,146 H175 V252"></path>
+
+      <!-- modules -->
+      <rect class="box" x="200" y="74" width="150" height="86" rx="3"></rect>
+      <text class="name" x="275" y="112" text-anchor="middle">MODULE A</text>
+      <text class="lbl-sm c12" x="250" y="90" text-anchor="middle">B+</text>
+      <text class="lbl-sm" x="230" y="152" text-anchor="middle">B− &amp; GND</text>
+
+      <rect class="box" x="400" y="74" width="150" height="86" rx="3"></rect>
+      <text class="name" x="475" y="112" text-anchor="middle">MODULE B</text>
+      <text class="lbl-sm c12" x="465" y="90" text-anchor="middle">B+</text>
+      <text class="lbl-sm" x="520" y="152" text-anchor="middle">B− &amp; GND</text>
+
+      <!-- module grounds down to the bus, clear of the ESP32 box -->
+      <path class="w wg" d="M230,160 V252"></path>
+      <path class="w wg" d="M520,160 V252"></path>
+
+      <!-- the ESP32, joining the same ground -->
+      <rect class="box-soft" x="296" y="186" width="128" height="46" rx="3"></rect>
+      <text class="name" x="360" y="206" text-anchor="middle">ESP32</text>
+      <text class="lbl-sm cq" x="360" y="222" text-anchor="middle">its GND too</text>
+      <path class="w wg" d="M360,232 V252"></path>
+
+      <!-- the common ground bar -->
+      <path class="gnd-bar" d="M150,252 H560"></path>
+      <path class="gnd-bar thin" d="M330,262 H380"></path>
+      <path class="gnd-bar thin" d="M342,270 H368"></path>
+      <text class="lbl" x="150" y="286">ONE COMMON GROUND</text>
+      <text class="lbl-sm cf" x="560" y="286" text-anchor="end">battery − · both B− · both GND · ESP32 GND</text>
+    </svg>
+  </div>
+  <figcaption>
+    <span class="fignum">Figure 3 — the power side, and the one rule</span>
+    Common, but not <em>chained</em>. Everything meets at one point — a bolt or a
+    small terminal block at the battery minus — rather than hopping from module to
+    module. And the two kinds of ground wire are not interchangeable: <b>battery
+    minus to each B− is the heavy return</b>, carrying every amp the motors draw,
+    while <b>ESP32 GND to each module's header GND is a thin reference wire</b>
+    carrying nothing. Run them separately. Chain the reference through the motor
+    return and the module ends up comparing your 3.3 V signal against a ground that
+    moves every time a wheel loads up — which is not a bang, just a robot that
+    responds erratically and gets blamed on software.
+    <b>Wires that cross in these drawings without a dot are not joined.</b>
+  </figcaption>
+</figure>
+
+<h3>Where the ESP32 itself gets power</h3>
+<p>While you are calibrating on the bench, USB is the easy answer — the ESP32 runs
+from your laptop, the motors run from the battery, and the two only meet at ground.
+For the robot to drive around untethered you want a <strong>5 V buck converter off
+the same 12 V battery</strong> into the ESP32's 5 V / VIN pin. Either way, the same
+5 V rail is what feeds the two modules' VCC.</p>
+
+<div class="note danger">
+  <h4>Four things that end with buying a new part</h4>
+  <ul class="kill">
+    <li><span><b>Anything from the 12 V side touching the ESP32.</b> Not B+, not B−,
+    not M+, not M−. The only wires that cross between the two halves of this robot
+    are the six logic signals, one 5 V and one ground.</span></li>
+    <li><span><b>12 V into 5V / VIN</b> — even though the internet will tell you VIN
+    takes 7–12 V. The regulator survives it and then cooks, and the symptom is a
+    board that resets whenever WiFi transmits. Which is exactly the fault that gets
+    blamed on the firmware for a week.</span></li>
+    <li><span><b>Battery reversed into B+ / B−.</b> There is no protection on the
+    module. It destroys the driver and shorts the battery in the same instant. Meter
+    the polarity at the screw terminals before the connector goes on — every
+    time.</span></li>
+    <li><span><b>Motor current through thin wire.</b> The <em>43 A</em> printed on
+    the module is the chip's internal current-limit threshold, not what that little
+    PCB will carry — plan on 10–15 A. Size the battery-to-B+ and M-to-motor runs for
+    both of that side's motors <em>stalled</em>, not running: 14–16 AWG for a
+    typical 12 V geared chassis. Signal wire belongs only on the eight-pin
+    header.</span></li>
+  </ul>
+</div>
+
+<h3>Worth adding while you have it apart</h3>
+
+<p>None of these three is needed to make the robot drive. All three are the
+difference between a robot that drives and a robot you can leave running.</p>
+
+<div class="tablewrap">
+<table>
+  <caption>Three cheap parts, in order of how much they save you</caption>
+  <thead>
+    <tr><th>Part</th><th>Where</th><th>What it prevents</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Fuse + switch</strong><br><span class="chip r12">20–30 A</span></td>
+      <td>In the battery <strong>+</strong> line, between the battery and everything
+      else</td>
+      <td>A jammed wheel or a pinched wire becoming a harness fire instead of a blown
+      fuse. The switch also means you stop being the disconnect.</td>
+    </tr>
+    <tr>
+      <td><strong>10 kΩ resistors</strong><br><span class="chip rs">six of them</span></td>
+      <td>One from each logic line — RPWM, LPWM, EN, on both modules — to GND, at the
+      header</td>
+      <td>The reset window. Every ESP32 pin goes high-impedance for the ~300 ms it
+      takes to reboot, and the module's own internal pull-down is far too weak to be
+      called a state. These make "no signal" reliably mean "off" — including at
+      power-on, where GPIO 14 in particular is known to twitch.</td>
+    </tr>
+    <tr>
+      <td><strong>470–1000 µF</strong><br><span class="chip r12">25 V+</span></td>
+      <td>Across <strong>B+ / B−</strong> at each module's own screw terminals — the
+      placement matters more than the value</td>
+      <td>The voltage dip when four motors start, which is what reboots the ESP32
+      mid-drive. Expect a visible spark when the battery connector goes on
+      afterwards; that is the capacitors charging, not a fault.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h2><span class="num">05</span>The order to do it in</h2>
+
+<ol class="steps">
+  <li class="critical">
+    <h4>Battery disconnected <span class="flag">first</span></h4>
+    <p>Not switched off — <strong>disconnected</strong>. Every step below is done
+    with no 12 V anywhere in the robot.</p>
+  </li>
+  <li>
+    <h4>Grounds, before anything else</h4>
+    <p>All to <strong>one point</strong> at the battery minus. Heavy wire from there
+    to each module's <strong>B−</strong>; a separate thin wire from there (or from the
+    ESP32) to each module's header <strong>GND</strong>. Doing grounds first means
+    every later measurement has something honest to measure against.</p>
+  </li>
+  <li>
+    <h4>5 V to both modules' VCC</h4>
+    <p>From the ESP32's 5 V pin, or from your buck converter. <strong>This is the
+    pin people forget</strong>, and forgetting it looks exactly like a broken module.</p>
+  </li>
+  <li>
+    <h4>The six signal wires</h4>
+    <p>Module A: <strong>25 → RPWM, 26 → LPWM, 27 → the joined R_EN + L_EN.</strong>
+    Module B: <strong>32, 33, 14</strong> in the same order.</p>
+  </li>
+  <li>
+    <h4>Motors to M+ / M−</h4>
+    <p>Each side's two motors in parallel onto that side's module. Don't think about
+    which way round — that is what <em>invert</em> is for.</p>
+  </li>
+  <li class="critical">
+    <h4>Three measurements, before any battery <span class="flag">meter</span></h4>
+    <p>With the battery still disconnected: <strong>continuity from each module's
+    header GND to its B− screw</strong> (on most boards these are one net — knowing
+    which yours is tells you what your ground wiring actually did);
+    <strong>resistance from each logic input to GND</strong> (around 10 kΩ if you
+    fitted the pull-downs, near-open if you did not); and <strong>polarity at the
+    battery connector</strong>, red probe on the wire that is about to meet B+.</p>
+  </li>
+  <li class="critical">
+    <h4>Battery on, last <span class="flag">wheels up</span></h4>
+    <p>Wheels off the ground — and keep them off for the whole of the next step.
+    A boot twitch, a missing VCC and a floating input can all move a motor with no
+    command sent at all.</p>
+  </li>
+  <li>
+    <h4>Power up and open the board's page</h4>
+    <p>Read the address from Serial Monitor at 115200, or join the robot's own
+    network <code>iris-robot</code> / <code>iriscalib</code> and open
+    <code>http://192.168.4.1</code>. Then press <strong>A fwd</strong> and
+    <strong>B fwd</strong> — that one test tells you more than any amount of staring
+    at the wiring.</p>
+  </li>
+</ol>
+
+<h2><span class="num">06</span>What you do not have to get right</h2>
+
+<p>This is worth reading before you start, because it changes how carefully you need
+to work. Four things that look like wiring decisions are not:</p>
+
+<div class="tablewrap">
+<table>
+  <caption>Fixed from the page, no re-wiring</caption>
+  <thead>
+    <tr><th>If this is wrong</th><th>Fix it with</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>The module you called A drives the right-hand wheels</td><td><strong>swap sides</strong></td></tr>
+    <tr><td>One side spins backwards</td><td><strong>invert A</strong> or <strong>invert B</strong></td></tr>
+    <tr><td>Forward is backward on both sides</td><td><strong>invert A</strong> and <strong>invert B</strong></td></tr>
+    <tr><td>It veers instead of driving straight</td><td><strong>trim</strong> the faster side down</td></tr>
+    <tr><td>You used different GPIOs than the six above</td><td>type them into <strong>the pins fields</strong>, live</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Press <strong>SAVE</strong> and it survives reboots. What the page <em>cannot</em>
+fix is a missing VCC, a ground that is not common, a motor lead that has fallen off,
+or a battery that is not connected — which is exactly why those are the first things
+this sheet asks you to check.</p>
+
+<div class="note">
+  <h4>Pins the board will refuse</h4>
+  <p>If you re-assign a pin, the firmware only accepts GPIOs that can actually drive
+  an output. It <strong>refuses</strong> 6–11 (wired to the flash chip), 20, 24,
+  28–31 (not present on the package), 34–39 (input only) and 1/3 (the serial port).
+  It <strong>accepts but warns about</strong> 0, 2, 12 and 15, because the bootloader
+  reads those while the board starts and a driver holding one the wrong way can stop
+  it booting at all.</p>
+</div>
+
+<h2><span class="num">07</span>When something does not work</h2>
+
+<p>In that order. The first column is what you see; the last is the one thing that
+tells the two causes apart. Note how often the answer is "the page already knows" —
+it reports live duty, bridge state and the last command it accepted, which is
+information no amount of looking at wires will give you.</p>
+
+<div class="tablewrap">
+<table>
+  <caption>Symptom → the check that settles it</caption>
+  <thead>
+    <tr><th>What you see</th><th>Most likely</th><th>The one check</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Nothing moves at all, page works</td>
+      <td>Battery not on B+/B−, or its ground is not common</td>
+      <td>Press <strong>A fwd</strong>. If the page's <em>side A</em> number climbs
+      but no wheel turns, the signal side is fine and it is power.</td>
+    </tr>
+    <tr>
+      <td>One whole side dead</td>
+      <td>That module's <strong>VCC has no 5 V</strong>, or its R_EN/L_EN are not
+      tied to the EN pin</td>
+      <td>Meter VCC to GND on the dead module: it must read ~5 V.</td>
+    </tr>
+    <tr>
+      <td>One motor of a pair dead</td>
+      <td>A motor lead, not the driver — its partner shares the same terminals</td>
+      <td>Swap the two motors' leads at M+/M−. If the dead one wakes up, it was
+      the wiring; if it stays dead, it is the motor.</td>
+    </tr>
+    <tr>
+      <td>A side runs backwards</td>
+      <td>Nothing. It is normal.</td>
+      <td><strong>invert A</strong> or <strong>invert B</strong>, then SAVE.</td>
+    </tr>
+    <tr>
+      <td>It veers</td>
+      <td>Two motors are never identical</td>
+      <td><strong>trim</strong> the faster side down.</td>
+    </tr>
+    <tr>
+      <td>Motors whine but do not turn</td>
+      <td>Speed below what a loaded motor can start on</td>
+      <td>Raise the speed slider; if it turns, set a <strong>min duty</strong>
+      deadband so low requests are lifted to something that moves.</td>
+    </tr>
+    <tr>
+      <td>The ESP32 reboots when motors start</td>
+      <td>Inrush dragging its supply down</td>
+      <td>Raise <strong>ramp</strong> (it defaults to 90 ms), and stop powering the
+      ESP32 from anything the motors share except ground.</td>
+    </tr>
+    <tr>
+      <td>One side works only sometimes</td>
+      <td>Its VCC rail versus its buffer chip — see the note above Figure 2</td>
+      <td>Read the marking on the wide chip beside the 8-pin header. 74HC/74AC244
+      → move that module's VCC to 3.3 V.</td>
+    </tr>
+    <tr>
+      <td>A wheel locks instead of coasting</td>
+      <td><strong>brake on stop</strong> is on, or its enable is tied high instead
+      of to a GPIO</td>
+      <td>The page's <em>bridges</em> line: "coasting" means the firmware dropped
+      the enable, so a wheel that still locks is wired high. Leave
+      <strong>brake on stop</strong> off — braking current is set by the motors, and
+      two in parallel per module doubles it.</td>
+    </tr>
+    <tr>
+      <td>Both sides lock during a single-side test</td>
+      <td>Both modules share one enable GPIO</td>
+      <td>Nothing to fix — the page says <em>shared EN</em> when this is the case.
+      Give each module its own enable GPIO if you want a clean isolated test.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h3>And once it drives</h3>
+<pre class="say">In IRIS:  <span class="hi">add device robot at 192.168.1.74 as motor</span>
+Then:     <span class="hi">robot forward</span>   ·   <span class="hi">move the robot left</span>   ·   <span class="hi">stop the robot</span></pre>
+
+<footer>
+  IRIS · robot node · 2 × BTS7960 · pin defaults from configFillDefaults() in robot_config.h
+</footer>
+
+</div>
+</body>
+</html>

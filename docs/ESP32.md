@@ -277,11 +277,30 @@ re-wiring and no re-flashing to fix a robot that turns the wrong way.
 |---|---|
 | RPWM | an ESP32 GPIO (PWM) |
 | LPWM | an ESP32 GPIO (PWM) |
-| R_EN **and** L_EN | **tied together**, to one more GPIO (or straight to 3.3V) |
-| *(optional)* | both modules may share **one** enable GPIO — tie all four EN pins together |
+| R_EN **and** L_EN | **tied together**, to one more GPIO — **not** to 3.3V, see below |
 | VCC | **5V — required.** The logic side *consumes* 5V, it does not make it. A module with VCC unconnected looks completely dead. |
-| GND | ESP32 GND **and** battery minus — all grounds common |
+| GND | its own thin wire to ESP32 GND. The heavy motor return is battery minus straight to B−, never through this. |
+| R_IS / L_IS | leave unconnected. They are *outputs*, and they exceed 3.3V at a couple of amps — never onto an ADC pin. |
 | B+ / B− | motor battery — never the ESP32's 5V pin |
+
+> **Do not tie R_EN/L_EN to 3.3V**, even though it saves two wires and plenty of
+> guides suggest it. The BTS7960's over-temperature and short-circuit shutdown
+> **latches**, and the only thing that clears it is taking the enable low again — so
+> with it strapped high, the first thermal trip lasts until you unplug the battery.
+> You also lose coasting (every stop and every failsafe becomes locked wheels), and
+> during a current-limit event the PWM inputs are ignored, so a stalled motor cannot
+> be stopped at all.
+>
+> **Give each module its own enable GPIO.** Sharing one between them is supported by
+> the firmware, and `/status` and `/test` now report `shared_enable` when you have
+> done it — but it brakes the idle side during the single-side test, which is the one
+> diagnostic whose whole job is to show each module alone.
+>
+> **The DevKit's own `EN` pin is the ESP32's reset, not the module's enable.** The
+> module's enables go to GPIO 27 and GPIO 14.
+
+There is a full visual version of all this — three drawings, the assembly order, and
+a symptom table — in [`wiring-motors.html`](wiring-motors.html).
 
 Default pins (changeable live from the page):
 
