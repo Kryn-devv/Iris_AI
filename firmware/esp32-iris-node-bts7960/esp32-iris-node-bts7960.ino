@@ -970,9 +970,16 @@ static void handleReset() {
  * while somebody reloads the page.
  *
  * Streaming it a kilobyte at a time and pumping the drive path between chunks
- * costs a few chunk headers and buys a loop that never stops servicing the
- * motors. Safe to re-enter: the fast path writes its replies into a String
- * (see sendJson), so it cannot interleave with this response. */
+ * costs a few chunk headers and keeps the motors serviced throughout. To be
+ * precise about what this does and does not fix: the page still takes just as
+ * long to leave, and a single chunk can still block — what changes is that
+ * the ramp, the failsafe and the fast path get a turn between chunks instead
+ * of waiting out the whole transfer. Getting the body under one send would
+ * need it gzipped at build time, which is a generated file to keep in step
+ * with this one; not worth it for a page you open to calibrate.
+ *
+ * Safe to re-enter: the fast path writes its replies into a String (see
+ * sendJson), so it cannot interleave with this response. */
 static void handleRoot() {
   server.sendHeader("Access-Control-Allow-Origin", "*");
   server.setContentLength(CONTENT_LENGTH_UNKNOWN);
@@ -990,7 +997,31 @@ static void handleRoot() {
 
 /* ───────────────────────── setup / loop ─────────────────────────── */
 
-static void announceSta() {
+/* `full` prints the whole boot banner. A re-join gets one line instead:
+ * HardwareSerial has no TX ring buffer on this core, so ~300 bytes at 115200
+ * baud spins for roughly 26 ms — and a re-join is exactly the moment queued
+ * commands arrive and the ramp needs servicing. */
+static void startMdns() {
+  /* Once. announceSta() runs again on every re-join, and re-entering
+   * MDNS.begin() re-registers the same service each time. */
+  static bool mdnsUp = false;
+  if (!mdnsUp && MDNS.begin(DEVICE_NAME)) {
+    MDNS.addService("http", "tcp", 80);
+    mdnsUp = true;
+  }
+}
+
+/* No default argument: the .ino preprocessor hoists a prototype for this, and
+ * a default given in both places is a compile error. */
+static void announceSta(bool full) {
+  staAnnounced = true;
+  startMdns();          /* also on a re-join: the board may have come up in AP
+                         * fallback, where this never ran, so <name>.local
+                         * would otherwise never resolve */
+  if (!full) {
+    Serial.println("[wifi] rejoined, http://" + WiFi.localIP().toString());
+    return;
+  }
   Serial.println();
   Serial.println("=================================");
   Serial.print  ("  IRIS robot (BTS7960 x2) online:  http://");
@@ -1002,8 +1033,6 @@ static void announceSta() {
                  ", control socket ws://" + WiFi.localIP().toString() + ":" +
                  String(FastLink::WS_PORT));
   Serial.println("=================================");
-  if (MDNS.begin(DEVICE_NAME)) MDNS.addService("http", "tcp", 80);
-  staAnnounced = true;
 }
 
 /* No router, wrong password, or out of range: serve our own network so the
@@ -1016,6 +1045,19 @@ static void startFallbackAp() {
    * when this is the chosen mode, because a station interface nobody asked
    * for still scans and still costs airtime. */
   WiFi.mode(AP_ONLY ? WIFI_AP : WIFI_AP_STA);
+
+  /* THE ESP32 HAS ONE RADIO, and the station side must leave the SoftAP to
+   * use it. arduino-esp32 turns auto-reconnect on by default, and its handler
+   * for "no AP found" is `WiFi.disconnect(); WiFi.begin();` with no backoff at
+   * all — so a wrong SSID means back-to-back scans of all 13 channels, about
+   * 1.5 s each, forever. The SoftAP cannot beacon, ACK or receive during any
+   * of them.
+   *
+   * That is not a slow network, it is a network that mostly is not there: the
+   * page stops refreshing and drive commands vanish, on the one link you are
+   * standing next to the robot to use. Our own retry in loop() is the only
+   * thing that should scan, because it knows when not to. */
+  WiFi.setAutoReconnect(false);
   if (!WiFi.softAP(ssid.c_str(), AP_PASSWORD)) {
     Serial.println("  could not start my own WiFi either — check the board");
     return;
@@ -1099,14 +1141,6 @@ void setup() {
   } else {
     WiFi.mode(WIFI_STA);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
-    Serial.print("Connecting to WiFi");
-    const unsigned long joinDeadline = millis() + WIFI_JOIN_MS;
-    while (WiFi.status() != WL_CONNECTED && (long)(millis() - joinDeadline) < 0) {
-      delay(250);
-      Serial.print(".");
-    }
-    if (WiFi.status() == WL_CONNECTED) announceSta();
-    else startFallbackAp();
   }
 
   server.on("/",         handleRoot);
@@ -1140,6 +1174,29 @@ void setup() {
    * network. */
   fast.begin(dispatchCode);
 
+  /* Only NOW wait for the router.
+   *
+   * Every listener is bound above, before this wait, because they used to be
+   * created after it: for the first 25 seconds of every boot there was nothing
+   * on 80, 81 or 8267, so commands in that window were refused or discarded
+   * with nothing anywhere saying why. And the wait itself was delay(250),
+   * which left up to a quarter second of dead time after the join had actually
+   * succeeded. Serving the loop while waiting costs nothing and means the
+   * board is answering the instant it has an address. */
+  if (!AP_ONLY) {
+    Serial.print("Connecting to WiFi");
+    const unsigned long joinDeadline = millis() + WIFI_JOIN_MS;
+    unsigned long lastDot = 0;
+    while (WiFi.status() != WL_CONNECTED && (long)(millis() - joinDeadline) < 0) {
+      server.handleClient();
+      fast.loop(targetA != 0 || targetB != 0);
+      rampTick();
+      if (millis() - lastDot > 250) { lastDot = millis(); Serial.print("."); }
+    }
+    if (WiFi.status() == WL_CONNECTED) announceSta(true);
+    else startFallbackAp();
+  }
+
   cloud.begin(CLOUD_HOST, CLOUD_PORT, "/api/v1/nodes/link", CLOUD_TOKEN,
               DEVICE_NAME, "motor", CLOUD_TLS, dispatchCommand, CLOUD_CA_CERT);
   if (cloud.enabled()) {
@@ -1169,9 +1226,18 @@ void loop() {
   fast.loop(moving);
   rampTick();
 
-  /* Only pumped with a link up. A motor node whose WiFi dropped must keep
-   * running its failsafe and ramp ticks below regardless. */
-  if (WiFi.status() == WL_CONNECTED) cloud.loop();
+  /* Only pumped with a link up: a motor node whose WiFi dropped must keep
+   * running its failsafe and ramp ticks below regardless.
+   *
+   * And only pumped while STOPPED if the socket is still down, because that
+   * is when cloud.loop() DIALS — and on this build of the WebSockets library
+   * the dial happens on this thread: a name lookup that waits on the DNS
+   * client, then a TCP connect, then a TLS handshake. A CLOUD_HOST that has
+   * gone away would otherwise freeze the ramp and the failsafe for seconds at
+   * a time, over and over. Once the socket is up, loop() is cheap and is
+   * pumped unconditionally. */
+  if (WiFi.status() == WL_CONNECTED && (cloud.connected() || !moving))
+    cloud.loop();
   selfTestTick();
   server.handleClient();
   rampTick();          /* again: handleClient() may have just accepted a move */
@@ -1211,12 +1277,25 @@ void loop() {
       doStop(cfg.brakeOnStop);
     }
     staAnnounced = false;
+
+    /* Retrying the router is not free: WiFi.begin() starts a scan across every
+     * channel, and the single radio has to leave whatever else it is doing to
+     * run it. Every 5 s was also shorter than a real WPA2 join plus DHCP on a
+     * busy router, so each retry could abort an attempt that was about to
+     * succeed. Two things it must never interrupt:
+     *   - someone driving from the fallback AP. If a station is joined, that
+     *     is the link carrying commands; scanning would cut it repeatedly.
+     *   - a move in progress, on either network.
+     * Neither case loses anything: nothing here expires, and the retry
+     * resumes the moment the wheels stop or the last client leaves. */
     static unsigned long lastRetry = 0;
-    if (millis() - lastRetry > 5000) {
+    const unsigned long retryEvery = apMode ? 30000UL : 12000UL;
+    const bool apInUse = apMode && WiFi.softAPgetStationNum() > 0;
+    if (!apInUse && !stillMoving && (millis() - lastRetry) > retryEvery) {
       lastRetry = millis();
       WiFi.begin(WIFI_SSID, WIFI_PASS);
     }
   } else if (!staAnnounced) {
-    announceSta();                     /* joined (or re-joined) the router */
+    announceSta(false);                /* re-joined: one line, not the banner */
   }
 }

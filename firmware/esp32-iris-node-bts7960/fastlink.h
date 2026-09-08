@@ -79,8 +79,15 @@ class FastLink {
     started_ = true;
   }
 
-  /* Pumped from loop(). Never blocks: recvUdp/parsePacket return 0 when there
-   * is nothing waiting, and the WS loop is non-blocking by construction. */
+  /* Pumped from loop().
+   *
+   * The UDP half genuinely does not block — parsePacket() answers 0 when
+   * there is nothing waiting. The WebSocket half is NOT non-blocking, and an
+   * earlier version of this comment claimed it was: on ESP32 the library is
+   * built in its sync flavour, so read and write busy-wait on this thread for
+   * up to WEBSOCKETS_TCP_TIMEOUT. platformio.ini cuts that from the default
+   * 5000 ms to 250 ms, which is what makes a viewer whose TCP window has
+   * filled up a hiccup rather than a five-second freeze of the ramp. */
   void loop(bool moving) {
     if (!started_) return;
     ws_->loop();

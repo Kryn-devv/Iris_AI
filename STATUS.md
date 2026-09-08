@@ -23,14 +23,49 @@ piece.
   network `iris-robot` / `iriscalib` at `http://192.168.4.1` — the strongest
   possible link for calibrating.
 
-## Not working yet — and the single next step for each
+## Fixed, needs re-flashing to take effect
 
-- **Motors.** Untested at module level. On the robot's page, wheels off the
-  ground, press `A fwd` then `B fwd`. The result is the whole diagnosis:
-  neither moves → the 12V battery isn't on the drivers' B+/B−; one side dead →
-  that module's VCC has no 5V (the logic side consumes 5V, it doesn't make it)
-  or its R_EN+L_EN aren't tied to the EN pin; both move → it's only
-  calibration: hold forward, flip swap/invert until forward is forward, SAVE.
+- **Motors — the firmware was hanging on the first drive command.** This was
+  never wiring, and no amount of testing the hardware was going to find it.
+  Two functions in the robot sketch read every command's arguments, and the
+  HTTP half of both of them **called themselves** instead of calling the web
+  server:
+
+  ```cpp
+  static bool argHas(const char* name) {
+    return cloudArgs ? cloudArgs->has(name) : argHas(name);   // <- itself
+  }
+  ```
+
+  So every drive command was an endless self-call. The compiler turns that
+  into a loop without warning, so the board did not crash with an error —
+  it just stopped, having never written a single duty cycle. `/status` takes
+  no arguments, which is why the calibration page loaded perfectly and only
+  *movement* was dead. That is indistinguishable from unpowered drivers, and
+  it is where the hardware bisection went.
+
+  Reflash `firmware/esp32-iris-node-bts7960/` and it drives.
+
+- **Slowness.** Also not the motors. Arduino's `WebServer` serves one client
+  at a time and holds a socket that has connected but said nothing for up to
+  five seconds, accepting nothing else — and browsers open exactly such idle
+  sockets, so having the calibration page open queued the next drive command
+  behind it. The drive path now goes over UDP (port 8267, what IRIS uses) and
+  a pushed WebSocket (port 81, what the page uses), neither of which touches
+  that server. HTTP still answers everything, so nothing you have breaks.
+  The page now shows the real measured round trip in milliseconds, so you can
+  see it rather than take my word for it.
+
+  On the IRIS side, every device command was building a fresh HTTP client,
+  which costs **43 ms** of CPU before a packet leaves (26 ms reading proxy
+  settings out of the environment, 16 ms building an SSL context it never
+  used). Now 0.19 ms.
+
+  Four more silent "answers 200 and does not move" paths went with it, the
+  worst being that `/motor` treated a **missing or misspelled `dir` as a
+  stop** — so one typo looked exactly like broken wiring.
+
+## Not working yet — and the single next step for each
 - **Relays / home automation.** Most likely `RELAY_ACTIVE_LOW` is wrong for
   the module (flip it to `false` and reflash), or the module's VCC has no 5V.
   Test on the board's own page first — the buttons are labelled with their
@@ -51,3 +86,14 @@ piece.
   does not fix the others.
 - `[E] request handler not found` in a board's log was only ever the browser
   asking for a tab icon. Fixed; it was never a fault.
+- **"The motors don't move" is a firmware claim, not a wiring claim, until the
+  firmware has been shown to reach the pins.** A plain sketch driving the same
+  motors on the same pins proved the hardware in five minutes and the real bug
+  still took hours to find, because everyone kept looking at the robot. When a
+  board answers HTTP 200 and nothing happens, the next question is what the
+  code did with that request — not which wire is loose.
+- Anything that can answer "OK" without doing the thing will eventually do
+  exactly that. Every one of this session's bugs was that shape: a self-calling
+  function that returned before acting, a missing `dir` that meant "stop", a
+  saved trim of 0 that scaled a side to nothing. The firmware now refuses
+  instead of defaulting, in each case.
