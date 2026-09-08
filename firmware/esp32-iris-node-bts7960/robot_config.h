@@ -41,7 +41,12 @@ inline void configFillDefaults(Config& c) {
   c.trimA = 100; c.trimB = 100;
   c.pwmFreq = 20000;          /* above hearing: no motor whine */
   c.failsafeMs = 10000;
-  c.rampMs = 180;
+  /* Soft start, so four motors cannot brown out the board — but no longer than
+   * it takes to do that. 180 ms was chosen for safety with no measurement
+   * behind it and is plainly visible as lag; 90 ms still halves the inrush a
+   * step change would draw, while a keypress reads as instant. Set ramp_ms=0
+   * from the page for a hard step if your battery can take it. */
+  c.rampMs = 90;
   c.defaultSpeed = 200;
   c.minDuty = 0;
   c.brakeOnStop = false;

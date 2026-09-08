@@ -76,6 +76,13 @@ forward and left is left. Then press SAVE.</div>
 <label>trim A <input type=range id=ta min=40 max=100 value=100 onchange=push() oninput="tav.textContent=this.value"> <b id=tav>100</b>%</label>
 <label>trim B <input type=range id=tb min=40 max=100 value=100 onchange=push() oninput="tbv.textContent=this.value"> <b id=tbv>100</b>%</label>
 
+<h2>Step 4 &middot; response</h2>
+<div class=tip>How long the robot takes to reach full speed from a standstill.
+Lower feels snappier; a soft start is what stops four motors from browning out
+the board, so if you drop it, watch for the board resetting as you accelerate.
+<b>0</b> is a hard step.</div>
+<label>ramp <input type=range id=rm min=0 max=400 step=10 value=90 onchange=push() oninput="rmv.textContent=this.value"> <b id=rmv>90</b> ms</label>
+
 <h2>Save</h2>
 <div class=row><button class=go onclick="api('/save').then(j=>msg(j&&j.saved?'saved to flash':'SAVE FAILED'))">SAVE</button>
 <button onclick="if(confirm('Restore factory defaults?'))api('/reset').then(load)">reset</button></div>
@@ -87,14 +94,69 @@ const s=()=>+$('sp').value;
 function msg(m){$('st').textContent=m;clearTimeout(window._m);
  window._m=setTimeout(()=>$('st').innerHTML='&nbsp;',2500)}
 
+/* ── the control link ──────────────────────────────────────────────────────
+   ONE WebSocket carries every command and receives pushed status, because the
+   board's HTTP server handles a single client at a time and holds a socket
+   that has connected but not spoken for up to five seconds. A browser opens
+   exactly such idle pre-connect sockets, so the old page — a fetch() per
+   command plus a /status poll — regularly queued its own drive commands behind
+   its own polling behind Chrome's spare socket. That is where the lag came
+   from; it was never the motors.
+
+   fetch() remains as the fallback: if the socket cannot open (an old build on
+   the board, a proxy that blocks upgrades) everything still works, just at the
+   old speed, and the status line says which one you are on. */
+let ws=null,wsReady=false,seq=1,rtt=null;
+const pending=new Map();
+
+function openWs(){
+ let sock;
+ try{sock=new WebSocket('ws://'+location.hostname+':81/')}catch(e){return}
+ ws=sock;
+ sock.onopen=()=>{wsReady=true};
+ sock.onclose=()=>{if(ws===sock){wsReady=false;setTimeout(openWs,1500)}};
+ sock.onerror=()=>{};
+ sock.onmessage=e=>{
+  const d=e.data;
+  if(d.charCodeAt(0)===83){                      /* "S " — pushed status */
+   try{render(JSON.parse(d.slice(2)))}catch(_){}
+   return}
+  if(d.charCodeAt(0)!==82)return;                /* "R " — reply to an id */
+  const a=d.indexOf(' ',2),b=d.indexOf(' ',a+1);
+  if(a<0||b<0)return;
+  const p=pending.get(+d.slice(2,a));
+  if(!p)return;
+  pending.delete(+d.slice(2,a));
+  rtt=Math.round(performance.now()-p.t);
+  let j=null;try{j=JSON.parse(d.slice(b+1))}catch(_){}
+  p.done({ok:+d.slice(a+1,b)<400,json:j})}}
+
+/* Sends one command and resolves with {ok,json}, over whichever transport is
+   live. Every command is timed, so the round trip on screen is the real one. */
+function cmd(u){
+ if(wsReady&&ws&&ws.readyState===1){
+  const id=seq++;
+  return new Promise(done=>{
+   pending.set(id,{t:performance.now(),done});
+   try{ws.send(id+' '+u)}
+   catch(e){pending.delete(id);done({ok:false,json:null});return}
+   setTimeout(()=>{if(pending.delete(id))done({ok:false,json:null})},2000)})}
+ const t0=performance.now();
+ return fetch(u).then(r=>r.json().catch(()=>null).then(j=>{
+   rtt=Math.round(performance.now()-t0);
+   return {ok:r.ok,json:j}}))
+  .catch(()=>({ok:false,json:null}))}
+
 /* Every endpoint answers JSON, and a refusal carries a reason. Showing it beats
    the old "assume 200" path, where a rejected calibration looked like success. */
 async function api(u){
- try{const r=await fetch(u);
-  const j=await r.json().catch(()=>null);
-  if(!r.ok){msg(j&&j.error?j.error:'refused ('+r.status+')');return null}
-  msg(u.split('?')[0]+' ok');return j}
- catch(e){msg('unreachable');return null}}
+ const r=await cmd(u);
+ if(!r.ok){msg(r.json&&r.json.error?r.json.error:'refused');return null}
+ msg(u.split('?')[0]+' ok');return r.json}
+
+/* Held-key traffic goes through this instead: no "ok" flashed twice a second,
+   and a dropped keep-alive is not worth a message — the failsafe handles it. */
+const drive=u=>cmd(u);
 
 const t=(side,dir)=>api('/test?side='+side+'&dir='+dir+'&speed='+s()+'&ms=1200');
 
@@ -104,9 +166,9 @@ const t=(side,dir)=>api('/test?side='+side+'&dir='+dir+'&speed='+s()+'&ms=1200')
    keep-alive repeat stops that hold from ever tripping the failsafe. */
 let held=null,beat=null,holding=null;
 function send(d){
- if(d==='spinL')return api('/tank?left=-'+s()+'&right='+s());
- if(d==='spinR')return api('/tank?left='+s()+'&right=-'+s());
- return api('/motor?dir='+d+'&speed='+s())}
+ if(d==='spinL')return drive('/tank?left=-'+s()+'&right='+s());
+ if(d==='spinR')return drive('/tank?left='+s()+'&right=-'+s());
+ return drive('/motor?dir='+d+'&speed='+s())}
 function hold(d,el){
  if(held===d)return;
  held=d;holding=el||null;if(holding)holding.classList.add('on');
@@ -116,7 +178,7 @@ function release(stop){
  if(held===null)return;
  held=null;clearInterval(beat);beat=null;
  if(holding){holding.classList.remove('on');holding=null}
- if(stop)api('/motor?dir=stop')}
+ if(stop)drive('/motor?dir=stop')}
 const rel=()=>release(true);
 
 document.querySelectorAll('[data-h]').forEach(b=>{
@@ -140,16 +202,18 @@ addEventListener('keydown',e=>{
 addEventListener('keyup',e=>{if(KEYS[e.key]){e.preventDefault();rel()}});
 
 function push(){api('/config?swap_sides='+(+$('swap').checked)+'&invert_a='+(+$('ia').checked)
- +'&invert_b='+(+$('ib').checked)+'&trim_a='+$('ta').value+'&trim_b='+$('tb').value)
+ +'&invert_b='+(+$('ib').checked)+'&trim_a='+$('ta').value+'&trim_b='+$('tb').value
+ +'&ramp_ms='+$('rm').value)
  .then(j=>{if(j&&j.warning)msg(j.warning)})}
 
 async function load(){const j=await api('/status');if(!j)return;const c=j.config;
  $('swap').checked=c.swap_sides;$('ia').checked=c.invert_a;$('ib').checked=c.invert_b;
  $('ta').value=c.trim_a;$('tav').textContent=c.trim_a;
  $('tb').value=c.trim_b;$('tbv').textContent=c.trim_b;
+ $('rm').value=c.ramp_ms;$('rmv').textContent=c.ramp_ms;
  $('sp').value=c.default_speed;$('sv').textContent=c.default_speed}
 
-async function tick(){try{const j=await(await fetch('/status')).json();
+function render(j){
  $('out').textContent='state   '+j.last_direction+(j.moving?'  (moving)':'  (idle)')
  +'\nbridges '+(j.bridges.a?'A live':'A coasting')+'  '+(j.bridges.b?'B live':'B coasting')
  +'\nside A  '+j.live.a+' -> '+j.target.a+'\nside B  '+j.live.b+' -> '+j.target.b
@@ -158,9 +222,20 @@ async function tick(){try{const j=await(await fetch('/status')).json();
  +'   B '+j.config.pins.b_rpwm+'/'+j.config.pins.b_lpwm+'/'+j.config.pins.b_en
  +'\nswap '+j.config.swap_sides+'  invA '+j.config.invert_a+'  invB '+j.config.invert_b
  +'\ntrim '+j.config.trim_a+'% / '+j.config.trim_b+'%   pwm '+j.config.pwm_freq+'Hz'
+ +'   ramp '+j.config.ramp_ms+'ms'
  +'\nlink '+j.link+(j.ap_mode?' (own network)':'')+'  '+j.rssi+'dBm  up '+j.uptime_s+'s'
  +'\ncmds '+j.commands+'  heap '+j.free_heap
- +(j.failsafe_tripped?'\n** failsafe stopped the motors **':'')}catch(e){$('out').textContent='offline'}}
+ +'\nround trip '+(rtt===null?'--':rtt+' ms')+'  over '+(wsReady?'the control socket':'plain HTTP')
+ +(j.failsafe_tripped?'\n** failsafe stopped the motors **':'')}
 
-load();tick();setInterval(tick,700);
+/* Only used while the socket is down. With it up, the board PUSHES status
+   (every 100 ms while the wheels turn), so there is nothing to poll and no
+   poll to collide with a drive command. */
+async function poll(){
+ if(wsReady)return;
+ try{render(await(await fetch('/status')).json())}
+ catch(e){$('out').textContent='offline'}}
+
+openWs();
+load();poll();setInterval(poll,700);
 </script></body></html>)HTML";

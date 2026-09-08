@@ -42,6 +42,20 @@
  *    Side A: RPWM 25, LPWM 26, EN 27
  *    Side B: RPWM 32, LPWM 33, EN 14
  *
+ *  HOW COMMANDS GET IN — three doors, one set of handlers
+ *    UDP :8267    payload is exactly what would follow the host in a URL, e.g.
+ *                 "/motor?dir=forward&speed=200". One datagram, no handshake:
+ *                 this is the millisecond path, and what IRIS uses.
+ *    ws  :81      the calibration page's control socket. Same strings, with a
+ *                 request id, and /status is PUSHED back 10x a second.
+ *    HTTP :80     the endpoints below, unchanged, plus the page itself.
+ *  The HTTP server is the slow door and always was: it serves ONE client at a
+ *  time and holds a socket that has connected but not yet spoken for up to five
+ *  seconds. A browser opens exactly such idle sockets, so an open calibration
+ *  page was enough to queue the next drive command behind it. That is where the
+ *  "why is it so slow" came from; the two fast doors do not go through it.
+ *  See fastlink.h.
+ *
  *  HTTP API (unchanged for IRIS compatibility)
  *    GET /status                      full state + config JSON
  *    GET /motor?dir=forward|backward|left|right|stop|brake
@@ -80,6 +94,7 @@
 #include "robot_config.h"
 #include "cloud_args.h"
 #include "cloud.h"
+#include "fastlink.h"
 #include "page.h"
 
 /* ══════════════════════ EDIT THESE TWO LINES ══════════════════════ */
@@ -99,6 +114,11 @@ const char* CLOUD_TOKEN = "";           /* = NODE_LINK_TOKEN                  */
  * checked; empty means encrypted but unverified, and the board says so. */
 const char* CLOUD_CA_CERT = "";
 CloudLink cloud;
+/* The millisecond command path: UDP :8267 for IRIS, a pushed WebSocket :81 for
+ * the calibration page. Both bypass the HTTP server, which serves one client
+ * at a time and can stall for seconds behind a browser's idle pre-connect
+ * socket. See fastlink.h. */
+FastLink fast;
 const char* AP_PASSWORD = "iriscalib";  /* fallback network, min 8 chars */
 
 /* AP_ONLY: skip the router entirely and serve just my own WiFi.
@@ -364,6 +384,10 @@ static void armHardware() {
   enA = enB = false;
 }
 
+/* Defined with the ramp below; declared here because every function that
+ * accepts a movement calls it to write the hardware immediately. */
+static void rampKick();
+
 /* Map a logical (left,right) request onto the physical sides, applying
  * calibration: swap -> invert -> trim -> deadband. */
 static void applyLogical(int leftReq, int rightReq) {
@@ -381,6 +405,7 @@ static void applyLogical(int leftReq, int rightReq) {
   brakingA = brakingB = false;
   rawMode = false;
   syncEnables();     /* raise now, so the first ramp tick already has a bridge */
+  rampKick();        /* ...and take that tick now rather than up to 2 ms later */
 }
 
 static void doStop(bool brake) {
@@ -414,12 +439,14 @@ static bool directionToPair(const String& dir, int speed, int& l, int& r) {
   return false;
 }
 
-static void rampTick() {
-  const unsigned long now = millis();
-  const unsigned long dt = now - lastRampMs;
-  if (dt < 10) return;                       /* 100 Hz is plenty */
-  lastRampMs = now;
+/* 500 Hz. The old 100 Hz gate meant an accepted command could sit for up to
+ * 10 ms before a single duty cycle was written — a tenth of the whole ramp
+ * spent doing nothing, on a board whose job is to react now. dt is measured,
+ * not assumed, so a finer gate makes the ramp smoother without making it
+ * longer. */
+#define RAMP_TICK_MS   2
 
+static void rampApply(unsigned long dt) {
   int step = PWM_DUTY_MAX;                   /* rampMs 0 => instant */
   if (cfg.rampMs > 0) {
     step = (int)((long)PWM_DUTY_MAX * dt / cfg.rampMs);
@@ -456,6 +483,28 @@ static void rampTick() {
   syncEnables();
 }
 
+static void rampTick() {
+  const unsigned long now = millis();
+  const unsigned long dt = now - lastRampMs;
+  if (dt < RAMP_TICK_MS) return;
+  lastRampMs = now;
+  rampApply(dt);
+}
+
+/* Write the hardware NOW, in the same millisecond the command was accepted,
+ * instead of waiting for the next tick. Called from every accepted drive
+ * command: the bridge is already raised by then, so this is what turns "the
+ * board has agreed to move" into "the wheels are being driven".
+ *
+ * A full RAMP_TICK_MS is charged rather than the real (near-zero) elapsed
+ * time, so the first step is a normal-sized one and the ramp keeps its shape
+ * — crediting 0 ms would make step 0, i.e. exactly the dead tick this exists
+ * to remove. */
+static void rampKick() {
+  lastRampMs = millis();
+  rampApply(RAMP_TICK_MS);
+}
+
 /* ───────────────────────── self test ────────────────────────────── */
 
 static void selfTestApply(int step) {
@@ -474,6 +523,7 @@ static void selfTestApply(int step) {
   }
   brakingA = brakingB = false;
   syncEnables();
+  rampKick();
 }
 
 static void selfTestTick() {
@@ -603,6 +653,11 @@ static void handleStatus() {
   j += ",\"selftest_label\":\"" + String(selfStep >= 0 && selfStep < SELF_STEPS ? SELF_LABELS[selfStep] : "idle") + "\"";
   j += ",\"free_heap\":" + String((uint32_t)ESP.getFreeHeap());
   j += ",\"arduino_core\":" + String(ESP_ARDUINO_VERSION_MAJOR);
+  /* Advertised so IRIS can find the fast path without being told about it, and
+   * so an older IRIS that ignores these keys keeps working over HTTP. */
+  j += ",\"fast\":{\"udp\":" + String(fast.udpPort()) +
+       ",\"ws\":" + String(fast.wsPort()) +
+       ",\"ws_clients\":" + String(fast.wsClients()) + "}";
   j += ",\"config\":" + configJson();
   j += "}";
   sendJson(200, j);
@@ -708,6 +763,7 @@ static void handleTest() {
   else             { targetA = 0; targetB = signedDuty; }
   syncEnables();     /* only the side under test: the other must free-wheel,
                       * or its locked wheels drag the robot off the answer */
+  rampKick();
 
   char label[24];
   snprintf(label, sizeof(label), "test:%s:%s", side.c_str(), dir.c_str());
@@ -855,6 +911,9 @@ static void announceSta() {
   Serial.println("  Calibrate:        open that address in a browser");
   Serial.println("  Register in IRIS: add device " + String(DEVICE_NAME) +
                  " at " + WiFi.localIP().toString() + " as motor");
+  Serial.println("  Fast path:        UDP " + String(FastLink::UDP_PORT) +
+                 ", control socket ws://" + WiFi.localIP().toString() + ":" +
+                 String(FastLink::WS_PORT));
   Serial.println("=================================");
   if (MDNS.begin(DEVICE_NAME)) MDNS.addService("http", "tcp", 80);
   staAnnounced = true;
@@ -927,6 +986,16 @@ static bool dispatchCommand(const String& path, const String& query, String& out
   return cloudCode < 400;
 }
 
+/* Same dispatch, answering the status code rather than a bare pass/fail.
+ * cloudCode is deliberately left holding the handler's answer by the call
+ * above, which is what makes this a read rather than a second dispatch. The
+ * fast paths use this so a refused calibration says 404 or 500 on the page
+ * instead of being flattened to "400, something". */
+static int dispatchCode(const String& path, const String& query, String& out) {
+  dispatchCommand(path, query, out);
+  return cloudCode;
+}
+
 void setup() {
   Serial.begin(115200);
   delay(80);
@@ -973,6 +1042,16 @@ void setup() {
   server.onNotFound([]() { sendJson(404, "{\"error\":\"unknown endpoint\"}"); });
   server.begin();      /* unconditional: the dashboard must exist even with no
                         * router, otherwise a wiring fault cannot be diagnosed */
+  /* handleClient() sleeps 1 ms per idle pass by default. Harmless on a sensor
+   * node, but here it is a millisecond of jitter on the ramp and the failsafe
+   * for no benefit: loopTask runs on core 1, whose idle task is not watchdogged
+   * (CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1 is off), so spinning is safe. */
+  server.enableDelay(false);
+
+  /* The millisecond path. Unconditional for the same reason as server.begin():
+   * it must exist whether the robot is on your router or serving its own
+   * network. */
+  fast.begin(dispatchCode);
 
   cloud.begin(CLOUD_HOST, CLOUD_PORT, "/api/v1/nodes/link", CLOUD_TOKEN,
               DEVICE_NAME, "motor", CLOUD_TLS, dispatchCommand, CLOUD_CA_CERT);
@@ -992,12 +1071,23 @@ void setup() {
 }
 
 void loop() {
-  server.handleClient();
+  /* Order matters. The fast path is pumped FIRST and the ramp immediately
+   * after, so a UDP datagram or a control-socket frame becomes duty on the
+   * bridges within one pass of this loop. handleClient() comes last because it
+   * is the one thing here that can hold the loop for a noticeable time: a
+   * browser socket that connects and says nothing keeps it for up to five
+   * seconds (HTTP_MAX_DATA_WAIT), which is exactly why the drive path no
+   * longer depends on it. */
+  const bool moving = (targetA != 0 || targetB != 0);
+  fast.loop(moving);
+  rampTick();
+
   /* Only pumped with a link up. A motor node whose WiFi dropped must keep
    * running its failsafe and ramp ticks below regardless. */
   if (WiFi.status() == WL_CONNECTED) cloud.loop();
   selfTestTick();
-  rampTick();
+  server.handleClient();
+  rampTick();          /* again: handleClient() may have just accepted a move */
 
   /* timed move finished */
   if (autoStopAt && (long)(millis() - autoStopAt) >= 0)   /* rollover-safe */
@@ -1005,9 +1095,14 @@ void loop() {
 
   /* failsafe: never keep driving into the unknown. This is the real safety net
    * — it holds whichever network the commands arrived on, and whether or not
-   * any network is up at all. */
-  const bool moving = (targetA != 0 || targetB != 0);
-  if (moving && cfg.failsafeMs && selfStep < 0 &&
+   * any network is up at all.
+   *
+   * Re-read rather than reusing `moving` from the top of the loop: a stop that
+   * happened during this pass (the timed auto-stop just above, a /stop that
+   * handleClient() served) would otherwise be judged against a stale "yes, it
+   * is moving" and reported as a failsafe trip that never happened. */
+  const bool stillMoving = (targetA != 0 || targetB != 0);
+  if (stillMoving && cfg.failsafeMs && selfStep < 0 &&
       (millis() - lastCommandMs) > cfg.failsafeMs) {
     Serial.println("[failsafe] no command in time — stopping");
     failsafeTripped = true;
@@ -1023,7 +1118,7 @@ void loop() {
     /* Losing the router is an instant stop only when the router is what was
      * carrying commands. In AP fallback there is no router to lose, and
      * stopping there would cut off someone driving from the fallback network. */
-    if (!apMode && moving) {
+    if (!apMode && stillMoving) {
       Serial.println("[failsafe] WiFi lost — stopping");
       failsafeTripped = true;
       doStop(cfg.brakeOnStop);
