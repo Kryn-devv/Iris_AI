@@ -89,9 +89,19 @@ cd Iris_AI
 
 **Windows** — double-click `scripts\install-windows.bat`, done.
 
-**Linux / macOS**
+**macOS** — double-click **`scripts/Install IRIS on macOS.command`**, or from a
+terminal:
 ```bash
-./scripts/install-linux.sh
+bash scripts/install-macos.sh
+```
+> Don't double-click `install-macos.sh` itself. Finder does not execute a `.sh`
+> — it opens it in whatever app owns the extension, so with an editor installed
+> the installer just appears as source code and nothing runs. The `.command`
+> file above is the same script in a form Finder does run.
+
+**Linux**
+```bash
+bash scripts/install-linux.sh
 ```
 
 **Manual (any OS)**

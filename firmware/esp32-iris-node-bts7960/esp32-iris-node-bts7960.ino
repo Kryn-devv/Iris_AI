@@ -42,6 +42,20 @@
  *    Side A: RPWM 25, LPWM 26, EN 27
  *    Side B: RPWM 32, LPWM 33, EN 14
  *
+ *  HOW COMMANDS GET IN — three doors, one set of handlers
+ *    UDP :8267    payload is exactly what would follow the host in a URL, e.g.
+ *                 "/motor?dir=forward&speed=200". One datagram, no handshake:
+ *                 this is the millisecond path, and what IRIS uses.
+ *    ws  :81      the calibration page's control socket. Same strings, with a
+ *                 request id, and /status is PUSHED back 10x a second.
+ *    HTTP :80     the endpoints below, unchanged, plus the page itself.
+ *  The HTTP server is the slow door and always was: it serves ONE client at a
+ *  time and holds a socket that has connected but not yet spoken for up to five
+ *  seconds. A browser opens exactly such idle sockets, so an open calibration
+ *  page was enough to queue the next drive command behind it. That is where the
+ *  "why is it so slow" came from; the two fast doors do not go through it.
+ *  See fastlink.h.
+ *
  *  HTTP API (unchanged for IRIS compatibility)
  *    GET /status                      full state + config JSON
  *    GET /motor?dir=forward|backward|left|right|stop|brake
@@ -80,6 +94,7 @@
 #include "robot_config.h"
 #include "cloud_args.h"
 #include "cloud.h"
+#include "fastlink.h"
 #include "page.h"
 
 /* ══════════════════════ EDIT THESE TWO LINES ══════════════════════ */
@@ -99,7 +114,27 @@ const char* CLOUD_TOKEN = "";           /* = NODE_LINK_TOKEN                  */
  * checked; empty means encrypted but unverified, and the board says so. */
 const char* CLOUD_CA_CERT = "";
 CloudLink cloud;
+/* The millisecond command path: UDP :8267 for IRIS, a pushed WebSocket :81 for
+ * the calibration page. Both bypass the HTTP server, which serves one client
+ * at a time and can stall for seconds behind a browser's idle pre-connect
+ * socket. See fastlink.h. */
+FastLink fast;
 const char* AP_PASSWORD = "iriscalib";  /* fallback network, min 8 chars */
+
+/* AP_ONLY: skip the router entirely and serve just my own WiFi.
+ *
+ * Worth it for a robot. Its own AP is the strongest link it will ever have —
+ * you are standing next to it — with no router hop, no phone-hotspot client
+ * isolation, and no 25 s join wait before the calibration page exists. That
+ * matters most in exactly the situation where you need the page: a robot that
+ * drives away from the access point.
+ *
+ * The cost is real and worth stating: a laptop joined to this AP is on the
+ * robot's network and nothing else. IRIS running on that laptop can drive the
+ * robot, but cannot reach the sensor or relay boards on your house WiFi, and
+ * has no internet — so no LLM. Use AP_ONLY to calibrate and drive by hand;
+ * leave it false for voice control alongside the other boards. */
+const bool AP_ONLY = false;
 /* ═════════════════════════════════════════════════════════════════ */
 
 /* ───────────────────────── PWM back end ─────────────────────────── */
@@ -161,6 +196,9 @@ static void pwmDetach(uint8_t pin) {
 
 static Config cfg;
 static Preferences prefs;
+/* True when the stored pin set had to be rejected at boot. Surfaced in
+ * /status so the dashboard can say it, rather than only the serial console. */
+static bool configReverted = false;
 
 static void configDefaults() { configFillDefaults(cfg); }
 
@@ -186,29 +224,57 @@ static void configLoad() {
   cfg.brakeOnStop = prefs.getBool("brake", cfg.brakeOnStop);
   prefs.end();
 
-  /* A corrupt or hand-edited pin set must not brick the board on boot. */
+  /* A corrupt or hand-edited pin set must not brick the board on boot — but
+   * only the PINS are suspect, so only the pins go back. The old recovery
+   * called configDefaults() and threw away swap, invert, trim, ramp, freq,
+   * min_duty and failsafe as well: a whole afternoon of calibration lost to
+   * one bad GPIO number.
+   *
+   * Reported through /status too, not just Serial. Someone driving from a
+   * phone on the fallback AP has no console, and "the robot forgot its
+   * calibration" is not something to leave them to deduce. */
   if (!pinsAllUsable(cfg) || pinConflict(cfg) >= 0) {
-    Serial.println("[cfg] stored pins invalid or clashing — reverting to defaults");
-    configDefaults();
+    Serial.println("[cfg] stored pins invalid or clashing — reverting the PINS "
+                   "to defaults (the rest of your calibration is kept)");
+    Config d;
+    configFillDefaults(d);
+    cfg.aR = d.aR; cfg.aL = d.aL; cfg.aEn = d.aEn;
+    cfg.bR = d.bR; cfg.bL = d.bL; cfg.bEn = d.bEn;
+    configReverted = true;
   }
   configApplyClamps(cfg);
 }
 
+/* Every put* answers the number of bytes written, and 0 when it did not write
+ * — NVS full, a corrupt page, a handle opened read-only. Dropping those and
+ * returning true meant the page said "saved to flash" over a calibration that
+ * was partly or wholly still the old one, and you would only find out on the
+ * next power-up, by which time the SAVE you remember pressing is evidence
+ * against the wiring. Each put commits on its own, so a partial write is a
+ * real state, not a theoretical one. */
 static bool configSave() {
   if (!prefs.begin("irisbot", false)) return false;
-  prefs.putUChar("aR", cfg.aR);   prefs.putUChar("aL", cfg.aL);   prefs.putUChar("aEn", cfg.aEn);
-  prefs.putUChar("bR", cfg.bR);   prefs.putUChar("bL", cfg.bL);   prefs.putUChar("bEn", cfg.bEn);
-  prefs.putBool("swap", cfg.swapSides);
-  prefs.putBool("invA", cfg.invA);   prefs.putBool("invB", cfg.invB);
-  prefs.putUChar("trimA", cfg.trimA); prefs.putUChar("trimB", cfg.trimB);
-  prefs.putUShort("freq", cfg.pwmFreq);
-  prefs.putUShort("fail", cfg.failsafeMs);
-  prefs.putUShort("ramp", cfg.rampMs);
-  prefs.putUChar("dspd", cfg.defaultSpeed);
-  prefs.putUChar("mind", cfg.minDuty);
-  prefs.putBool("brake", cfg.brakeOnStop);
+  bool ok = true;
+  ok &= prefs.putUChar("aR", cfg.aR) > 0;
+  ok &= prefs.putUChar("aL", cfg.aL) > 0;
+  ok &= prefs.putUChar("aEn", cfg.aEn) > 0;
+  ok &= prefs.putUChar("bR", cfg.bR) > 0;
+  ok &= prefs.putUChar("bL", cfg.bL) > 0;
+  ok &= prefs.putUChar("bEn", cfg.bEn) > 0;
+  ok &= prefs.putBool("swap", cfg.swapSides) > 0;
+  ok &= prefs.putBool("invA", cfg.invA) > 0;
+  ok &= prefs.putBool("invB", cfg.invB) > 0;
+  ok &= prefs.putUChar("trimA", cfg.trimA) > 0;
+  ok &= prefs.putUChar("trimB", cfg.trimB) > 0;
+  ok &= prefs.putUShort("freq", cfg.pwmFreq) > 0;
+  ok &= prefs.putUShort("fail", cfg.failsafeMs) > 0;
+  ok &= prefs.putUShort("ramp", cfg.rampMs) > 0;
+  ok &= prefs.putUChar("dspd", cfg.defaultSpeed) > 0;
+  ok &= prefs.putUChar("mind", cfg.minDuty) > 0;
+  ok &= prefs.putBool("brake", cfg.brakeOnStop) > 0;
   prefs.end();
-  return true;
+  if (!ok) Serial.println("[cfg] SAVE FAILED — flash write refused");
+  return ok;
 }
 
 /* ───────────────────────── motor state ──────────────────────────── */
@@ -230,6 +296,16 @@ static bool  wroteBrakeA = false, wroteBrakeB = false;
  * the idle one. That is what made a raw /test of side A lock side B's wheels,
  * during the one diagnostic that has to show each side in isolation. */
 static bool  enA = false, enB = false;
+/* Duty owed but not yet handed out, carried between ramp ticks.
+ *
+ * step = PWM_DUTY_MAX * dt / rampMs is integer division, and the 2 ms gate
+ * makes the truncation bite five times harder than the old 10 ms one did: at
+ * the default 90 ms ramp, 255*2/90 is 5 where the true step is 5.67, so the
+ * ramp ran 12% slower than it was asked for — and the old "if (step < 1)
+ * step = 1" meant every ramp_ms above 510 truncated to 0, was floored to 1,
+ * and silently became the same ~510 ms. Carrying the remainder makes a ramp
+ * take the time it was asked for, at any gate and any ramp_ms. */
+static long  rampCarry = 0;
 static unsigned long lastRampMs   = 0;
 static unsigned long lastCommandMs = 0;
 static unsigned long autoStopAt    = 0;  /* 0 = no timed stop pending */
@@ -342,12 +418,19 @@ static void armHardware() {
   writeSide(true, 0, false);
   writeSide(false, 0, false);
   wroteBrakeA = wroteBrakeB = false;
+  rampCarry = 0;                     /* pins or frequency just moved under us;
+                                      * duty owed to the old routing is not
+                                      * owed to the new one */
 
   /* Enables start LOW: nothing is moving yet, so coast. */
   pinMode(cfg.aEn, OUTPUT); digitalWrite(cfg.aEn, LOW); claimedEn[0] = cfg.aEn;
   pinMode(cfg.bEn, OUTPUT); digitalWrite(cfg.bEn, LOW); claimedEn[1] = cfg.bEn;
   enA = enB = false;
 }
+
+/* Defined with the ramp below; declared here because every function that
+ * accepts a movement calls it to write the hardware immediately. */
+static void rampKick();
 
 /* Map a logical (left,right) request onto the physical sides, applying
  * calibration: swap -> invert -> trim -> deadband. */
@@ -356,8 +439,15 @@ static void applyLogical(int leftReq, int rightReq) {
   int b = cfg.swapSides ? leftReq  : rightReq;
   if (cfg.invA) a = -a;
   if (cfg.invB) b = -b;
+  /* Trim is integer scaling, and it must never turn a request to move into a
+   * stop: a low speed times a low trim rounds down to 0, and the command then
+   * answers 200 and does nothing. The deadband below cannot rescue that,
+   * because it only lifts values that are already non-zero. */
+  const int wantA = a, wantB = b;
   a = (int)((long)a * cfg.trimA / 100);
   b = (int)((long)b * cfg.trimB / 100);
+  if (wantA != 0 && a == 0) a = (wantA > 0) ? 1 : -1;
+  if (wantB != 0 && b == 0) b = (wantB > 0) ? 1 : -1;
   if (cfg.minDuty) {
     if (a != 0 && abs(a) < cfg.minDuty) a = (a > 0 ? cfg.minDuty : -cfg.minDuty);
     if (b != 0 && abs(b) < cfg.minDuty) b = (b > 0 ? cfg.minDuty : -cfg.minDuty);
@@ -366,11 +456,16 @@ static void applyLogical(int leftReq, int rightReq) {
   brakingA = brakingB = false;
   rawMode = false;
   syncEnables();     /* raise now, so the first ramp tick already has a bridge */
+  rampKick();        /* ...and take that tick now rather than up to 2 ms later */
 }
 
 static void doStop(bool brake) {
   targetA = targetB = 0;
   liveA = liveB = 0;                 /* stopping is immediate, never ramped */
+  rampCarry = 0;                     /* no fractional duty owed to a move that
+                                      * is over; carrying it would hand the
+                                      * next move a head start it did not ask
+                                      * for */
   brakingA = brakingB = brake;
   rawMode = false;
   autoStopAt = 0;
@@ -399,24 +494,30 @@ static bool directionToPair(const String& dir, int speed, int& l, int& r) {
   return false;
 }
 
-static void rampTick() {
-  const unsigned long now = millis();
-  const unsigned long dt = now - lastRampMs;
-  if (dt < 10) return;                       /* 100 Hz is plenty */
-  lastRampMs = now;
+/* 500 Hz. The old 100 Hz gate meant an accepted command could sit for up to
+ * 10 ms before a single duty cycle was written — a tenth of the whole ramp
+ * spent doing nothing, on a board whose job is to react now. dt is measured,
+ * not assumed, so a finer gate makes the ramp smoother without making it
+ * longer. */
+#define RAMP_TICK_MS   2
 
+static void rampApply(unsigned long dt) {
   int step = PWM_DUTY_MAX;                   /* rampMs 0 => instant */
   if (cfg.rampMs > 0) {
-    step = (int)((long)PWM_DUTY_MAX * dt / cfg.rampMs);
-    if (step < 1) step = 1;
+    const long owed = (long)PWM_DUTY_MAX * (long)dt + rampCarry;
+    step = (int)(owed / cfg.rampMs);
+    rampCarry = owed % cfg.rampMs;
   }
   bool changed = (brakingA != wroteBrakeA) || (brakingB != wroteBrakeB);
-  if (liveA != targetA) {
+  /* step can legitimately be 0 for a tick or two on a very long ramp — the
+   * carry guarantees it will not stay 0 — and writing an unchanged duty is
+   * just two wasted ledcWrite calls, so wait for a step that moves something. */
+  if (liveA != targetA && step > 0) {
     if (abs(targetA - liveA) <= step) liveA = targetA;
     else liveA += (targetA > liveA) ? step : -step;
     changed = true;
   }
-  if (liveB != targetB) {
+  if (liveB != targetB && step > 0) {
     if (abs(targetB - liveB) <= step) liveB = targetB;
     else liveB += (targetB > liveB) ? step : -step;
     changed = true;
@@ -441,6 +542,28 @@ static void rampTick() {
   syncEnables();
 }
 
+static void rampTick() {
+  const unsigned long now = millis();
+  const unsigned long dt = now - lastRampMs;
+  if (dt < RAMP_TICK_MS) return;
+  lastRampMs = now;
+  rampApply(dt);
+}
+
+/* Write the hardware NOW, in the same millisecond the command was accepted,
+ * instead of waiting for the next tick. Called from every accepted drive
+ * command: the bridge is already raised by then, so this is what turns "the
+ * board has agreed to move" into "the wheels are being driven".
+ *
+ * A full RAMP_TICK_MS is charged rather than the real (near-zero) elapsed
+ * time, so the first step is a normal-sized one and the ramp keeps its shape
+ * — crediting 0 ms would make step 0, i.e. exactly the dead tick this exists
+ * to remove. */
+static void rampKick() {
+  lastRampMs = millis();
+  rampApply(RAMP_TICK_MS);
+}
+
 /* ───────────────────────── self test ────────────────────────────── */
 
 static void selfTestApply(int step) {
@@ -459,6 +582,7 @@ static void selfTestApply(int step) {
   }
   brakingA = brakingB = false;
   syncEnables();
+  rampKick();
 }
 
 static void selfTestTick() {
@@ -474,25 +598,27 @@ static void selfTestTick() {
 /* ───────────────────────── HTTP helpers ─────────────────────────── */
 
 /* ─────────────────── where a reply goes, where args come from ───────────────
- * A command now arrives two ways: as an HTTP request when IRIS is on the LAN,
- * and as a frame on the cloud socket when IRIS is on a VPS. Rather than write
- * eleven handlers twice — and watch the copy nobody tests drift — the sink and
- * the argument source are redirected around the existing handlers. Set while a
- * cloud frame is being served, null the rest of the time.
+ * A command arrives four ways: an HTTP request, a UDP datagram, a frame on the
+ * page's control socket, and a frame on the cloud socket. Rather than write
+ * eleven handlers four times — and watch the copies nobody tests drift — the
+ * argument source and the reply sink are redirected around one set of handlers.
  *
- * Requests are served one at a time from loop(), so a single slot is correct
+ * curArgs is never null. It points at httpArgs (which reads the live
+ * WebServer request) except while a non-HTTP frame is being served. The
+ * previous version branched on a nullable pointer instead, and the HTTP arm of
+ * that branch was written `argHas(name)` where it meant `server.hasArg(name)`:
+ * an infinite self-call that hung the board on the first drive command and
+ * looked exactly like dead wiring. See cloud_args.h.
+ *
+ * Commands are served one at a time from loop(), so a single slot is correct
  * here for the same reason argFail below is.                                */
-static const Args* cloudArgs = nullptr;
+static const Args httpArgs = Args::fromServer();
+static const Args* curArgs = &httpArgs;
 static String* cloudOut = nullptr;
 static int cloudCode = 200;
 
-static bool argHas(const char* name) {
-  return cloudArgs ? cloudArgs->has(name) : argHas(name);
-}
-
-static String argGet(const char* name) {
-  return cloudArgs ? cloudArgs->get(name) : argGet(name);
-}
+static bool argHas(const char* name) { return curArgs->has(name); }
+static String argGet(const char* name) { return curArgs->get(name); }
 
 static void sendJson(int code, const String& body) {
   if (cloudOut) { *cloudOut = body; cloudCode = code; return; }
@@ -578,14 +704,26 @@ static void handleStatus() {
   j += ",\"live\":{\"a\":" + String(liveA) + ",\"b\":" + String(liveB) + "}";
   j += ",\"target\":{\"a\":" + String(targetA) + ",\"b\":" + String(targetB) + "}";
   j += ",\"moving\":" + String((liveA || liveB) ? "true" : "false");
-  j += ",\"bridges\":{\"a\":" + String(enA ? "true" : "false") +
-       ",\"b\":" + String(enB ? "true" : "false") + "}";
+  /* With one GPIO carrying both R_EN/L_EN pairs the hardware cannot hold the
+   * two sides apart, so reporting them separately would be reporting a state
+   * the board is not in. shared_enable says which reading applies. */
+  const bool sharedEnable = (cfg.aEn == cfg.bEn);
+  const bool anyBridge = enA || enB;
+  j += ",\"bridges\":{\"a\":" + String((sharedEnable ? anyBridge : enA) ? "true" : "false") +
+       ",\"b\":" + String((sharedEnable ? anyBridge : enB) ? "true" : "false") +
+       ",\"shared_enable\":" + String(sharedEnable ? "true" : "false") + "}";
   j += ",\"failsafe_tripped\":" + String(failsafeTripped ? "true" : "false");
+  j += ",\"config_reverted\":" + String(configReverted ? "true" : "false");
   j += ",\"raw_mode\":" + String(rawMode ? "true" : "false");
   j += ",\"selftest_step\":" + String(selfStep);
   j += ",\"selftest_label\":\"" + String(selfStep >= 0 && selfStep < SELF_STEPS ? SELF_LABELS[selfStep] : "idle") + "\"";
   j += ",\"free_heap\":" + String((uint32_t)ESP.getFreeHeap());
   j += ",\"arduino_core\":" + String(ESP_ARDUINO_VERSION_MAJOR);
+  /* Advertised so IRIS can find the fast path without being told about it, and
+   * so an older IRIS that ignores these keys keeps working over HTTP. */
+  j += ",\"fast\":{\"udp\":" + String(fast.udpPort()) +
+       ",\"ws\":" + String(fast.wsPort()) +
+       ",\"ws_clients\":" + String(fast.wsClients()) + "}";
   j += ",\"config\":" + configJson();
   j += "}";
   sendJson(200, j);
@@ -603,7 +741,21 @@ static void acceptCommand(const char* label, long ms) {
 }
 
 static void handleMotor() {
-  String dir = argHas("dir") ? argGet("dir") : "stop";
+  /* `dir` is required, not defaulted.
+   *
+   * It used to default to "stop", so /motor?direction=forward — a misspelling,
+   * a client that dropped the query string, a proxy that ate it — answered
+   * HTTP 200, counted as a command, refreshed the failsafe, and stopped the
+   * robot. A silent stop is the single worst answer a motor node can give,
+   * because it is indistinguishable from unpowered drivers: the board agrees
+   * with everything you ask and nothing ever turns. /stop and /motor?dir=stop
+   * remain the ways to ask for a stop. */
+  if (!argHas("dir")) {
+    sendJson(400, "{\"error\":\"dir is required\",\"hint\":\""
+                  "forward|backward|left|right|stop|brake\"}");
+    return;
+  }
+  String dir = argGet("dir");
   dir.toLowerCase();
 
   long speed = cfg.defaultSpeed, ms = 0;
@@ -691,6 +843,7 @@ static void handleTest() {
   else             { targetA = 0; targetB = signedDuty; }
   syncEnables();     /* only the side under test: the other must free-wheel,
                       * or its locked wheels drag the robot off the answer */
+  rampKick();
 
   char label[24];
   snprintf(label, sizeof(label), "test:%s:%s", side.c_str(), dir.c_str());
@@ -700,9 +853,23 @@ static void handleTest() {
   String pins = (side == "a")
     ? "{\"rpwm\":" + String(cfg.aR) + ",\"lpwm\":" + String(cfg.aL) + ",\"en\":" + String(cfg.aEn) + "}"
     : "{\"rpwm\":" + String(cfg.bR) + ",\"lpwm\":" + String(cfg.bL) + ",\"en\":" + String(cfg.bEn) + "}";
+  /* One shared enable GPIO is blessed wiring (see the header), but it costs
+   * this endpoint the isolation it promises: setEnables() must drive the shared
+   * pin high whenever EITHER side needs its bridge, so the side NOT under test
+   * sits enabled with both inputs low — a low-side short, i.e. braked. Its
+   * wheels are held, not free, and dragging against the test is exactly what
+   * makes a good module look weak. Said out loud rather than left to be
+   * discovered, because this is the one endpoint whose whole job is to answer
+   * "which module actually responds?" without ambiguity. */
+  const bool sharedEn = (cfg.aEn == cfg.bEn);
   sendJson(200, "{\"test\":{\"side\":\"" + side + "\",\"dir\":\"" + dir +
                 "\",\"speed\":" + String(speed) + ",\"ms\":" + String(ms) +
-                "},\"pins\":" + pins + ",\"note\":\"raw mode: swap/invert/trim bypassed\"}");
+                "},\"pins\":" + pins +
+                ",\"shared_enable\":" + String(sharedEn ? "true" : "false") +
+                ",\"note\":\"raw mode: swap/invert/trim bypassed" +
+                (sharedEn ? String(". Both modules share GPIO ") + String(cfg.aEn) +
+                            ", so the other side is braked rather than coasting"
+                          : String("")) + "\"}");
 }
 
 static void handleSelfTest() {
@@ -764,17 +931,35 @@ static void handleConfig() {
   long trimA = next.trimA, trimB = next.trimB, fail = next.failsafeMs,
        ramp = next.rampMs, dspd = next.defaultSpeed, mind = next.minDuty,
        freq = next.pwmFreq;
-  if (!argClamp("trim_a", 0, 100, trimA) ||
-      !argClamp("trim_b", 0, 100, trimB) ||
+  /* The gain floors are the page's own slider ranges. Below them a side
+   * cannot turn a loaded wheel, so a stored value under one is another
+   * "answers 200 and nothing moves" that survives a reboot and looks exactly
+   * like a dead driver. There is no calibration that wants a side scaled to
+   * nothing; that is what /stop is for. */
+  if (!argClamp("trim_a", 40, 100, trimA) ||
+      !argClamp("trim_b", 40, 100, trimB) ||
       !argClamp("failsafe_ms", 0, 60000, fail) ||
       !argClamp("ramp_ms", 0, 3000, ramp) ||
-      !argClamp("default_speed", 0, PWM_DUTY_MAX, dspd) ||
+      !argClamp("default_speed", 60, PWM_DUTY_MAX, dspd) ||
       !argClamp("min_duty", 0, MIN_DUTY_MAX, mind) ||
       !argClamp("pwm_freq", 100, 25000, freq) ||
       !argBool("swap_sides", next.swapSides) ||
       !argBool("invert_a", next.invA) ||
       !argBool("invert_b", next.invB) ||
       !argBool("brake_on_stop", next.brakeOnStop)) { sendBadArg(); return; }
+
+  /* 0 means "no failsafe" and is a deliberate choice. A value between there
+   * and a fifth of a second is not: it auto-stops every command before a
+   * wheel can turn, /save writes it to flash, and the robot is then
+   * permanently dead while answering 200 to everything. Refused with the
+   * reason rather than quietly rounded up, because a calibration that was
+   * silently changed is a calibration you will fight later. */
+  if (fail > 0 && fail < 200) {
+    sendJson(400, "{\"error\":\"failsafe_ms must be 0 (off) or at least 200\","
+                  "\"hint\":\"below that, every command stops itself before a "
+                  "wheel can turn\"}");
+    return;
+  }
 
   next.trimA = (uint8_t)trimA;   next.trimB = (uint8_t)trimB;
   next.failsafeMs = (uint16_t)fail;
@@ -823,14 +1008,66 @@ static void handleReset() {
 
 /* ───────────────────────── dashboard ────────────────────────────── */
 
+/* The page is ~12 KB and lwIP's send buffer is 5760 bytes (see
+ * CONFIG_LWIP_TCP_SND_BUF_DEFAULT), so one send_P() of the whole thing parks
+ * inside WiFiClient::write waiting for the browser to ACK the middle of it —
+ * up to HTTP_MAX_SEND_WAIT if that browser stalls. Nothing else in loop() runs
+ * meanwhile, which on this board means the ramp and the failsafe stop ticking
+ * while somebody reloads the page.
+ *
+ * Streaming it a kilobyte at a time and pumping the drive path between chunks
+ * costs a few chunk headers and keeps the motors serviced throughout. To be
+ * precise about what this does and does not fix: the page still takes just as
+ * long to leave, and a single chunk can still block — what changes is that
+ * the ramp, the failsafe and the fast path get a turn between chunks instead
+ * of waiting out the whole transfer. Getting the body under one send would
+ * need it gzipped at build time, which is a generated file to keep in step
+ * with this one; not worth it for a page you open to calibrate.
+ *
+ * Safe to re-enter: the fast path writes its replies into a String (see
+ * sendJson), so it cannot interleave with this response. */
 static void handleRoot() {
   server.sendHeader("Access-Control-Allow-Origin", "*");
-  server.send_P(200, "text/html", PAGE);
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "text/html", "");
+
+  const size_t total = strlen_P(PAGE);
+  for (size_t at = 0; at < total; at += 1024) {
+    const size_t n = (total - at < 1024) ? (total - at) : 1024;
+    server.sendContent_P(PAGE + at, n);
+    fast.loop(targetA != 0 || targetB != 0);
+    rampTick();
+  }
+  server.sendContent("");
 }
 
 /* ───────────────────────── setup / loop ─────────────────────────── */
 
-static void announceSta() {
+/* `full` prints the whole boot banner. A re-join gets one line instead:
+ * HardwareSerial has no TX ring buffer on this core, so ~300 bytes at 115200
+ * baud spins for roughly 26 ms — and a re-join is exactly the moment queued
+ * commands arrive and the ramp needs servicing. */
+static void startMdns() {
+  /* Once. announceSta() runs again on every re-join, and re-entering
+   * MDNS.begin() re-registers the same service each time. */
+  static bool mdnsUp = false;
+  if (!mdnsUp && MDNS.begin(DEVICE_NAME)) {
+    MDNS.addService("http", "tcp", 80);
+    mdnsUp = true;
+  }
+}
+
+/* No default argument: the .ino preprocessor hoists a prototype for this, and
+ * a default given in both places is a compile error. */
+static void announceSta(bool full) {
+  staAnnounced = true;
+  startMdns();          /* also on a re-join: the board may have come up in AP
+                         * fallback, where this never ran, so <name>.local
+                         * would otherwise never resolve */
+  if (!full) {
+    Serial.println("[wifi] rejoined, http://" + WiFi.localIP().toString());
+    return;
+  }
   Serial.println();
   Serial.println("=================================");
   Serial.print  ("  IRIS robot (BTS7960 x2) online:  http://");
@@ -838,9 +1075,10 @@ static void announceSta() {
   Serial.println("  Calibrate:        open that address in a browser");
   Serial.println("  Register in IRIS: add device " + String(DEVICE_NAME) +
                  " at " + WiFi.localIP().toString() + " as motor");
+  Serial.println("  Fast path:        UDP " + String(FastLink::UDP_PORT) +
+                 ", control socket ws://" + WiFi.localIP().toString() + ":" +
+                 String(FastLink::WS_PORT));
   Serial.println("=================================");
-  if (MDNS.begin(DEVICE_NAME)) MDNS.addService("http", "tcp", 80);
-  staAnnounced = true;
 }
 
 /* No router, wrong password, or out of range: serve our own network so the
@@ -849,36 +1087,64 @@ static void announceSta() {
  * to make a wiring problem impossible to diagnose. */
 static void startFallbackAp() {
   const String ssid = String("iris-") + DEVICE_NAME;
-  WiFi.mode(WIFI_AP_STA);
+  /* AP_STA on the fallback path so the router keeps being retried; pure AP
+   * when this is the chosen mode, because a station interface nobody asked
+   * for still scans and still costs airtime. */
+  WiFi.mode(AP_ONLY ? WIFI_AP : WIFI_AP_STA);
+
+  /* THE ESP32 HAS ONE RADIO, and the station side must leave the SoftAP to
+   * use it. arduino-esp32 turns auto-reconnect on by default, and its handler
+   * for "no AP found" is `WiFi.disconnect(); WiFi.begin();` with no backoff at
+   * all — so a wrong SSID means back-to-back scans of all 13 channels, about
+   * 1.5 s each, forever. The SoftAP cannot beacon, ACK or receive during any
+   * of them.
+   *
+   * That is not a slow network, it is a network that mostly is not there: the
+   * page stops refreshing and drive commands vanish, on the one link you are
+   * standing next to the robot to use. Our own retry in loop() is the only
+   * thing that should scan, because it knows when not to. */
+  WiFi.setAutoReconnect(false);
   if (!WiFi.softAP(ssid.c_str(), AP_PASSWORD)) {
-    Serial.println("  could not start fallback WiFi either — check the board");
+    Serial.println("  could not start my own WiFi either — check the board");
     return;
   }
   apMode = true;
   Serial.println();
   Serial.println("=================================");
-  Serial.println("  No router reached. Serving my own WiFi:");
+  Serial.println(AP_ONLY ? "  AP_ONLY: serving my own WiFi."
+                         : "  No router reached. Serving my own WiFi:");
   Serial.println("    network:  " + ssid);
   Serial.println("    password: " + String(AP_PASSWORD));
   Serial.println("    then open http://" + WiFi.softAPIP().toString());
-  Serial.println("  Still retrying your router in the background.");
+  if (!AP_ONLY) Serial.println("  Still retrying your router in the background.");
   Serial.println("=================================");
 }
 
-/* ───────────────────────── the cloud side of dispatch ─────────────────────
- * Redirects the sink and the argument source, then calls the SAME handler the
- * HTTP route would. Every endpoint is reachable from a VPS-hosted IRIS this
- * way, calibration included — which matters because the one time you cannot
- * walk over to the robot is when it is somewhere else.
+/* ───────────────────────── one dispatcher, four transports ────────────────
+ * Redirects the argument source and the reply sink, then calls the SAME
+ * handler the HTTP route would. Used by the cloud socket, the UDP fast path
+ * and the page's control socket, so every endpoint — calibration included — is
+ * reachable over all of them without a second copy of any handler.
  *
- * `/` is deliberately absent: it answers HTML to a browser, and there is no
- * browser on the other end of this socket. */
-static bool cloudCommand(const String& path, const String& query, String& out) {
+ * `/` is deliberately absent: it answers HTML to a browser, and none of these
+ * transports has a browser on the far end.
+ *
+ * `out` is filled with the JSON the HTTP route would have sent; the return
+ * value is true for a 2xx/3xx. */
+static bool dispatchCommand(const String& path, const String& query, String& out) {
   const Args args = Args::fromQuery(query);
-  cloudArgs = &args;
+  curArgs = &args;
   cloudOut = &out;
   cloudCode = 200;
   argFail = NULL;
+
+  if (args.truncated()) {
+    sendJson(400, "{\"error\":\"too many arguments\",\"hint\":\"send the "
+                  "calibration in smaller batches\"}");
+    curArgs = &httpArgs;
+    cloudOut = nullptr;
+    return false;
+  }
 
   String p = path;
   if (!p.startsWith("/")) p = "/" + p;
@@ -895,11 +1161,22 @@ static bool cloudCommand(const String& path, const String& query, String& out) {
   else if (p == "/reset")    handleReset();
   else sendJson(404, "{\"error\":\"unknown endpoint\"}");
 
-  /* Cleared unconditionally: leaving them set would send the NEXT HTTP reply
-   * into a dangling String instead of to the browser. */
-  cloudArgs = nullptr;
+  /* Restored unconditionally: left redirected, the NEXT HTTP reply would go
+   * into a dangling String instead of to the browser, and the next HTTP
+   * request would read its arguments out of a dead stack frame. */
+  curArgs = &httpArgs;
   cloudOut = nullptr;
   return cloudCode < 400;
+}
+
+/* Same dispatch, answering the status code rather than a bare pass/fail.
+ * cloudCode is deliberately left holding the handler's answer by the call
+ * above, which is what makes this a read rather than a second dispatch. The
+ * fast paths use this so a refused calibration says 404 or 500 on the page
+ * instead of being flattened to "400, something". */
+static int dispatchCode(const String& path, const String& query, String& out) {
+  dispatchCommand(path, query, out);
+  return cloudCode;
 }
 
 void setup() {
@@ -912,19 +1189,21 @@ void setup() {
   configLoad();
   armHardware();
 
-  WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);                /* motor commands must not wait on power save */
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  Serial.print("Connecting to WiFi");
-  const unsigned long joinDeadline = millis() + WIFI_JOIN_MS;
-  while (WiFi.status() != WL_CONNECTED && (long)(millis() - joinDeadline) < 0) {
-    delay(250);
-    Serial.print(".");
+  if (AP_ONLY) {
+    startFallbackAp();                 /* no join attempt, so no 25 s wait */
+  } else {
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(WIFI_SSID, WIFI_PASS);
   }
-  if (WiFi.status() == WL_CONNECTED) announceSta();
-  else startFallbackAp();
 
   server.on("/",         handleRoot);
+  /* Browsers ask for /favicon.ico on every page load. Without a handler each
+   * one becomes a 404 plus an "[E] request handler not found" line, which
+   * looks like a fault and is not one — and on a weak link that wasted round
+   * trip competes with the 700 ms status poll the page depends on. 204 is the
+   * correct answer: "there is no icon, stop asking." */
+  server.on("/favicon.ico", []() { server.send(204); });
   server.on("/status",   handleStatus);
   server.on("/motor",    handleMotor);
   server.on("/tank",     handleTank);
@@ -938,9 +1217,42 @@ void setup() {
   server.onNotFound([]() { sendJson(404, "{\"error\":\"unknown endpoint\"}"); });
   server.begin();      /* unconditional: the dashboard must exist even with no
                         * router, otherwise a wiring fault cannot be diagnosed */
+  /* handleClient() sleeps 1 ms per idle pass by default. Harmless on a sensor
+   * node, but here it is a millisecond of jitter on the ramp and the failsafe
+   * for no benefit: loopTask runs on core 1, whose idle task is not watchdogged
+   * (CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1 is off), so spinning is safe. */
+  server.enableDelay(false);
+
+  /* The millisecond path. Unconditional for the same reason as server.begin():
+   * it must exist whether the robot is on your router or serving its own
+   * network. */
+  fast.begin(dispatchCode);
+
+  /* Only NOW wait for the router.
+   *
+   * Every listener is bound above, before this wait, because they used to be
+   * created after it: for the first 25 seconds of every boot there was nothing
+   * on 80, 81 or 8267, so commands in that window were refused or discarded
+   * with nothing anywhere saying why. And the wait itself was delay(250),
+   * which left up to a quarter second of dead time after the join had actually
+   * succeeded. Serving the loop while waiting costs nothing and means the
+   * board is answering the instant it has an address. */
+  if (!AP_ONLY) {
+    Serial.print("Connecting to WiFi");
+    const unsigned long joinDeadline = millis() + WIFI_JOIN_MS;
+    unsigned long lastDot = 0;
+    while (WiFi.status() != WL_CONNECTED && (long)(millis() - joinDeadline) < 0) {
+      server.handleClient();
+      fast.loop(targetA != 0 || targetB != 0);
+      rampTick();
+      if (millis() - lastDot > 250) { lastDot = millis(); Serial.print("."); }
+    }
+    if (WiFi.status() == WL_CONNECTED) announceSta(true);
+    else startFallbackAp();
+  }
 
   cloud.begin(CLOUD_HOST, CLOUD_PORT, "/api/v1/nodes/link", CLOUD_TOKEN,
-              DEVICE_NAME, "motor", CLOUD_TLS, cloudCommand, CLOUD_CA_CERT);
+              DEVICE_NAME, "motor", CLOUD_TLS, dispatchCommand, CLOUD_CA_CERT);
   if (cloud.enabled()) {
     Serial.println("  Cloud link:   dialling " + cloud.host() + ":" +
                    String(cloud.port()) + (cloud.tls() ? " (wss)" : " (ws)"));
@@ -957,12 +1269,32 @@ void setup() {
 }
 
 void loop() {
-  server.handleClient();
-  /* Only pumped with a link up. A motor node whose WiFi dropped must keep
-   * running its failsafe and ramp ticks below regardless. */
-  if (WiFi.status() == WL_CONNECTED) cloud.loop();
-  selfTestTick();
+  /* Order matters. The fast path is pumped FIRST and the ramp immediately
+   * after, so a UDP datagram or a control-socket frame becomes duty on the
+   * bridges within one pass of this loop. handleClient() comes last because it
+   * is the one thing here that can hold the loop for a noticeable time: a
+   * browser socket that connects and says nothing keeps it for up to five
+   * seconds (HTTP_MAX_DATA_WAIT), which is exactly why the drive path no
+   * longer depends on it. */
+  const bool moving = (targetA != 0 || targetB != 0);
+  fast.loop(moving);
   rampTick();
+
+  /* Only pumped with a link up: a motor node whose WiFi dropped must keep
+   * running its failsafe and ramp ticks below regardless.
+   *
+   * And only pumped while STOPPED if the socket is still down, because that
+   * is when cloud.loop() DIALS — and on this build of the WebSockets library
+   * the dial happens on this thread: a name lookup that waits on the DNS
+   * client, then a TCP connect, then a TLS handshake. A CLOUD_HOST that has
+   * gone away would otherwise freeze the ramp and the failsafe for seconds at
+   * a time, over and over. Once the socket is up, loop() is cheap and is
+   * pumped unconditionally. */
+  if (WiFi.status() == WL_CONNECTED && (cloud.connected() || !moving))
+    cloud.loop();
+  selfTestTick();
+  server.handleClient();
+  rampTick();          /* again: handleClient() may have just accepted a move */
 
   /* timed move finished */
   if (autoStopAt && (long)(millis() - autoStopAt) >= 0)   /* rollover-safe */
@@ -970,31 +1302,54 @@ void loop() {
 
   /* failsafe: never keep driving into the unknown. This is the real safety net
    * — it holds whichever network the commands arrived on, and whether or not
-   * any network is up at all. */
-  const bool moving = (targetA != 0 || targetB != 0);
-  if (moving && cfg.failsafeMs && selfStep < 0 &&
+   * any network is up at all.
+   *
+   * Re-read rather than reusing `moving` from the top of the loop: a stop that
+   * happened during this pass (the timed auto-stop just above, a /stop that
+   * handleClient() served) would otherwise be judged against a stale "yes, it
+   * is moving" and reported as a failsafe trip that never happened. */
+  const bool stillMoving = (targetA != 0 || targetB != 0);
+  if (stillMoving && cfg.failsafeMs && selfStep < 0 &&
       (millis() - lastCommandMs) > cfg.failsafeMs) {
     Serial.println("[failsafe] no command in time — stopping");
     failsafeTripped = true;
     doStop(cfg.brakeOnStop);
   }
 
-  if (WiFi.status() != WL_CONNECTED) {
+  /* AP_ONLY has no station side at all: WiFi.status() is permanently not
+   * connected, and calling WiFi.begin() here would switch the radio out of
+   * pure AP mode and drop the very network someone is driving from. */
+  if (AP_ONLY) {
+    // nothing to watch — the AP is up or the board is broken.
+  } else if (WiFi.status() != WL_CONNECTED) {
     /* Losing the router is an instant stop only when the router is what was
      * carrying commands. In AP fallback there is no router to lose, and
      * stopping there would cut off someone driving from the fallback network. */
-    if (!apMode && moving) {
+    if (!apMode && stillMoving) {
       Serial.println("[failsafe] WiFi lost — stopping");
       failsafeTripped = true;
       doStop(cfg.brakeOnStop);
     }
     staAnnounced = false;
+
+    /* Retrying the router is not free: WiFi.begin() starts a scan across every
+     * channel, and the single radio has to leave whatever else it is doing to
+     * run it. Every 5 s was also shorter than a real WPA2 join plus DHCP on a
+     * busy router, so each retry could abort an attempt that was about to
+     * succeed. Two things it must never interrupt:
+     *   - someone driving from the fallback AP. If a station is joined, that
+     *     is the link carrying commands; scanning would cut it repeatedly.
+     *   - a move in progress, on either network.
+     * Neither case loses anything: nothing here expires, and the retry
+     * resumes the moment the wheels stop or the last client leaves. */
     static unsigned long lastRetry = 0;
-    if (millis() - lastRetry > 5000) {
+    const unsigned long retryEvery = apMode ? 30000UL : 12000UL;
+    const bool apInUse = apMode && WiFi.softAPgetStationNum() > 0;
+    if (!apInUse && !stillMoving && (millis() - lastRetry) > retryEvery) {
       lastRetry = millis();
       WiFi.begin(WIFI_SSID, WIFI_PASS);
     }
   } else if (!staAnnounced) {
-    announceSta();                     /* joined (or re-joined) the router */
+    announceSta(false);                /* re-joined: one line, not the banner */
   }
 }

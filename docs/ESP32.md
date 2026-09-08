@@ -309,6 +309,10 @@ The page walks three steps:
    hardware. If a module never responds to either of its buttons, that is
    wiring — check its **VCC has 5V** and its **R_EN+L_EN are tied to the EN
    pin**. (`run full self-test` cycles all six moves automatically.)
+   If you tied *both* modules' enables to one GPIO — allowed, and a normal way
+   to wire this — the page says so, because then the side not under test is
+   braked rather than free-wheeling and will drag against the one that is.
+   Give each module its own enable GPIO if you want a clean single-side test.
 2. **Fix directions.** Press `forward`. Wrong? Flip **swap sides** /
    **invert A** / **invert B** until forward is forward and left is left.
    Exactly one combination is correct for any given wiring.
@@ -323,6 +327,47 @@ too. Nothing on the page can walk away leaving the motors running.
 
 Then in IRIS: `add device robot at <IP> as motor`, and
 `robot forward` · `move the robot left` · `stop the robot` · `robot peeche`.
+
+### How fast it responds, and why it used to be slow
+
+The page shows a **round trip** figure in the status block — the real
+measured time from pressing a key to the board answering. On a healthy link
+it reads single-digit milliseconds.
+
+It used to read hundreds of milliseconds, or stall for whole seconds, and the
+reason was not the motors. Arduino's `WebServer` — what all these boards run
+— serves **one client at a time**, and it holds a socket that has connected
+but not yet sent its request for up to **five seconds**, accepting nothing
+else in the meantime. Browsers open exactly such idle pre-connect sockets, so
+having the calibration page open was enough to queue the next drive command
+behind it. Every command also paid a fresh TCP handshake, because the server
+answers `Connection: close`.
+
+So the drive path no longer goes through it. The robot node listens two more
+ways, both feeding the same handlers:
+
+| | | |
+|---|---|---|
+| **UDP** | `8267` | Payload is exactly what would follow the host in a URL: `/motor?dir=forward&speed=200`. One datagram, no handshake, nothing to queue behind. This is what IRIS uses. |
+| **WebSocket** | `81` | One persistent socket for the calibration page, which cannot speak UDP. `/status` is *pushed* ten times a second while the wheels turn, instead of polled. |
+| **HTTP** | `80` | Everything below, unchanged, plus the page itself. |
+
+Nothing you already have breaks: HTTP still answers every endpoint, so curl,
+scripts and older IRIS releases keep working, and the page falls back to HTTP
+if the socket cannot open (it will say `over plain HTTP` instead of `over the
+control socket`).
+
+IRIS finds the UDP port from the board's own `/status`, which advertises it
+under `"fast"`. It never guesses a port — a board that does not advertise one
+only ever gets HTTP — and an unanswered datagram falls back to HTTP for that
+command rather than being lost, which is what makes it safe to save
+calibration over.
+
+The **ramp** slider (step 4 on the page) is the other half of the delay: it
+is how long the robot takes to reach full speed from a standstill. A soft
+start is what stops four motors browning out the board, so it defaults to
+90 ms rather than 0. Drop it if your battery can take it, and watch for the
+board resetting as you accelerate.
 
 ### Safety behaviour
 
