@@ -265,6 +265,16 @@ static bool  wroteBrakeA = false, wroteBrakeB = false;
  * the idle one. That is what made a raw /test of side A lock side B's wheels,
  * during the one diagnostic that has to show each side in isolation. */
 static bool  enA = false, enB = false;
+/* Duty owed but not yet handed out, carried between ramp ticks.
+ *
+ * step = PWM_DUTY_MAX * dt / rampMs is integer division, and the 2 ms gate
+ * makes the truncation bite five times harder than the old 10 ms one did: at
+ * the default 90 ms ramp, 255*2/90 is 5 where the true step is 5.67, so the
+ * ramp ran 12% slower than it was asked for — and the old "if (step < 1)
+ * step = 1" meant every ramp_ms above 510 truncated to 0, was floored to 1,
+ * and silently became the same ~510 ms. Carrying the remainder makes a ramp
+ * take the time it was asked for, at any gate and any ramp_ms. */
+static long  rampCarry = 0;
 static unsigned long lastRampMs   = 0;
 static unsigned long lastCommandMs = 0;
 static unsigned long autoStopAt    = 0;  /* 0 = no timed stop pending */
@@ -377,6 +387,9 @@ static void armHardware() {
   writeSide(true, 0, false);
   writeSide(false, 0, false);
   wroteBrakeA = wroteBrakeB = false;
+  rampCarry = 0;                     /* pins or frequency just moved under us;
+                                      * duty owed to the old routing is not
+                                      * owed to the new one */
 
   /* Enables start LOW: nothing is moving yet, so coast. */
   pinMode(cfg.aEn, OUTPUT); digitalWrite(cfg.aEn, LOW); claimedEn[0] = cfg.aEn;
@@ -395,8 +408,15 @@ static void applyLogical(int leftReq, int rightReq) {
   int b = cfg.swapSides ? leftReq  : rightReq;
   if (cfg.invA) a = -a;
   if (cfg.invB) b = -b;
+  /* Trim is integer scaling, and it must never turn a request to move into a
+   * stop: a low speed times a low trim rounds down to 0, and the command then
+   * answers 200 and does nothing. The deadband below cannot rescue that,
+   * because it only lifts values that are already non-zero. */
+  const int wantA = a, wantB = b;
   a = (int)((long)a * cfg.trimA / 100);
   b = (int)((long)b * cfg.trimB / 100);
+  if (wantA != 0 && a == 0) a = (wantA > 0) ? 1 : -1;
+  if (wantB != 0 && b == 0) b = (wantB > 0) ? 1 : -1;
   if (cfg.minDuty) {
     if (a != 0 && abs(a) < cfg.minDuty) a = (a > 0 ? cfg.minDuty : -cfg.minDuty);
     if (b != 0 && abs(b) < cfg.minDuty) b = (b > 0 ? cfg.minDuty : -cfg.minDuty);
@@ -411,6 +431,10 @@ static void applyLogical(int leftReq, int rightReq) {
 static void doStop(bool brake) {
   targetA = targetB = 0;
   liveA = liveB = 0;                 /* stopping is immediate, never ramped */
+  rampCarry = 0;                     /* no fractional duty owed to a move that
+                                      * is over; carrying it would hand the
+                                      * next move a head start it did not ask
+                                      * for */
   brakingA = brakingB = brake;
   rawMode = false;
   autoStopAt = 0;
@@ -449,16 +473,20 @@ static bool directionToPair(const String& dir, int speed, int& l, int& r) {
 static void rampApply(unsigned long dt) {
   int step = PWM_DUTY_MAX;                   /* rampMs 0 => instant */
   if (cfg.rampMs > 0) {
-    step = (int)((long)PWM_DUTY_MAX * dt / cfg.rampMs);
-    if (step < 1) step = 1;
+    const long owed = (long)PWM_DUTY_MAX * (long)dt + rampCarry;
+    step = (int)(owed / cfg.rampMs);
+    rampCarry = owed % cfg.rampMs;
   }
   bool changed = (brakingA != wroteBrakeA) || (brakingB != wroteBrakeB);
-  if (liveA != targetA) {
+  /* step can legitimately be 0 for a tick or two on a very long ramp — the
+   * carry guarantees it will not stay 0 — and writing an unchanged duty is
+   * just two wasted ledcWrite calls, so wait for a step that moves something. */
+  if (liveA != targetA && step > 0) {
     if (abs(targetA - liveA) <= step) liveA = targetA;
     else liveA += (targetA > liveA) ? step : -step;
     changed = true;
   }
-  if (liveB != targetB) {
+  if (liveB != targetB && step > 0) {
     if (abs(targetB - liveB) <= step) liveB = targetB;
     else liveB += (targetB > liveB) ? step : -step;
     changed = true;
@@ -645,8 +673,14 @@ static void handleStatus() {
   j += ",\"live\":{\"a\":" + String(liveA) + ",\"b\":" + String(liveB) + "}";
   j += ",\"target\":{\"a\":" + String(targetA) + ",\"b\":" + String(targetB) + "}";
   j += ",\"moving\":" + String((liveA || liveB) ? "true" : "false");
-  j += ",\"bridges\":{\"a\":" + String(enA ? "true" : "false") +
-       ",\"b\":" + String(enB ? "true" : "false") + "}";
+  /* With one GPIO carrying both R_EN/L_EN pairs the hardware cannot hold the
+   * two sides apart, so reporting them separately would be reporting a state
+   * the board is not in. shared_enable says which reading applies. */
+  const bool sharedEnable = (cfg.aEn == cfg.bEn);
+  const bool anyBridge = enA || enB;
+  j += ",\"bridges\":{\"a\":" + String((sharedEnable ? anyBridge : enA) ? "true" : "false") +
+       ",\"b\":" + String((sharedEnable ? anyBridge : enB) ? "true" : "false") +
+       ",\"shared_enable\":" + String(sharedEnable ? "true" : "false") + "}";
   j += ",\"failsafe_tripped\":" + String(failsafeTripped ? "true" : "false");
   j += ",\"raw_mode\":" + String(rawMode ? "true" : "false");
   j += ",\"selftest_step\":" + String(selfStep);
@@ -675,7 +709,21 @@ static void acceptCommand(const char* label, long ms) {
 }
 
 static void handleMotor() {
-  String dir = argHas("dir") ? argGet("dir") : "stop";
+  /* `dir` is required, not defaulted.
+   *
+   * It used to default to "stop", so /motor?direction=forward — a misspelling,
+   * a client that dropped the query string, a proxy that ate it — answered
+   * HTTP 200, counted as a command, refreshed the failsafe, and stopped the
+   * robot. A silent stop is the single worst answer a motor node can give,
+   * because it is indistinguishable from unpowered drivers: the board agrees
+   * with everything you ask and nothing ever turns. /stop and /motor?dir=stop
+   * remain the ways to ask for a stop. */
+  if (!argHas("dir")) {
+    sendJson(400, "{\"error\":\"dir is required\",\"hint\":\""
+                  "forward|backward|left|right|stop|brake\"}");
+    return;
+  }
+  String dir = argGet("dir");
   dir.toLowerCase();
 
   long speed = cfg.defaultSpeed, ms = 0;
@@ -773,9 +821,23 @@ static void handleTest() {
   String pins = (side == "a")
     ? "{\"rpwm\":" + String(cfg.aR) + ",\"lpwm\":" + String(cfg.aL) + ",\"en\":" + String(cfg.aEn) + "}"
     : "{\"rpwm\":" + String(cfg.bR) + ",\"lpwm\":" + String(cfg.bL) + ",\"en\":" + String(cfg.bEn) + "}";
+  /* One shared enable GPIO is blessed wiring (see the header), but it costs
+   * this endpoint the isolation it promises: setEnables() must drive the shared
+   * pin high whenever EITHER side needs its bridge, so the side NOT under test
+   * sits enabled with both inputs low — a low-side short, i.e. braked. Its
+   * wheels are held, not free, and dragging against the test is exactly what
+   * makes a good module look weak. Said out loud rather than left to be
+   * discovered, because this is the one endpoint whose whole job is to answer
+   * "which module actually responds?" without ambiguity. */
+  const bool sharedEn = (cfg.aEn == cfg.bEn);
   sendJson(200, "{\"test\":{\"side\":\"" + side + "\",\"dir\":\"" + dir +
                 "\",\"speed\":" + String(speed) + ",\"ms\":" + String(ms) +
-                "},\"pins\":" + pins + ",\"note\":\"raw mode: swap/invert/trim bypassed\"}");
+                "},\"pins\":" + pins +
+                ",\"shared_enable\":" + String(sharedEn ? "true" : "false") +
+                ",\"note\":\"raw mode: swap/invert/trim bypassed" +
+                (sharedEn ? String(". Both modules share GPIO ") + String(cfg.aEn) +
+                            ", so the other side is braked rather than coasting"
+                          : String("")) + "\"}");
 }
 
 static void handleSelfTest() {
@@ -837,11 +899,15 @@ static void handleConfig() {
   long trimA = next.trimA, trimB = next.trimB, fail = next.failsafeMs,
        ramp = next.rampMs, dspd = next.defaultSpeed, mind = next.minDuty,
        freq = next.pwmFreq;
-  if (!argClamp("trim_a", 0, 100, trimA) ||
-      !argClamp("trim_b", 0, 100, trimB) ||
+  /* Trim and default_speed floor at 1, not 0. A stored 0 in any of them makes
+   * every subsequent command answer 200 and move nothing — and it survives a
+   * reboot, so the robot looks permanently, inexplicably dead. There is no
+   * calibration that wants a side scaled to zero; that is what /stop is. */
+  if (!argClamp("trim_a", 1, 100, trimA) ||
+      !argClamp("trim_b", 1, 100, trimB) ||
       !argClamp("failsafe_ms", 0, 60000, fail) ||
       !argClamp("ramp_ms", 0, 3000, ramp) ||
-      !argClamp("default_speed", 0, PWM_DUTY_MAX, dspd) ||
+      !argClamp("default_speed", 1, PWM_DUTY_MAX, dspd) ||
       !argClamp("min_duty", 0, MIN_DUTY_MAX, mind) ||
       !argClamp("pwm_freq", 100, 25000, freq) ||
       !argBool("swap_sides", next.swapSides) ||
@@ -896,9 +962,30 @@ static void handleReset() {
 
 /* ───────────────────────── dashboard ────────────────────────────── */
 
+/* The page is ~12 KB and lwIP's send buffer is 5760 bytes (see
+ * CONFIG_LWIP_TCP_SND_BUF_DEFAULT), so one send_P() of the whole thing parks
+ * inside WiFiClient::write waiting for the browser to ACK the middle of it —
+ * up to HTTP_MAX_SEND_WAIT if that browser stalls. Nothing else in loop() runs
+ * meanwhile, which on this board means the ramp and the failsafe stop ticking
+ * while somebody reloads the page.
+ *
+ * Streaming it a kilobyte at a time and pumping the drive path between chunks
+ * costs a few chunk headers and buys a loop that never stops servicing the
+ * motors. Safe to re-enter: the fast path writes its replies into a String
+ * (see sendJson), so it cannot interleave with this response. */
 static void handleRoot() {
   server.sendHeader("Access-Control-Allow-Origin", "*");
-  server.send_P(200, "text/html", PAGE);
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "text/html", "");
+
+  const size_t total = strlen_P(PAGE);
+  for (size_t at = 0; at < total; at += 1024) {
+    const size_t n = (total - at < 1024) ? (total - at) : 1024;
+    server.sendContent_P(PAGE + at, n);
+    fast.loop(targetA != 0 || targetB != 0);
+    rampTick();
+  }
+  server.sendContent("");
 }
 
 /* ───────────────────────── setup / loop ─────────────────────────── */

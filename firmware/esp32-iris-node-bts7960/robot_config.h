@@ -110,6 +110,15 @@ inline int pinConflict(const Config& c) {
 inline void configApplyClamps(Config& c) {
   if (c.trimA > 100) c.trimA = 100;
   if (c.trimB > 100) c.trimB = 100;
+  /* A stored zero in either gain scales that side to nothing: every command
+   * afterwards answers 200 and no wheel turns, across reboots, with no way to
+   * tell it from a dead driver. Older builds accepted 0 here, so a saved one
+   * has to be undone rather than merely rejected next time — restored to the
+   * default rather than to 1, because "barely creeps" is not a better guess at
+   * what was meant than "normal". */
+  if (c.trimA < 1) c.trimA = 100;
+  if (c.trimB < 1) c.trimB = 100;
+  if (c.defaultSpeed < 1) c.defaultSpeed = 200;
   if (c.pwmFreq < 100 || c.pwmFreq > 25000) c.pwmFreq = 20000;
   if (c.failsafeMs > 60000) c.failsafeMs = 60000;
   if (c.rampMs > 3000) c.rampMs = 3000;

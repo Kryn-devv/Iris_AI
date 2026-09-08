@@ -6,10 +6,18 @@
  * does not understand raw string literals — the JavaScript "async function"
  * below makes it emit a bogus C++ prototype and the build fails. Headers are
  * not scanned, so the page lives here.
+ *
+ * The <meta charset=utf-8> is load-bearing. This file is UTF-8 and the board
+ * serves it as "text/html" with no charset parameter, so without the tag a
+ * browser falls back to windows-1252 and every em-dash in a rendered string
+ * arrives as "â€”". HTML entities are not a way around it: the text that
+ * showed the fault lives in a JavaScript string, where &mdash; would render
+ * as those seven characters.
  */
 #pragma once
 
 static const char PAGE[] PROGMEM = R"HTML(<!DOCTYPE html><html><head>
+<meta charset=utf-8>
 <meta name=viewport content='width=device-width,initial-scale=1'>
 <title>IRIS robot</title><style>
 :root{--bg:#05070f;--pa:#0d1224;--ln:rgba(94,234,212,.25);--ac:#5eead4;--tx:#e6edf7;--dm:#8b96ad}
@@ -226,6 +234,8 @@ function render(j){
  +'\nlink '+j.link+(j.ap_mode?' (own network)':'')+'  '+j.rssi+'dBm  up '+j.uptime_s+'s'
  +'\ncmds '+j.commands+'  heap '+j.free_heap
  +'\nround trip '+(rtt===null?'--':rtt+' ms')+'  over '+(wsReady?'the control socket':'plain HTTP')
+ +(j.bridges.shared_enable?'\nnote both modules share one EN pin, so the side not being\n'
+   +'     tested is braked rather than coasting — expect it to drag':'')
  +(j.failsafe_tripped?'\n** failsafe stopped the motors **':'')}
 
 /* Only used while the socket is down. With it up, the board PUSHES status
