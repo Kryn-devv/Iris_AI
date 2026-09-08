@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 from typing import Any, Dict, Optional
 from urllib.parse import urlencode, urlsplit
 
@@ -39,21 +40,43 @@ from iris.app.tools.devices.registry import Device
 
 logger = get_logger("tools.devices.transport")
 
-#: ESP32 web servers answer in well under a second on a healthy LAN. Six
-#: seconds meant a robot that had lost power held the assistant — and the
-#: person waiting on it — for six seconds before saying so.
+#: For reads worth waiting for — /status, /sensors — where a slow answer still
+#: beats no answer. Six seconds meant a robot that had lost power held the
+#: assistant, and the person waiting on it, for six seconds before saying so.
 LAN_TIMEOUT = httpx.Timeout(4.0, connect=2.0)
 
-#: How long to wait for the node's answering datagram. A LAN round trip to an
-#: ESP32 is single-digit milliseconds, so this is generous by a factor of
-#: fifty and still an order of magnitude tighter than the HTTP timeout it
-#: stands in front of.
-FAST_TIMEOUT = 0.35
+#: For actuator commands — /motor, /tank, /drive, /relay, /servo. A LAN ESP32
+#: answers these in single-digit milliseconds, and the turn is awaiting it, so
+#: the budget is what a congested 2.4 GHz link plausibly needs rather than
+#: what a wedged one might eventually use. Not tighter than this: a false
+#: "it did not answer" on a command that actually landed is worse than a
+#: command that took a moment.
+COMMAND_TIMEOUT = httpx.Timeout(1.5, connect=0.8)
+
+#: Paths that actuate something, and so take the tight budget above.
+_ACTUATOR_PATHS = ("/motor", "/tank", "/drive", "/relay", "/servo", "/stop", "/test")
+
+#: How long to wait for the node's answering datagram before falling back to
+#: HTTP. A LAN round trip to an ESP32 is single-digit milliseconds; the slack
+#: is for a board that is mid-way through serving something else, since the
+#: fallback will be slower still than waiting a little longer here.
+FAST_TIMEOUT = 0.15
+
+#: How long a board that failed to answer a fast-path probe is left alone.
+#: Without this, a board that is simply off re-probed on every command and
+#: paid TWO full HTTP timeouts per spoken word — the probe and then the
+#: command. Short enough that a board which has just booted is picked up on
+#: the next thing you say.
+FAST_PROBE_RETRY_S = 5.0
 
 #: base_url -> the UDP command port that node advertised, or None for "this
 #: board has no fast path". Learned from the node's own /status, never
 #: guessed: a board that does not advertise a port never receives a datagram.
 _FAST_PORTS: Dict[str, Optional[int]] = {}
+
+#: base_url -> event-loop time before which not to re-probe a board that
+#: failed to answer. See FAST_PROBE_RETRY_S.
+_FAST_PROBE_HOLD: Dict[str, float] = {}
 
 #: Kinds whose bundled firmware ships a UDP listener, and therefore the only
 #: ones worth spending a round trip ASKING. Every other kind still gets the
@@ -71,6 +94,7 @@ def forget_fast_paths() -> None:
     address and gains (or loses) the UDP listener.
     """
     _FAST_PORTS.clear()
+    _FAST_PROBE_HOLD.clear()
 
 
 def read_fast_port(status: Any) -> Optional[int]:
@@ -87,6 +111,17 @@ def read_fast_port(status: Any) -> Optional[int]:
 
 def _host_of(base_url: str) -> str:
     return urlsplit(base_url).hostname or ""
+
+
+def _looks_unresolvable(exc: BaseException) -> bool:
+    """True when a connect failure was name resolution, not an absent board."""
+    seen = 0
+    while exc is not None and seen < 6:
+        if isinstance(exc, socket.gaierror):
+            return True
+        exc = exc.__cause__ or exc.__context__
+        seen += 1
+    return False
 
 
 class _OneReply(asyncio.DatagramProtocol):
@@ -157,23 +192,65 @@ async def _fast_port(device: Device) -> Optional[int]:
         return _FAST_PORTS[key]
     if device.kind not in FAST_PROBE_KINDS:
         return None
+    # A board that is off fails this probe, and the command right after it
+    # fails too — so without a hold-off, every spoken command paid TWO full
+    # HTTP timeouts before the user heard anything. The hold-off is seconds,
+    # not permanent: a board that has just booted must not stay written off as
+    # slow for the life of the process.
+    now = asyncio.get_running_loop().time()
+    if now < _FAST_PROBE_HOLD.get(key, 0.0):
+        return None
     try:
         status = await lan_get(f"{key}/status")
     except ToolError:
-        # Deliberately not cached. A board that happens to be unplugged right
-        # now must still get the fast path once it is back, rather than being
-        # written off as slow for the life of the process.
+        _FAST_PROBE_HOLD[key] = now + FAST_PROBE_RETRY_S
         return None
+    _FAST_PROBE_HOLD.pop(key, None)
     return remember_fast_port(key, status)
 
 
-async def lan_get(url: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _client(url: str, timeout: httpx.Timeout) -> httpx.AsyncClient:
+    """A client for one device call, built as cheaply as the URL allows.
+
+    Constructing an AsyncClient is not free the way it looks: measured at
+    43 ms here, of which ~26 ms is reading proxy and netrc settings out of the
+    environment and ~16 ms is building an SSLContext from the certifi bundle.
+    This ran once per device call — twice for a cold motor command — so a
+    "robot forward" spent ~87 ms of pure CPU before a packet left the machine.
+
+    trust_env=False is a correctness fix as much as a speed one: device
+    addresses are LAN-only by construction (registry.normalize_base_url), and
+    routing them through a configured HTTP proxy could never work.
+
+    The SSL context is skipped only for http://, which is every board this
+    ships with. An https device still gets a verified one and pays for it.
+    """
+    if url.lower().startswith("https://"):
+        return httpx.AsyncClient(timeout=timeout, trust_env=False)
+    return httpx.AsyncClient(timeout=timeout, trust_env=False, verify=False)
+
+
+async def lan_get(
+    url: str,
+    params: Optional[Dict[str, Any]] = None,
+    timeout: Optional[httpx.Timeout] = None,
+) -> Dict[str, Any]:
     """GET a device endpoint, tolerating non-JSON bodies from custom firmware."""
     host = url.split("/", 3)[2] if "//" in url else url
     try:
-        async with httpx.AsyncClient(timeout=LAN_TIMEOUT) as client:
+        async with _client(url, timeout or LAN_TIMEOUT) as client:
             response = await client.get(url, params=_clean(params))
     except httpx.ConnectError as exc:
+        # A name that will not resolve is a different problem from a board
+        # that is off, and saying "is it powered on?" sends the user to check
+        # the wrong thing. .local is the documented happy path here, and it
+        # needs mDNS resolution the host may simply not have.
+        if _looks_unresolvable(exc):
+            raise ToolError(
+                f"Could not look up '{host}' on this network. Names ending in "
+                f".local need mDNS, which not every machine has — register the "
+                f"device by its IP address instead."
+            ) from exc
         raise ToolError(
             f"Could not reach the device at {host} — is it powered on and on the same WiFi?"
         ) from exc
@@ -227,7 +304,10 @@ async def device_request(
                 device.base_url, exc,
             )
 
-    data = await lan_get(f"{device.base_url}{path}", clean)
+    # A command the turn is waiting on gets the tight budget; a reading worth
+    # having gets the patient one.
+    timeout = COMMAND_TIMEOUT if path in _ACTUATOR_PATHS else LAN_TIMEOUT
+    data = await lan_get(f"{device.base_url}{path}", clean, timeout)
     if path == "/status":
         remember_fast_port(device.base_url, data)
     return data

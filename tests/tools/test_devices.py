@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 
 import httpx
 import pytest
@@ -743,10 +744,33 @@ class TestFastPath:
         assert node.seen == ["/relay?ch=1&state=on"]
 
     @pytest.mark.asyncio
-    async def test_an_offline_board_is_not_written_off_as_slow(self, monkeypatch):
-        """A board unplugged at the moment we first ask must still get the
-        fast path once it is back, rather than being cached as HTTP-only."""
+    async def test_a_board_that_is_off_does_not_cost_two_timeouts_per_command(
+        self, monkeypatch
+    ):
+        """A failed probe is held off briefly, not repeated. Without that, a
+        board that is simply unplugged made every spoken command pay the probe
+        timeout AND the command timeout before the user heard anything."""
+        probes = {"n": 0}
+
+        def handler(request):
+            if request.url.path == "/status":
+                probes["n"] += 1
+            raise httpx.ConnectError("no route to host")
+
+        _mock_http(monkeypatch, handler)
+        dev = Device(name="robot", base_url="http://127.0.0.1", kind="motor")
+
+        for _ in range(3):
+            with pytest.raises(ToolError):
+                await transport_mod.device_request(dev, "/motor", {"dir": "forward"})
+        assert probes["n"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_board_that_comes_back_is_picked_up_again(self, monkeypatch):
+        """The hold-off is seconds, not permanent: a board unplugged when we
+        first asked must still get the fast path once it is back."""
         srv, node, port = await _serve_udp(answer={"motor": "forward"})
+        monkeypatch.setattr(transport_mod, "FAST_PROBE_RETRY_S", 0.05)
         try:
             state = {"up": False}
 
@@ -763,7 +787,55 @@ class TestFastPath:
             assert node.seen == []                  # nothing guessed at while down
 
             state["up"] = True
+            await asyncio.sleep(0.06)               # hold-off expires
             await transport_mod.device_request(dev, "/motor", {"dir": "forward"})
         finally:
             srv.close()
         assert node.seen == ["/motor?dir=forward"]
+
+    @pytest.mark.asyncio
+    async def test_a_command_gets_a_tighter_budget_than_a_reading(self, monkeypatch):
+        """A turn waiting on /motor must not be held for as long as a /status
+        that is still worth having when it is slow."""
+        seen: list = []
+
+        def fake_client(url, timeout):
+            seen.append((url, timeout.read, timeout.connect))
+            return httpx.AsyncClient(
+                timeout=timeout, transport=httpx.MockTransport(
+                    lambda r: httpx.Response(200, json={"ok": True})))
+
+        monkeypatch.setattr(transport_mod, "_client", fake_client)
+        dev = Device(name="robot", base_url="http://127.0.0.1", kind="relay")
+
+        await transport_mod.device_request(dev, "/relay", {"ch": 1, "state": "on"})
+        await transport_mod.device_request(dev, "/status")
+
+        command, reading = seen[0], seen[-1]
+        assert command[1] == transport_mod.COMMAND_TIMEOUT.read
+        assert reading[1] == transport_mod.LAN_TIMEOUT.read
+        assert command[1] < reading[1] and command[2] < reading[2]
+
+    def test_an_unresolvable_name_is_told_apart_from_a_board_that_is_off(self):
+        """'is it powered on?' sends the user to check the wrong thing when
+        the real problem is that this machine cannot resolve .local at all."""
+        gai = socket.gaierror(-2, "Name or service not known")
+        wrapped = httpx.ConnectError("nope")
+        wrapped.__cause__ = gai
+        assert transport_mod._looks_unresolvable(wrapped)
+        assert not transport_mod._looks_unresolvable(
+            httpx.ConnectError("connection refused"))
+
+    @pytest.mark.asyncio
+    async def test_device_calls_never_go_through_a_configured_proxy(self, monkeypatch):
+        """Device addresses are LAN-only by construction, so a proxy could
+        never serve them — and reading the environment for one was also 26 ms
+        of the 43 ms every command used to spend building a client."""
+        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+        monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:9")
+        client = transport_mod._client("http://192.168.1.60/motor",
+                                       transport_mod.COMMAND_TIMEOUT)
+        try:
+            assert client.trust_env is False
+        finally:
+            await client.aclose()
