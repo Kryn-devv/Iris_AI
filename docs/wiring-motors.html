@@ -678,15 +678,22 @@ module B with 32/33/14.</p>
 
 <div class="note">
   <h4>If a module ever responds <em>sometimes</em></h4>
-  <p>The ESP32's logic is 3.3 V and the module's is nominally 5 V, and most of these
+  <p>The ESP32's logic is 3.3 V, the module is labelled 5 V, and most of these
   boards accept that happily — <strong>yours already did</strong>, when the plain
-  test sketch drove these motors. But if one module is ever intermittent when the
-  signal is provably good, read the marking on the wide 20-pin chip next to the
-  eight-pin header. A <code>74HC244</code> or <code>74AC244</code> running on a 5 V
-  rail wants 3.5 V to call an input high, which your 3.3 V is not; moving
-  <em>that module's VCC</em> to the ESP32's <strong>3.3 V</strong> pin puts the whole
-  chain back in spec. A <code>74HCT244</code> is happy as it is and wants to stay on
-  5 V. This is the one real explanation for "it worked yesterday".</p>
+  test sketch drove these motors. But there is a real reason it can be marginal, and
+  it is the answer to "it worked yesterday".</p>
+  <p>Read the marking on the wide chip beside the eight-pin header. That chip is the
+  buffer that drives both driver chips, and it runs on whatever you put on VCC. If it
+  is a CMOS-threshold part — <code>74AHC244</code>, <code>74HC244</code>,
+  <code>74AC244</code> — it needs <strong>0.7 × VCC</strong> to read an input as
+  high. On a 5 V rail that is 3.5 V, which a 3.3 V GPIO never reaches. Feeding
+  <em>that module's VCC from the ESP32's 3V3 pin instead</em> drops the threshold to
+  2.3 V and puts the whole chain properly in spec. If it is an <code>HCT</code> part
+  the thresholds are fixed at 2.0 V, 3.3 V is already fine, and it wants to stay
+  on 5 V.</p>
+  <p>Either way VCC must have <em>a</em> supply. It is the only thing powering that
+  buffer, so with VCC unconnected the driver chips' inputs have no defined level at
+  all — which is the "completely dead module" everyone meets first.</p>
 </div>
 
 <h2><span class="num">03</span>The signal side: ESP32 to both modules</h2>
@@ -893,13 +900,13 @@ difference between a robot that drives and a robot you can leave running.</p>
       fuse. The switch also means you stop being the disconnect.</td>
     </tr>
     <tr>
-      <td><strong>10 kΩ resistors</strong><br><span class="chip rs">six of them</span></td>
-      <td>One from each logic line — RPWM, LPWM, EN, on both modules — to GND, at the
-      header</td>
-      <td>The reset window. Every ESP32 pin goes high-impedance for the ~300 ms it
-      takes to reboot, and the module's own internal pull-down is far too weak to be
-      called a state. These make "no signal" reliably mean "off" — including at
-      power-on, where GPIO 14 in particular is known to twitch.</td>
+      <td><strong>4.7 kΩ resistors</strong><br><span class="chip rs">measure first</span></td>
+      <td>Only if the 30-second test below says you need them: one from each logic
+      pin to that <em>same header's</em> GND pin</td>
+      <td>The reset window. Every ESP32 pin is high-impedance for the few hundred
+      milliseconds it takes to boot — and longer, indefinitely, while the board sits
+      in download mode as you flash it. Most stock modules already handle this
+      themselves; see below.</td>
     </tr>
     <tr>
       <td><strong>470–1000 µF</strong><br><span class="chip r12">25 V+</span></td>
@@ -911,6 +918,33 @@ difference between a robot that drives and a robot you can leave running.</p>
     </tr>
   </tbody>
 </table>
+</div>
+
+<div class="note">
+  <h4>The 30-second test that says whether you need the resistors</h4>
+  <p>With the module <strong>completely disconnected</strong>, put an ohmmeter
+  between each of RPWM, LPWM, R_EN, L_EN and that header's own GND pin.</p>
+  <p><strong>About 1 kΩ</strong> — the stock board already has pull-downs fitted and
+  there is nothing for you to add. <strong>Open circuit</strong> — it is a clone
+  without them, and this is where the 4.7 kΩ resistors earn their place. Not 10 kΩ,
+  which is the value everyone quotes: the ESP32's own internal pull-up is around
+  45 kΩ with no published minimum, and 4.7 kΩ keeps a margin that 10 kΩ does not.</p>
+  <p>Why it matters most on <strong>GPIO 14</strong>: it is the one pin of the six
+  that the ESP32 pulls the <em>wrong</em> way — after reset it has a weak internal
+  pull-up, so side B's enable is being held high by the chip itself until the
+  firmware takes over. On a stock module the 1 kΩ pull-down wins that argument
+  easily. On a clone with nothing fitted, it does not.</p>
+  <p>And do not let anyone tell you the driver chip holds its own enable low: its
+  datasheet specifies no pull-down on that pin at all. A floating enable is
+  undefined, not safe.</p>
+</div>
+
+<div class="note danger">
+  <h4>Battery off, or wheels up, whenever you flash</h4>
+  <p>While the board is in download mode your program is not running, so nothing has
+  configured any pin yet — that window lasts as long as the flashing does. This is
+  the most likely moment for a motor to move on its own, and it catches people
+  precisely because they are concentrating on the computer.</p>
 </div>
 
 <h2><span class="num">05</span>The order to do it in</h2>
@@ -983,16 +1017,32 @@ to work. Four things that look like wiring decisions are not:</p>
     <tr><td>The module you called A drives the right-hand wheels</td><td><strong>swap sides</strong></td></tr>
     <tr><td>One side spins backwards</td><td><strong>invert A</strong> or <strong>invert B</strong></td></tr>
     <tr><td>Forward is backward on both sides</td><td><strong>invert A</strong> and <strong>invert B</strong></td></tr>
-    <tr><td>It veers instead of driving straight</td><td><strong>trim</strong> the faster side down</td></tr>
-    <tr><td>You used different GPIOs than the six above</td><td>type them into <strong>the pins fields</strong>, live</td></tr>
+    <tr><td>It veers instead of driving straight</td><td><strong>trim</strong> the faster side down (40–100&nbsp;% — it can only slow a side, never speed one up)</td></tr>
+    <tr><td>You swapped a module's RPWM and LPWM wires</td><td><strong>invert</strong> that side. It is the identical operation.</td></tr>
   </tbody>
 </table>
 </div>
 
-<p>Press <strong>SAVE</strong> and it survives reboots. What the page <em>cannot</em>
-fix is a missing VCC, a ground that is not common, a motor lead that has fallen off,
-or a battery that is not connected — which is exactly why those are the first things
-this sheet asks you to check.</p>
+<p>Press <strong>SAVE</strong> and it survives reboots.</p>
+
+<p>Four things the page <em>cannot</em> fix, and they are worth knowing before you
+crimp anything: <strong>a missing VCC</strong>; <strong>a ground that is not
+common</strong>; <strong>only R_EN wired and not L_EN</strong>, which gives a side
+that turns one way and refuses the other, forever; and <strong>one of a pair of
+motors wired backwards relative to its partner</strong> — invert and trim act on a
+whole module, never on one motor, so two motors fighting each other inside one side
+is the single mistake in this layout that no setting will undo.</p>
+
+<div class="note">
+  <h4>The GPIO numbers are the one thing not on the page</h4>
+  <p>Everything above is a checkbox or a slider. Pins are re-assignable at runtime
+  too, but only by asking the board directly over a URL — there are no pin fields in
+  the dashboard:</p>
+  <pre class="say">http://&lt;the board's ip&gt;/config?<span class="hi">a_rpwm=18&amp;a_lpwm=19&amp;a_en=21</span>
+http://&lt;the board's ip&gt;/save</pre>
+  <p>The same route is the only way to reach <code>min_duty</code>,
+  <code>failsafe_ms</code>, <code>pwm_freq</code> and <code>default_speed</code>.</p>
+</div>
 
 <div class="note">
   <h4>Pins the board will refuse</h4>
@@ -1047,10 +1097,23 @@ information no amount of looking at wires will give you.</p>
       <td><strong>trim</strong> the faster side down.</td>
     </tr>
     <tr>
+      <td>A side turns one way and refuses the other</td>
+      <td>Only <strong>R_EN</strong> is wired — <strong>L_EN</strong> was left off</td>
+      <td>Nothing on the page will ever fix this. Tie that module's R_EN and L_EN
+      together and run one wire to the GPIO.</td>
+    </tr>
+    <tr>
+      <td>One side is weak, or its two wheels fight</td>
+      <td>The two motors on that module are wired in opposite phase</td>
+      <td>Swap one motor's two leads. <strong>invert</strong> and <strong>trim</strong>
+      act on a whole module, never on one motor, so no setting can undo this.</td>
+    </tr>
+    <tr>
       <td>Motors whine but do not turn</td>
       <td>Speed below what a loaded motor can start on</td>
-      <td>Raise the speed slider; if it turns, set a <strong>min duty</strong>
-      deadband so low requests are lifted to something that moves.</td>
+      <td>Raise the speed slider. If that fixes it, give it a permanent floor with
+      <code>/config?min_duty=60</code> then <code>/save</code> — it is not a page
+      control.</td>
     </tr>
     <tr>
       <td>The ESP32 reboots when motors start</td>
