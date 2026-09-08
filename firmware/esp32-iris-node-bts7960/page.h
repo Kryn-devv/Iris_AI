@@ -245,11 +245,26 @@ function render(j){
 
 /* Only used while the socket is down. With it up, the board PUSHES status
    (every 100 ms while the wheels turn), so there is nothing to poll and no
-   poll to collide with a drive command. */
+   poll to collide with a drive command.
+
+   `polling` is the whole point of this being more than three lines. The
+   fallback only runs when things are already going badly, and that is exactly
+   when a /status fetch takes longer than the 700 ms between ticks — at which
+   point an unguarded timer stacks a second request on a server that handles
+   one client at a time, and the page starts competing with itself for the
+   thing it is trying to show you. One in flight at a time; a tick that arrives
+   while the last one is still out simply skips.
+
+   Deliberately NOT done here: retiring the timer once the socket opens. The
+   guard above already makes it a single comparison every 700 ms, and the timer
+   has to survive to cover the socket dropping again. */
+let polling=false;
 async function poll(){
- if(wsReady)return;
+ if(wsReady||polling)return;
+ polling=true;
  try{render(await(await fetch('/status')).json())}
- catch(e){$('out').textContent='offline'}}
+ catch(e){$('out').textContent='offline'}
+ finally{polling=false}}
 
 openWs();
 load();poll();setInterval(poll,700);
