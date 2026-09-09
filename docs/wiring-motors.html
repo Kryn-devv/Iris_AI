@@ -810,12 +810,12 @@ battery minus, both modules' GND, both modules' B−, and the ESP32's GND all me
       <rect class="box" x="200" y="74" width="150" height="86" rx="3"></rect>
       <text class="name" x="275" y="112" text-anchor="middle">MODULE A</text>
       <text class="lbl-sm c12" x="250" y="90" text-anchor="middle">B+</text>
-      <text class="lbl-sm" x="230" y="152" text-anchor="middle">B− &amp; GND</text>
+      <text class="lbl-sm" x="230" y="152" text-anchor="middle">B−</text>
 
       <rect class="box" x="400" y="74" width="150" height="86" rx="3"></rect>
       <text class="name" x="475" y="112" text-anchor="middle">MODULE B</text>
       <text class="lbl-sm c12" x="465" y="90" text-anchor="middle">B+</text>
-      <text class="lbl-sm" x="520" y="152" text-anchor="middle">B− &amp; GND</text>
+      <text class="lbl-sm" x="520" y="152" text-anchor="middle">B−</text>
 
       <!-- module grounds down to the bus, clear of the ESP32 box -->
       <path class="w wg" d="M230,160 V252"></path>
@@ -842,7 +842,11 @@ battery minus, both modules' GND, both modules' B−, and the ESP32's GND all me
     module. And the two kinds of ground wire are not interchangeable: <b>battery
     minus to each B− is the heavy return</b>, carrying every amp the motors draw,
     while <b>ESP32 GND to each module's header GND is a thin reference wire</b>
-    carrying nothing. Run them separately. Chain the reference through the motor
+    carrying nothing. That thin wire goes to the <em>ESP32</em>, not to the battery:
+    on these modules the header GND and B− are one piece of copper inside, so a
+    second wire from header GND to the battery post would sit in parallel with the
+    heavy return and carry a share of the motor current through a signal wire. The
+    module joins the two grounds for you. Chain the reference through the motor
     return and the module ends up comparing your 3.3 V signal against a ground that
     moves every time a wheel loads up — which is not a bang, just a robot that
     responds erratically and gets blamed on software.
@@ -957,9 +961,10 @@ difference between a robot that drives and a robot you can leave running.</p>
   </li>
   <li>
     <h4>Grounds, before anything else</h4>
-    <p>All to <strong>one point</strong> at the battery minus. Heavy wire from there
-    to each module's <strong>B−</strong>; a separate thin wire from there (or from the
-    ESP32) to each module's header <strong>GND</strong>. Doing grounds first means
+    <p>Two kinds, kept apart. <strong>Heavy wire from the battery minus to each
+    module's B−.</strong> <strong>Thin wire from the ESP32's GND to each module's
+    header GND.</strong> Not a third wire from header GND to the battery — the
+    module already joins its header GND to B− internally. Doing grounds first means
     every later measurement has something honest to measure against.</p>
   </li>
   <li>
@@ -1114,6 +1119,14 @@ information no amount of looking at wires will give you.</p>
       <td>Raise the speed slider. If that fixes it, give it a permanent floor with
       <code>/config?min_duty=60</code> then <code>/save</code> — it is not a page
       control.</td>
+    </tr>
+    <tr>
+      <td>A side dies mid-drive, then works again after the next stop</td>
+      <td>That module overheated. Its thermal shutdown <strong>latches</strong> and
+      only clears when the enable drops — which "stop" does</td>
+      <td>Feel the module. Add airflow or a heatsink, lower the speed, or check for
+      a motor that is stalling. This is also why the enables must be on GPIOs and
+      not tied high: tied high, that latch never clears.</td>
     </tr>
     <tr>
       <td>The ESP32 reboots when motors start</td>
