@@ -111,7 +111,8 @@ const char* CLOUD_TOKEN = "";              /* must equal NODE_LINK_TOKEN     */
  *                       is a perfectly good pair of eyes. Only the wink is lost.
  *                       No extra wiring. This is the default.
  * TWIN_PANELS = false : two independent eyes. Give the right module its own
- *                       bus on PIN_R_SDA / PIN_R_SCL (two more wires).
+ *                       bus on PIN_R_SDA / PIN_R_SCL — two pins with nothing
+ *                       else on them (38/39 by default).
  * SHARED_BUS  = true  : one bus, but you moved one module to 0x3D (solder
  *                       jumper) — independent eyes on one pair of wires.
  *
@@ -122,8 +123,8 @@ const bool TWIN_PANELS  = true;
 const bool SHARED_BUS   = false;
 const int  PIN_L_SDA    = 20;     /* the bus both eyes are on                 */
 const int  PIN_L_SCL    = 21;
-const int  PIN_R_SDA    = 17;     /* right eye, only when TWIN_PANELS=false   */
-const int  PIN_R_SCL    = 18;
+const int  PIN_R_SDA    = 38;     /* right eye, only when TWIN_PANELS=false   */
+const int  PIN_R_SCL    = 39;     /* (17/18 are taken by the MQ-2 DO and LDR) */
 const uint8_t OLED_ADDR_L = 0x3C;
 const uint8_t OLED_ADDR_R = 0x3C;  /* set to 0x3D when SHARED_BUS is true    */
 const uint32_t I2C_HZ   = 800000;  /* 400000 if an eye ever glitches         */

@@ -440,8 +440,9 @@ socket empty. If the eyes stay dark there, move the two wires to **15 (SDA) /
 16 (SCL)** and set `PIN_L_SDA = 15; PIN_L_SCL = 16`.
 
 Want two *independent* eyes later (the wink, a lopsided confused face)? Move
-the right module's two wires to **SDA 17 / SCL 18** and set
-`TWIN_PANELS = false`. Or, if you have soldered one module's address jumper to
+the right module's two wires to **SDA 38 / SCL 39** (pins with nothing else on
+them — 17 and 18 carry the MQ-2 DO and the LDR) and set `TWIN_PANELS = false`.
+Any other two free pins work too: put the numbers in `PIN_R_SDA` / `PIN_R_SCL`. Or, if you have soldered one module's address jumper to
 0x3D, keep them on one bus and set `SHARED_BUS = true`.
 
 At boot the serial monitor tells you exactly what it found:
