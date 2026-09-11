@@ -115,6 +115,9 @@ class Capability:
 # name -> (python modules that satisfy it, binaries that satisfy it, pip hint)
 _CAPABILITY_SPECS: dict[str, tuple[tuple[str, ...], tuple[str, ...], str]] = {
     "gui_input": (("pyautogui",), (), "pip install pyautogui"),
+    "face_recognition": (("face_recognition", "insightface"), (), "pip install face-recognition  (or insightface onnxruntime)"),
+    "face_detection": (("face_recognition", "insightface", "cv2"), (), "pip install opencv-python-headless"),
+    "image_decode": (("PIL", "cv2"), (), "pip install pillow"),
     "window_control": (("pygetwindow",), ("wmctrl", "xdotool"), "pip install pygetwindow"),
     "screenshot": (("mss", "PIL"), ("scrot", "gnome-screenshot", "spectacle"), "pip install mss pillow"),
     "ocr": (("pytesseract",), ("tesseract",), "pip install pytesseract  (plus the tesseract binary)"),

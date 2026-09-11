@@ -46,7 +46,7 @@ It's built **free-first**: every command works with *zero* API keys thanks to a 
 | "remember my project budget is 5000" | long-term memory |
 | "start iris when my pc boots" | registers itself as a startup app |
 
-…and anything else becomes a conversation with a free AI model, which can chain any of the 77 tools itself.
+…and anything else becomes a conversation with a free AI model, which can chain any of the 83 tools itself.
 
 ## 🤖 The robot and its senses (ESP32)
 
@@ -61,6 +61,11 @@ robot forward · move the robot left · stop the robot · robot ruko
 add device face at 192.168.1.70 as face
 what's the temperature · is there any motion · gas level · look happy
 ```
+
+Add an **ESP32-CAM** and it recognises your face and names what you hold up —
+`remember my face as Prakash`, `who am I`, `what is this`, `read this label`
+(faces are compared on your laptop; objects go to a vision model of your
+choice). Guide: **[docs/CAMERA.md](docs/CAMERA.md)**.
 
 Flash the bundled firmware (`firmware/esp32-iris-node-bts7960/` and
 `firmware/esp32-s3-iris-sensors/`) or keep your existing sketches and map
@@ -169,7 +174,7 @@ iris token            # print the phone-pairing token
 │                          "open youtube" runs in milliseconds,      │
 │                          offline, no model call at all             │
 │ 5 LLM agent loop         free-provider router with fallback chain  │
-│                          + function calling over all 77 tools      │
+│                          + function calling over all 83 tools      │
 └──────────────────┬──────────────────────────────┬──────────────────┘
                    ▼                              ▼
         ┌──────────────────┐          ┌───────────────────────┐

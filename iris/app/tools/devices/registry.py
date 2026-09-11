@@ -46,7 +46,7 @@ REGISTRY_FILENAME = "devices.json"
 
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9 _-]{0,31}$")
 
-DEVICE_KINDS = ("motor", "sensor", "face", "generic")
+DEVICE_KINDS = ("motor", "sensor", "face", "camera", "generic")
 
 TRANSPORTS = ("lan", "link")
 
@@ -111,7 +111,7 @@ class Device:
 
     name: str
     base_url: str = ""
-    kind: str = "generic"          # motor | sensor | face | generic
+    kind: str = "generic"          # motor | sensor | face | camera | generic
     #: "lan" — IRIS calls base_url. "link" — the device dials in and holds a
     #: socket open, so there is no address to call and none is stored.
     transport: str = "lan"

@@ -554,6 +554,14 @@ network: join **`iris-face`** with password **`iriscalib`** and open
 `http://192.168.4.1`. The eyes animate while it is still trying to connect, so
 a frozen face always means a real fault rather than a slow boot.
 
+## The camera — a third body, two wires
+
+An **ESP32-CAM** on the robot's head gives IRIS eyes that recognise you and
+name what you hold up. It takes 5 V and ground from the same rail and joins the
+same hotspot; nothing is wired to the S3. Setup, phrases and what to install
+are in **[CAMERA.md](CAMERA.md)**. When it spots a person, the OLED eyes turn
+toward them.
+
 ## One brain, two bodies
 
 ```

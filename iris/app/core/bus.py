@@ -180,6 +180,8 @@ class Topics:
     NODE_UNLINKED = "node.unlinked"
     NODE_TELEMETRY = "node.telemetry"
     NODE_ALERT = "node.alert"
+    #: The camera saw someone (payload: event, camera, faces, known names).
+    VISION_SIGHTING = "vision.sighting"
 
     SYSTEM_NOTICE = "system.notice"
     SYSTEM_METRICS = "system.metrics"

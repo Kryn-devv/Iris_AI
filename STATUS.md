@@ -86,6 +86,16 @@ piece.
   outputs. One wire each to GPIO 2 / GPIO 1 buys a gas level and a light
   percent later.
 
+- **The camera is wired into the brain.** The ESP32-CAM kit from the
+  `cammodule` repo now lives in `iris/app/vision/` and
+  `iris/app/tools/devices/camera.py`: six tools (`camera_who`, `camera_look`,
+  `camera_remember_face`, `camera_forget_face`, `camera_known_faces`,
+  `camera_presence`), the intent rules with Hinglish, a `camera` device kind,
+  and the OLED eyes turning toward whoever the camera finds. Faces are
+  compared on the laptop (`pip install face-recognition`); objects need
+  `VISION_MODEL` in `.env`. Everything boots with neither installed. Guide:
+  `docs/CAMERA.md`.
+
 ## Retired
 
 - **The relay node.** The 4-channel relay board, its firmware
