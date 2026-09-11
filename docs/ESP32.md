@@ -434,10 +434,13 @@ picture** — and two identical eyes are a perfectly good pair of eyes. That is
 the firmware's default (`TWIN_PANELS = true`): both modules on **SDA 20 /
 SCL 21**, nothing to move. The only expression you lose is the wink.
 
-GPIO 19/20 are also the S3's native-USB data pins. They work as I2C as long as
-you **flash and monitor through the UART/COM socket** and leave the other USB
-socket empty. If the eyes stay dark there, move the two wires to **15 (SDA) /
-16 (SCL)** and set `PIN_L_SDA = 15; PIN_L_SCL = 16`.
+GPIO 19/20 are also the S3's native-USB data pins, and the USB port *owns*
+them at boot — a bus scan there hears nothing, exactly as if no wire were
+fitted. The firmware takes them back at start-up (you will see `[pins] GPIO
+19/20 taken back from the USB port`); that means you **flash and monitor
+through the UART/COM socket** and leave the USB socket empty. If the eyes stay
+dark there anyway, move the two wires to **41 (SDA) / 42 (SCL)** — pins with
+nothing else on them — and set `PIN_L_SDA = 41; PIN_L_SCL = 42`.
 
 Want two *independent* eyes later (the wink, a lopsided confused face)? Move
 the right module's two wires to **SDA 38 / SCL 39** (pins with nothing else on

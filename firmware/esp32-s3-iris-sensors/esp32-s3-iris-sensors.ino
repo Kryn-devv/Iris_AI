@@ -72,6 +72,9 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#if defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32S2)
+#include "soc/usb_serial_jtag_reg.h"   /* to take GPIO 19/20 back from the USB PHY */
+#endif
 
 #define FIRMWARE_VERSION "iris-s3-node-2.1"
 
@@ -517,18 +520,38 @@ static bool startEye(Adafruit_SSD1306& d, TwoWire& bus, uint8_t addr,
   }
   Serial.printf("  [eyes] %s OLED did NOT answer on SDA %d / SCL %d\n", label, sda, scl);
   scanBus(bus, label);
+  if (isUsbPin(sda) || isUsbPin(scl))
+    Serial.println("         (this bus is on the USB pins — if the module is fine on other\n"
+                   "          pins, move these two wires to 41 (SDA) / 42 (SCL))");
   return false;
 }
 
+static bool isUsbPin(int pin) { return pin == 19 || pin == 20; }
+
+/* GPIO 19/20 are wired to the S3's USB PHY, and the PHY OWNS those pads at
+ * boot: the bootloader enables it, this Arduino core never disables it, and
+ * a GPIO function set on the pin simply does not reach the outside world —
+ * an I2C bus scan there hears nothing, exactly as if no wire were fitted.
+ * Clearing the pad-enable bit gives the pads back. The "USB" socket then
+ * stops working until the next flash, which is fine: everything here goes
+ * through the UART/COM socket anyway. */
+static void reclaimUsbPins(const char* why) {
+#if defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32S2)
+  CLEAR_PERI_REG_MASK(USB_SERIAL_JTAG_CONF0_REG, USB_SERIAL_JTAG_USB_PAD_ENABLE);
+  Serial.printf("  [pins] GPIO 19/20 taken back from the USB port for %s — flash and\n"
+                "         monitor through the UART/COM socket, leave the USB one empty.\n", why);
+#else
+  (void)why;
+#endif
+}
+
 static void startEyes() {
+  const bool leftOnUsb = isUsbPin(PIN_L_SDA) || isUsbPin(PIN_L_SCL);
+  const bool rightOnUsb = !TWIN_PANELS && !SHARED_BUS && (isUsbPin(PIN_R_SDA) || isUsbPin(PIN_R_SCL));
+  if (leftOnUsb || rightOnUsb) reclaimUsbPins("the eyes");
+
   Wire.begin(PIN_L_SDA, PIN_L_SCL, I2C_HZ);
   if (!SHARED_BUS && !TWIN_PANELS) Wire1.begin(PIN_R_SDA, PIN_R_SCL, I2C_HZ);
-
-  if (PIN_L_SDA == 19 || PIN_L_SDA == 20 || PIN_L_SCL == 19 || PIN_L_SCL == 20) {
-    Serial.println("  [eyes] the eye bus uses GPIO 19/20, the native-USB pins: flash");
-    Serial.println("         and monitor through the UART/COM port, leave the other");
-    Serial.println("         USB socket empty. Dark eyes there => move them to 15/16.");
-  }
   eyeLeftOk = startEye(eyeLeft, Wire, OLED_ADDR_L, PIN_L_SDA, PIN_L_SCL, "left");
 
   if (TWIN_PANELS) {
@@ -708,6 +731,10 @@ void setup() {
   startEyes();
   face.begin(millis());
 
+  /* The UDP listener binds to any address, so it can come up before the
+   * network does — and must, for the banner below to report it honestly. */
+  if (!fast.begin(fastCommand)) Serial.println("  [warn] UDP fast path failed to start");
+
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
@@ -739,7 +766,6 @@ void setup() {
   server.onNotFound([]() { sendJson(404, "{\"error\":\"unknown endpoint\"}"); });
   server.begin();      /* unconditional: the dashboard must exist even with no
                         * router, or a wiring fault cannot be diagnosed */
-  if (!fast.begin(fastCommand)) Serial.println("  [warn] UDP fast path failed to start");
 
   lastReading = sensors.read(millis());
 
@@ -825,6 +851,10 @@ void loop() {
   if (danger && !lastDanger) {
     if (lastReading.hasFlame && lastReading.flame) {
       Serial.println("[alert] FLAME DETECTED");
+      if ((uint32_t)(now - bootMillis) < 15000UL)
+        Serial.println("        (at boot with no flame? look at the module's DO LED: lit =>\n"
+                       "         turn its pot until it goes off; dark => set FLAME_ACTIVE_LOW\n"
+                       "         = false — this module says HIGH for fire)");
       cloud.sendAlert("flame", "flame sensor triggered");
       face.setEmotion(EMO_SURPRISED, 8000, now);
     } else if (lastReading.hasGas && lastReading.gasAlarm) {
