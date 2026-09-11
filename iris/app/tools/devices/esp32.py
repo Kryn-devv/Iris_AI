@@ -51,6 +51,45 @@ async def _device_get(url: str, params: Optional[Dict[str, Any]] = None) -> Dict
     return await lan_get(url, params)
 
 
+def _describe_distances(data: Dict[str, Any]) -> list[str]:
+    """One phrase for the nearest thing ahead and behind.
+
+    The board sends ``distances`` per sensor (front_left, front_right,
+    rear_left, rear_right; ``null`` for no echo) plus the two minima IRIS has
+    always understood, ``distance_cm`` and ``distance_rear_cm``. When one side
+    of a pair is much closer than the other, that side is named — "12 cm
+    behind on the left" is what stops a robot backing into a chair leg.
+    """
+    sides = data.get("distances") if isinstance(data.get("distances"), dict) else {}
+
+    def side_phrase(where: str, key_min: str, left: str, right: str) -> Optional[str]:
+        nearest = data.get(key_min)
+        lv, rv = sides.get(left), sides.get(right)
+        if nearest is None:
+            candidates = [v for v in (lv, rv) if isinstance(v, (int, float))]
+            if not candidates:
+                return None
+            nearest = min(candidates)
+        phrase = f"{nearest} cm {where}"
+        if isinstance(lv, (int, float)) and isinstance(rv, (int, float)) and abs(lv - rv) > 15:
+            phrase += " on the left" if lv < rv else " on the right"
+        elif isinstance(lv, (int, float)) and rv is None and right in sides:
+            phrase += " on the left"
+        elif isinstance(rv, (int, float)) and lv is None and left in sides:
+            phrase += " on the right"
+        return phrase
+
+    front = side_phrase("ahead", "distance_cm", "front_left", "front_right")
+    rear = side_phrase("behind", "distance_rear_cm", "rear_left", "rear_right")
+    if front and rear:
+        return [f"{front}, {rear}"]
+    if front:
+        return [f"nearest object {front}"]
+    if rear:
+        return [rear]
+    return []
+
+
 def _require_device(registry: DeviceRegistry, name: str) -> Device:
     device = registry.get(name)
     if device is None:
@@ -323,7 +362,7 @@ class DeviceSensorsTool(BaseTool):
     name = "device_sensors"
     description = (
         "Read live sensor values from a registered sensor node (ESP32 with motion, gas, "
-        "light, flame, temperature, humidity, ultrasonic distance front and rear). Answers "
+        "light, flame, temperature, humidity, four ultrasonic distances ahead and behind). Answers "
         "'is there motion', 'gas level', 'how far is the object', 'what's the temperature'."
     )
     category = ToolCategory.AUTOMATION
@@ -373,17 +412,11 @@ class DeviceSensorsTool(BaseTool):
             parts.append(f"humidity {data['humidity_pct']}%")
         if sensor in ("all", "light") and "light_percent" in data:
             parts.append(f"light {data['light_percent']}%")
-        # Two ultrasonics read as one sentence: "40 cm ahead, 12 cm behind"
-        # beats two separate numbers the listener has to pair up themselves.
+        # Four ultrasonics read as one sentence — "40 cm ahead, 12 cm behind"
+        # — with the side named only when the two sensors on that side
+        # disagree enough to matter. Four bare numbers are noise to a listener.
         if sensor in ("all", "distance"):
-            front = data.get("distance_cm")
-            rear = data.get("distance_rear_cm")
-            if front is not None and rear is not None:
-                parts.append(f"{front} cm ahead, {rear} cm behind")
-            elif front is not None:
-                parts.append(f"nearest object {front} cm away")
-            elif rear is not None:
-                parts.append(f"{rear} cm behind")
+            parts.extend(_describe_distances(data))
         if not parts:
             return "The node answered but reported no matching sensors."
         return ", ".join(parts) + "."

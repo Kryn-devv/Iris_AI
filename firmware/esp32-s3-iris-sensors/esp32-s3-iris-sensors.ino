@@ -5,25 +5,29 @@
  *
  *  WHAT RUNS WHERE
  *  IRIS itself — the agent loop, the LLM gateway, the voice pipeline — is a
- *  Python application. It runs on your PC or on a VPS. It cannot run on this
- *  chip and does not need to: this board is the robot's face, senses and
- *  voice, and it talks to IRIS over the network. One brain, many bodies.
+ *  Python application. It runs on your PC, on the same WiFi (or the same phone
+ *  hotspot) as this board. It cannot run on this chip and does not need to:
+ *  this board is the robot's face and senses, and it talks to IRIS over the
+ *  network. One brain, many bodies.
  *
  *  WHAT THIS BOARD DOES
  *    - two 128x64 SSD1306 OLEDs as expressive eyes (14 emotions, blinking,
  *      idle glances, breathing, and a bounce while IRIS speaks)
- *    - PIR motion, MQ-2 gas, LDR light, flame, TWO HC-SR04 distance sensors
- *      (front and rear), DHT11/DHT22 temperature and humidity
+ *    - FOUR HC-SR04 distance sensors (two ahead, two behind), PIR motion,
+ *      MQ-2 gas, LDR light, flame, DHT22 temperature and humidity
  *    - an I2S microphone and speaker: talk to it, it answers out loud
  *    - a web dashboard for testing all of it with nothing installed
  *
  *  ── TWO WAYS IT REACHES IRIS ───────────────────────────────────────────────
  *
- *  A. IRIS ON YOUR OWN NETWORK (PC, or a Pi at home)
- *     Leave CLOUD_HOST empty. IRIS calls this board's IP. Simplest, fastest,
- *     nothing exposed. Register with:  add device face at <ip> as face
+ *  A. IRIS ON YOUR OWN NETWORK — a router or a phone hotspot (the default)
+ *     Leave CLOUD_HOST empty. IRIS calls this board's IP, over HTTP and over
+ *     a UDP fast path (port 8267) that answers in the same millisecond it is
+ *     asked. Register with:  add device face at <ip> as face
+ *     The network must be 2.4 GHz: an ESP32 cannot see a 5 GHz hotspot, and
+ *     that looks exactly like a wrong password.
  *
- *  B. IRIS ON A VPS (the cloud)
+ *  B. IRIS ON A VPS (optional, off by default)
  *     Set CLOUD_HOST / CLOUD_TOKEN. This board then dials OUT to IRIS and
  *     holds a WebSocket open; commands come back down it. That is the only way
  *     round that works: this board is behind your router's NAT, so there is no
@@ -42,14 +46,15 @@
  *  ── WIRING WARNINGS ────────────────────────────────────────────────────────
  *  ESP32-S3 pins are 3.3V and NOT 5V tolerant.
  *    HC-SR04 ECHO outputs 5V  -> divider: ECHO --[1k]--+--[2k]-- GND, tap +
- *                                (BOTH of them — one divider each)
+ *                                (ALL FOUR of them — one divider each)
  *    MQ-2 AO can reach ~4V    -> same 1k/2k divider on AO
  *    PIR HC-SR501 out is 3.3V — direct. Flame module DO is 3.3V — direct.
  *    DHT11/DHT22 DATA is 3.3V — direct, and its VCC goes to 3.3V not 5V.
  *  Analog sensors must be on GPIO 1..10 (ADC1). GPIO 11..20 are ADC2, which
  *  stops working once WiFi is up and silently returns garbage; setup() warns.
  *
- *  HTTP API (also reachable as commands over the cloud link)
+ *  HTTP API (the same commands also arrive as one UDP datagram on port 8267,
+ *  which is how IRIS sends them — see fastpath.h)
  *    GET /                     dashboard
  *    GET /status               identity, face, link and sensor state
  *    GET /sensors              fresh readings JSON
@@ -70,11 +75,12 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 
-#define FIRMWARE_VERSION "iris-s3-node-2.0"
+#define FIRMWARE_VERSION "iris-s3-node-2.1"
 
 #include "eyes.h"
 #include "face.h"
 #include "sensors.h"
+#include "fastpath.h"
 #include "cloud.h"
 #include "voice.h"
 #include "page.h"
@@ -99,38 +105,46 @@ const bool CLOUD_TLS    = true;            /* false only on your own LAN     */
 const char* CLOUD_CA_CERT = "";
 const char* CLOUD_TOKEN = "";              /* must equal NODE_LINK_TOKEN     */
 
-/* ── the eyes ── */
+/* ── the eyes ── two 0.96" SSD1306 OLEDs, one per I2C bus.
+ * Both modules answer at 0x3C, and two devices cannot share one address on
+ * one bus — so each eye gets its own bus. GPIO 19/20 are the S3's USB pins
+ * and must not carry an eye. */
 const bool SHARED_BUS   = false;  /* true only if you moved one OLED to 0x3D */
-const int  PIN_L_SDA    = 9;      /* left eye  */
-const int  PIN_L_SCL    = 10;
-const int  PIN_R_SDA    = 11;     /* right eye (ignored when SHARED_BUS)     */
-const int  PIN_R_SCL    = 12;
+const int  PIN_L_SDA    = 15;     /* left eye  SDA                            */
+const int  PIN_L_SCL    = 16;     /* left eye  SCL                            */
+const int  PIN_R_SDA    = 17;     /* right eye SDA (ignored when SHARED_BUS)  */
+const int  PIN_R_SCL    = 18;     /* right eye SCL                            */
 const uint8_t OLED_ADDR_L = 0x3C;
 const uint8_t OLED_ADDR_R = 0x3C;  /* set to 0x3D when SHARED_BUS is true    */
 const uint32_t I2C_HZ   = 800000;  /* 400000 if an eye ever glitches         */
 const bool SWAP_EYES    = false;   /* true if left/right came out reversed   */
 
-/* ── the sensors ──  set a pin to -1 to disable one you have not wired ── */
-const int PIN_PIR       = 4;      /* HC-SR501 OUT (digital)                  */
-const int PIN_GAS_ADC   = 5;      /* MQ-2 AO through divider  (ADC1: 1..10)  */
-const int PIN_LDR_ADC   = 6;      /* LDR divider midpoint     (ADC1: 1..10)  */
-const int PIN_US_TRIG   = 7;      /* HC-SR04 #1 (front) TRIG                 */
-const int PIN_US_ECHO   = 8;      /* HC-SR04 #1 (front) ECHO through divider */
-const int PIN_US_TRIG2  = 38;     /* HC-SR04 #2 (rear) TRIG,  -1 if unfitted */
-const int PIN_US_ECHO2  = 39;     /* HC-SR04 #2 (rear) ECHO through divider  */
-const int PIN_DHT       = 40;     /* DHT11/DHT22 DATA (digital)              */
-const uint8_t DHT_KIND  = DHT11;  /* DHT11 (blue) or DHT22 (white)           */
-const int PIN_FLAME     = 13;     /* flame module DO (digital)               */
-const bool FLAME_ACTIVE_LOW = true;  /* most IR flame modules pull DO LOW    */
-const int GAS_ALARM_RAW = 1800;   /* watch /sensors in clean air, add ~800   */
+/* ── the sensors ──  set a pin to -1 to disable one you have not wired ──
+ * Analog inputs MUST be on GPIO 1..10 (ADC1); 11..20 stop working under WiFi. */
+/* Four HC-SR04, in this order: front-left, front-right, rear-left, rear-right.
+ * Every ECHO goes through a 1k/2k divider — the pins are not 5 V tolerant. */
+const int PIN_US_TRIG[US_COUNT] = { 4,  6,  8, 10};
+const int PIN_US_ECHO[US_COUNT] = { 5,  7,  9, 11};
+const int PIN_DHT       = 12;     /* DHT22 DATA (digital), VCC on 3.3 V       */
+const uint8_t DHT_KIND  = DHT22;  /* DHT11 (blue) or DHT22 (white)            */
+const int PIN_PIR       = 13;     /* HC-SR501 OUT (digital)                   */
+const int PIN_FLAME     = 14;     /* flame module DO (digital)                */
+const int PIN_FLAME_ADC = 3;      /* flame module AO through divider, or -1   */
+const bool FLAME_ACTIVE_LOW = true;  /* most IR flame modules pull DO LOW     */
+const int PIN_GAS_ADC   = 2;      /* MQ-2 AO through divider  (ADC1: 1..10)   */
+const int PIN_GAS_DO    = -1;     /* MQ-2 DO, optional (e.g. 42), or -1       */
+const bool GAS_DO_ACTIVE_LOW = true; /* MQ-2 modules pull DO LOW above the pot */
+const int GAS_ALARM_RAW = 1800;   /* watch /sensors in clean air, add ~800    */
+const int PIN_LDR_ADC   = 1;      /* LDR divider midpoint     (ADC1: 1..10)   */
 
-/* ── the voice (I2S mic + I2S amplifier) ── set to -1 to leave one out ── */
-const int PIN_MIC_SCK   = 14;     /* INMP441 SCK                             */
-const int PIN_MIC_WS    = 15;     /* INMP441 WS                              */
-const int PIN_MIC_DATA  = 16;     /* INMP441 SD                              */
-const int PIN_AMP_BCLK  = 17;     /* MAX98357A BCLK                          */
-const int PIN_AMP_LRC   = 18;     /* MAX98357A LRC                           */
-const int PIN_AMP_DATA  = 21;     /* MAX98357A DIN                           */
+/* ── the voice (I2S mic + I2S amplifier) ── all -1 = not fitted (the default).
+ * If you add them later: mic SCK 38, WS 39, SD 40; amp BCLK 41, LRC 42, DIN 21. */
+const int PIN_MIC_SCK   = -1;     /* INMP441 SCK                             */
+const int PIN_MIC_WS    = -1;     /* INMP441 WS                              */
+const int PIN_MIC_DATA  = -1;     /* INMP441 SD                              */
+const int PIN_AMP_BCLK  = -1;     /* MAX98357A BCLK                          */
+const int PIN_AMP_LRC   = -1;     /* MAX98357A LRC                           */
+const int PIN_AMP_DATA  = -1;     /* MAX98357A DIN                           */
 const int PIN_PTT       = -1;     /* optional push-to-talk button to GND     */
 const uint8_t MIC_GAIN  = 4;      /* raise if IRIS mishears, lower if it clips */
 
@@ -145,6 +159,7 @@ FaceAnimator face;
 Sensors sensors;
 CloudLink cloud;
 NodeVoice voice;
+FastPath fast;
 
 unsigned long bootMillis = 0;
 bool eyeLeftOk = false, eyeRightOk = false;
@@ -154,8 +169,7 @@ unsigned long fpsWindowMs = 0;
 SensorReading lastReading;
 bool lastDanger = false;
 bool lastMotionRecent = false;
-long lastDistanceSent = -1;
-long lastRearSent = -1;
+long lastUsSent[US_COUNT] = {-1, -1, -1, -1};
 
 /* ═════════════════════ argument access ═════════════════════ */
 
@@ -301,6 +315,8 @@ static String statusJson() {
   j += ",\"rssi\":" + String(WiFi.RSSI());
   j += ",\"uptime_s\":" + String((millis() - bootMillis) / 1000);
   j += ",\"free_heap\":" + String((uint32_t)ESP.getFreeHeap());
+  j += ",\"fast\":{\"udp\":" + String(fast.started() ? FastPath::UDP_PORT : 0) +
+       ",\"handled\":" + String(fast.handled()) + "}";
   j += ",\"face\":" + faceJson();
   j += ",\"cloud\":" + linkJson();
   j += ",\"sensors\":" + sensors.namesJson();
@@ -422,31 +438,83 @@ static bool cloudCommand(const String& path, const String& query, String& out) {
   return result.code < 400;
 }
 
+/* ═════════════════════════ fast-path glue ═════════════════════════ */
+
+/* One datagram = the URL's tail: "/face?emotion=happy". Same dispatch, same
+ * JSON back, no HTTP in between. */
+static void fastCommand(const String& target, String& out) {
+  const int q = target.indexOf('?');
+  const String path = q >= 0 ? target.substring(0, q) : target;
+  const String query = q >= 0 ? target.substring(q + 1) : String();
+  out = dispatch(path, Args::fromQuery(query)).body;
+}
+
 /* ═══════════════════════════ display ═══════════════════════════ */
 
-static bool startEye(Adafruit_SSD1306& d, uint8_t addr, const char* label) {
-  /* periphBegin=false: the bus is already up on OUR pins, and letting the
-   * library call Wire.begin() again would reset it to the default pins. */
-  if (!d.begin(SSD1306_SWITCHCAPVCC, addr, true, false)) {
-    Serial.printf("  [eyes] %s OLED did NOT answer at 0x%02X\n", label, addr);
-    return false;
+static bool busAnswers(TwoWire& bus, uint8_t addr) {
+  bus.beginTransmission(addr);
+  return bus.endTransmission() == 0;
+}
+
+/* Prints every address that acknowledges on a bus, so "nothing works" turns
+ * into "0x3C is there but will not initialise" or "the bus is empty" — two
+ * different faults with two different fixes. */
+static void scanBus(TwoWire& bus, const char* label) {
+  Serial.printf("  [eyes] %s bus scan:", label);
+  uint8_t found = 0;
+  for (uint8_t a = 0x08; a < 0x78; a++) {
+    if (busAnswers(bus, a)) { Serial.printf(" 0x%02X", a); found++; }
   }
-  d.clearDisplay();
-  d.display();
-  return true;
+  Serial.println(found ? "" : " nothing answered — check VCC, GND, SDA, SCL");
+}
+
+static bool startEye(Adafruit_SSD1306& d, TwoWire& bus, uint8_t addr,
+                     int sda, int scl, const char* label) {
+  const uint8_t other = (addr == 0x3C) ? 0x3D : 0x3C;
+  const uint8_t tries[2] = {addr, other};
+  const uint32_t clocks[2] = {I2C_HZ, 100000};
+  for (uint8_t c = 0; c < 2; c++) {
+    bus.setClock(clocks[c]);
+    for (uint8_t t = 0; t < 2; t++) {
+      if (!busAnswers(bus, tries[t])) continue;
+      /* periphBegin=false: the bus is already up on OUR pins, and letting the
+       * library call Wire.begin() again would reset it to the default pins. */
+      if (d.begin(SSD1306_SWITCHCAPVCC, tries[t], true, false)) {
+        d.clearDisplay();
+        d.display();
+        Serial.printf("  [eyes] %s OLED ok at 0x%02X on SDA %d / SCL %d (%lu kHz)\n",
+                      label, tries[t], sda, scl, (unsigned long)(clocks[c] / 1000));
+        return true;
+      }
+      Serial.printf("  [eyes] %s: 0x%02X answered but would not initialise —\n"
+                    "         a 1.3\" SH1106 module? this firmware drives SSD1306\n",
+                    label, tries[t]);
+    }
+  }
+  Serial.printf("  [eyes] %s OLED did NOT answer on SDA %d / SCL %d\n", label, sda, scl);
+  scanBus(bus, label);
+  return false;
 }
 
 static void startEyes() {
   Wire.begin(PIN_L_SDA, PIN_L_SCL, I2C_HZ);
   if (!SHARED_BUS) Wire1.begin(PIN_R_SDA, PIN_R_SCL, I2C_HZ);
 
-  eyeLeftOk  = startEye(eyeLeft,  OLED_ADDR_L, "left");
-  eyeRightOk = startEye(eyeRight, SHARED_BUS ? OLED_ADDR_R : OLED_ADDR_L, "right");
+  if (!SHARED_BUS && PIN_R_SDA == PIN_L_SDA && PIN_R_SCL == PIN_L_SCL) {
+    Serial.println("  [eyes] both eyes are on the SAME pins with SHARED_BUS=false —");
+    Serial.println("         two 0x3C modules on one bus cannot both work. Give the");
+    Serial.println("         right eye its own SDA/SCL, or set SHARED_BUS=true with 0x3D.");
+  }
+  eyeLeftOk  = startEye(eyeLeft, Wire, OLED_ADDR_L, PIN_L_SDA, PIN_L_SCL, "left");
+  eyeRightOk = SHARED_BUS
+      ? startEye(eyeRight, Wire, OLED_ADDR_R, PIN_L_SDA, PIN_L_SCL, "right")
+      : startEye(eyeRight, Wire1, OLED_ADDR_L, PIN_R_SDA, PIN_R_SCL, "right");
 
   if (!eyeLeftOk || !eyeRightOk) {
-    Serial.println("  [eyes] check VCC/GND/SDA/SCL. Two modules on ONE bus both");
-    Serial.println("         at 0x3C cannot work — use the two-bus wiring, or");
-    Serial.println("         move one to 0x3D and set SHARED_BUS = true.");
+    Serial.println("  [eyes] an eye is missing. Check VCC (3.3 V), GND, SDA, SCL on");
+    Serial.println("         that side. Two modules on ONE bus both at 0x3C cannot");
+    Serial.println("         work — use the two-bus wiring above, or move one to");
+    Serial.println("         0x3D and set SHARED_BUS = true.");
   }
 }
 
@@ -461,6 +529,9 @@ static void drawFace(const EyePose& left, const EyePose& right) {
     drawEye(lDisp, left, true);
     lDisp.display();
   }
+  /* Each panel write holds the bus ~10 ms. A command that arrives during the
+   * left eye should not also wait for the right one. */
+  fast.pump();
   if (rOk) {
     rDisp.clearDisplay();
     drawEye(rDisp, right, false);
@@ -502,6 +573,8 @@ static void announceSta() {
     Serial.println("  Register in IRIS: add device " + String(DEVICE_NAME) +
                    " at " + WiFi.localIP().toString() + " as face");
   }
+  Serial.println("  Fast path:        UDP " + String(FastPath::UDP_PORT) +
+                 (fast.started() ? "" : " (NOT listening)"));
   Serial.println("=================================");
   if (MDNS.begin(DEVICE_NAME)) MDNS.addService("http", "tcp", 80);
   staAnnounced = true;
@@ -542,21 +615,37 @@ void setup() {
   fpsWindowMs = millis();
 
   SensorConfig sensorCfg;
-  sensorCfg.pins = {PIN_PIR, PIN_GAS_ADC, PIN_LDR_ADC, PIN_FLAME,
-                    PIN_US_TRIG, PIN_US_ECHO, PIN_US_TRIG2, PIN_US_ECHO2, PIN_DHT};
+  sensorCfg.pins.pir = PIN_PIR;
+  sensorCfg.pins.gasAdc = PIN_GAS_ADC;
+  sensorCfg.pins.gasDo = PIN_GAS_DO;
+  sensorCfg.pins.ldrAdc = PIN_LDR_ADC;
+  sensorCfg.pins.flame = PIN_FLAME;
+  sensorCfg.pins.flameAdc = PIN_FLAME_ADC;
+  sensorCfg.pins.dht = PIN_DHT;
+  for (uint8_t i = 0; i < US_COUNT; i++) {
+    sensorCfg.pins.usTrig[i] = PIN_US_TRIG[i];
+    sensorCfg.pins.usEcho[i] = PIN_US_ECHO[i];
+  }
   sensorCfg.flameActiveLow = FLAME_ACTIVE_LOW;
+  sensorCfg.gasDoActiveLow = GAS_DO_ACTIVE_LOW;
   sensorCfg.gasAlarmRaw = GAS_ALARM_RAW;
   sensorCfg.motionHoldMs = 30000;
-  /* Per SLOT, and the two ultrasonics alternate slots — so each one is actually
-   * measured every 500 ms, which is plenty for an obstacle check. */
-  sensorCfg.distanceEveryMs = 250;
-  sensorCfg.climateEveryMs = 2500;   /* a DHT11 refuses to be read faster */
+  /* One ultrasonic is fired every 60 ms, so four of them each refresh about
+   * four times a second — plenty for an obstacle check, and never blocking. */
+  sensorCfg.distanceSlotMs = 60;
+  sensorCfg.climateEveryMs = 2500;   /* a DHT refuses to be read faster */
   sensorCfg.dhtType = DHT_KIND;
   sensors.begin(sensorCfg);
   warnAboutAdc2("gas sensor", PIN_GAS_ADC);
   warnAboutAdc2("light sensor", PIN_LDR_ADC);
-  if (PIN_US_TRIG2 >= 0) Serial.println("  Two ultrasonics fitted — readings are staggered.");
+  warnAboutAdc2("flame sensor AO", PIN_FLAME_ADC);
+  Serial.printf("  %u ultrasonic sensor(s) fitted — fired one at a time, never blocking.\n",
+                sensors.ultrasonicsFitted());
   if (PIN_DHT >= 0) Serial.printf("  DHT%s on GPIO %d\n", DHT_KIND == DHT11 ? "11" : "22", PIN_DHT);
+  for (uint8_t i = 0; i < US_COUNT; i++) {
+    if (PIN_US_ECHO[i] == 19 || PIN_US_ECHO[i] == 20 || PIN_US_TRIG[i] == 19 || PIN_US_TRIG[i] == 20)
+      Serial.printf("  [warn] ultrasonic %s uses GPIO 19/20 — those are the USB pins.\n", US_NAMES[i]);
+  }
 
   startEyes();
   face.begin(millis());
@@ -592,6 +681,7 @@ void setup() {
   server.onNotFound([]() { sendJson(404, "{\"error\":\"unknown endpoint\"}"); });
   server.begin();      /* unconditional: the dashboard must exist even with no
                         * router, or a wiring fault cannot be diagnosed */
+  if (!fast.begin(fastCommand)) Serial.println("  [warn] UDP fast path failed to start");
 
   lastReading = sensors.read(millis());
 
@@ -648,9 +738,11 @@ void setup() {
 void loop() {
   const unsigned long now = millis();
 
+  fast.pump();             /* the command path IRIS uses — first, and again below */
   server.handleClient();
   cloud.loop();
   sensors.tick(now);
+  fast.pump();
   animateOnce();
   voice.loop(now);
 
@@ -662,15 +754,10 @@ void loop() {
     lastMotionRecent = lastReading.motionRecent;
     changed = true;
   }
-  if (lastReading.hasDistance) {
-    if (lastDistanceSent < 0 || labs(lastReading.distanceCm - lastDistanceSent) > 8) {
-      lastDistanceSent = lastReading.distanceCm;
-      changed = true;
-    }
-  }
-  if (lastReading.hasDistance2) {
-    if (lastRearSent < 0 || labs(lastReading.distanceCm2 - lastRearSent) > 8) {
-      lastRearSent = lastReading.distanceCm2;
+  for (uint8_t i = 0; i < US_COUNT; i++) {
+    if (!lastReading.hasUs[i] || lastReading.usCm[i] < 0) continue;
+    if (lastUsSent[i] < 0 || labs(lastReading.usCm[i] - lastUsSent[i]) > 8) {
+      lastUsSent[i] = lastReading.usCm[i];
       changed = true;
     }
   }

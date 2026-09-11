@@ -43,11 +43,16 @@ def face_registry(registry):
 
 @pytest.fixture()
 def fake_face(monkeypatch):
-    """A fake face node that records every request it receives."""
+    """A fake face node that records every COMMAND it receives.
+
+    The one /status the transport sends first — asking whether the board has
+    a UDP fast path (the S3 firmware does) — is answered but not recorded, so
+    the tests below can keep asserting on what the face was told to do."""
     calls: list[httpx.URL] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        calls.append(request.url)
+        if request.url.path != "/status":
+            calls.append(request.url)
         if request.url.path == "/face":
             return httpx.Response(200, json={"ok": True, "face": {"emotion": "happy"}})
         if request.url.path == "/status":

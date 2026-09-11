@@ -238,6 +238,8 @@ class TestSensorNode:
         from iris.app.tools.devices.esp32 import DeviceSensorsTool
 
         def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/status":          # the one fast-path probe
+                return httpx.Response(200, json={"kind": "sensor"})
             assert request.url.path == "/sensors"
             return httpx.Response(200, json={
                 "motion": False, "motion_recent": True,
@@ -332,7 +334,7 @@ class TestSensorNode:
         registry.add(Device(name="front sensor", base_url="http://192.168.1.73", kind="sensor"))
 
         res = await DeviceSensorsTool(registry).execute(sensor="distance")
-        assert res.result["speech"] == "nearest object 82 cm away."
+        assert res.result["speech"] == "nearest object 82 cm ahead."
 
     @pytest.mark.asyncio
     async def test_missing_dht_does_not_invent_a_temperature(self, registry, monkeypatch):
@@ -367,6 +369,33 @@ class TestSensorNode:
         match = IntentEngine().match(utterance)
         assert match and match.tool_name == "device_sensors"
         assert match.arguments.get("sensor") == sensor
+
+
+# ------------------------------------------------------ four distance sensors
+class TestFourDistances:
+    def test_two_pairs_read_as_one_sentence(self):
+        from iris.app.tools.devices.esp32 import DeviceSensorsTool
+        data = {"distance_cm": 40, "distance_rear_cm": 12,
+                "distances": {"front_left": 44, "front_right": 40, "rear_left": 12, "rear_right": 90}}
+        assert DeviceSensorsTool._summarize(data, "distance") == "40 cm ahead, 12 cm behind on the left."
+
+    def test_a_side_is_named_only_when_it_matters(self):
+        from iris.app.tools.devices.esp32 import DeviceSensorsTool
+        data = {"distance_cm": 40, "distance_rear_cm": 50,
+                "distances": {"front_left": 41, "front_right": 40, "rear_left": 50, "rear_right": 55}}
+        assert DeviceSensorsTool._summarize(data, "distance") == "40 cm ahead, 50 cm behind."
+
+    def test_one_dead_sensor_does_not_hide_the_other(self):
+        from iris.app.tools.devices.esp32 import DeviceSensorsTool
+        data = {"distance_cm": 30,
+                "distances": {"front_left": None, "front_right": 30, "rear_left": None, "rear_right": None}}
+        assert DeviceSensorsTool._summarize(data, "distance") == "nearest object 30 cm ahead on the right."
+
+    def test_older_firmware_with_two_sensors_still_reads(self):
+        from iris.app.tools.devices.esp32 import DeviceSensorsTool
+        assert DeviceSensorsTool._summarize({"distance_cm": 82, "distance_rear_cm": 15}, "distance") \
+            == "82 cm ahead, 15 cm behind."
+        assert DeviceSensorsTool._summarize({"distance_cm": 82}, "all") == "nearest object 82 cm ahead."
 
 
 # --------------------------------------------------------- custom firmware mapping
@@ -567,19 +596,34 @@ class TestFastPath:
         assert any("dir=forward" in url for url in http)    # and then done over HTTP
 
     @pytest.mark.asyncio
-    async def test_a_face_node_is_never_interrogated_on_the_off_chance(self, monkeypatch):
-        """Only kinds whose firmware has a listener are worth asking. A face
-        that smiles 30 ms later is a face that smiled, so the S3 board must
-        not pay a round trip to find out it has no fast path."""
+    async def test_a_generic_board_is_never_interrogated_on_the_off_chance(self, monkeypatch):
+        """Only kinds whose firmware has a listener are worth asking. A board
+        of unknown make must not pay a round trip to find out it has no fast
+        path — it would pay that timeout on every command."""
         http = _mock_http(monkeypatch, lambda r: httpx.Response(
-            200, json={"name": "face", "kind": "face", "emotion": "neutral"}))
-        dev = Device(name="face", base_url="http://127.0.0.1", kind="face")
+            200, json={"name": "thing", "kind": "generic"}))
+        dev = Device(name="thing", base_url="http://127.0.0.1", kind="generic")
 
-        await transport_mod.device_request(dev, "/face", {"emotion": "happy"})
-        await transport_mod.device_request(dev, "/face", {"emotion": "sad"})
+        await transport_mod.device_request(dev, "/go", {"x": 1})
+        await transport_mod.device_request(dev, "/go", {"x": 2})
 
         assert not any("/status" in u for u in http)
-        assert any("emotion=happy" in u for u in http) and any("emotion=sad" in u for u in http)
+        assert any("x=1" in u for u in http) and any("x=2" in u for u in http)
+
+    @pytest.mark.asyncio
+    async def test_the_face_board_gets_the_fast_path_too(self, monkeypatch):
+        """An expression should land as fast as a drive command: the S3
+        firmware has the same UDP listener, so a face node is asked once and
+        its datagrams go straight to the board from then on."""
+        srv, node, port = await _serve_udp(answer={"ok": True, "face": {"emotion": "happy"}})
+        try:
+            _mock_http(monkeypatch, lambda r: httpx.Response(
+                200, json={"kind": "face", "fast": {"udp": port}}))
+            dev = Device(name="face", base_url="http://127.0.0.1", kind="face")
+            await transport_mod.device_request(dev, "/face", {"emotion": "happy"})
+        finally:
+            srv.close()
+        assert node.seen == ["/face?emotion=happy"]
 
     @pytest.mark.asyncio
     async def test_a_motor_node_on_older_firmware_is_asked_once_only(self, monkeypatch):
@@ -597,22 +641,22 @@ class TestFastPath:
 
     @pytest.mark.asyncio
     async def test_any_kind_picks_up_a_fast_path_it_advertises(self, monkeypatch):
-        """No round trip is spent asking a face node, but if one of its own
+        """No round trip is spent asking a generic board, but if one of its own
         /status answers mentions a port, it gets datagrams from then on. That
         is what stops this module from having to be edited when another
         firmware grows the listener."""
-        srv, node, port = await _serve_udp(answer={"emotion": "happy"})
+        srv, node, port = await _serve_udp(answer={"ok": True})
         try:
             _mock_http(monkeypatch, lambda r: httpx.Response(
-                200, json={"kind": "face", "emotion": "neutral", "fast": {"udp": port}}))
-            dev = Device(name="face", base_url="http://127.0.0.1", kind="face")
+                200, json={"kind": "generic", "fast": {"udp": port}}))
+            dev = Device(name="thing", base_url="http://127.0.0.1", kind="generic")
 
             await transport_mod.device_request(dev, "/status")     # over HTTP
             assert node.seen == []
-            await transport_mod.device_request(dev, "/face", {"emotion": "happy"})
+            await transport_mod.device_request(dev, "/go", {"x": 1})
         finally:
             srv.close()
-        assert node.seen == ["/face?emotion=happy"]
+        assert node.seen == ["/go?x=1"]
 
     @pytest.mark.asyncio
     async def test_a_board_that_is_off_does_not_cost_two_timeouts_per_command(

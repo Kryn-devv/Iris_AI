@@ -65,8 +65,24 @@ piece.
   worst being that `/motor` treated a **missing or misspelled `dir` as a
   stop** — so one typo looked exactly like broken wiring.
 
-## Not working yet — and the single next step for each
-- **Flashing kept failing with "port busy."** Something still holds the USB
+## Retired
+
+- **The relay node.** The 4-channel relay board, its firmware
+  (`esp32-iris-node`), the `relay` device kind, the switch and servo
+  commands and the 12 V wiring sheet are gone. The hardware is two boards
+  now: the robot base and the S3 face/sensor board. A `devices.json` that
+  still lists a relay loads it as a plain `generic` device, so nothing
+  breaks on upgrade — it just no longer means anything.
+
+## Still to do — by hand, not by code
+
+- **Rotate the Groq key.** It was on screen during a shared session. Make a
+  new one at console.groq.com, put it in `.env`, delete the old one there.
+- **Change the two shared tokens.** `API_TOKEN` and `NODE_LINK_TOKEN` are
+  both still the short word they were set to for testing. Generate real
+  ones (`python -c "import secrets; print(secrets.token_urlsafe(32))"`),
+  put the node one in both firmwares' `CLOUD_TOKEN`, and reflash.
+- **Flashing fails with "port busy."** Something still holds the USB
   port — usually a Serial Monitor, sometimes one in a *second* VS Code window.
   `lsof /dev/cu.usbmodem*` names the holder; quitting VS Code entirely and
   reopening one window always clears it.

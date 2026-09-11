@@ -68,9 +68,10 @@ below. Two rules apply to both boards:
 
 - **One shared ground.** Every GND — battery, drivers, sensors, both ESP32s —
   meets at one point. A sensor with its own floating ground reads garbage.
-- **Nothing motorised comes off an ESP32 pin.** The pins drive *signals*; the
-  motors and the OLEDs take their power from the supply rails. The 3.3 V pin
-  is a regulator output, not a power rail for anything else.
+- **Nothing that draws real current comes off an ESP32 pin.** The pins carry
+  *signals*. The motors take their power from the battery through the
+  drivers, the sensors and OLEDs from the buck converter. The ESP32's 3.3 V
+  pin can feed a driver's logic side and nothing more.
 
 ### 4. Flash and find the IP
 Select your board (*Tools → Board → ESP32 Dev Module* for the robot,
@@ -359,49 +360,62 @@ One board does both jobs: two OLED eyes and all the sensors. Flash
 > and it runs on your PC. The S3 has 512 KB of RAM; it is the robot's face and
 > senses, not its brain. One brain, many bodies.
 
-> **Running IRIS on a VPS instead of your PC?** Then IRIS cannot call your
-> boards — they are behind your router's NAT. They dial *out* to IRIS instead,
-> over a WebSocket, with no port-forwarding and nothing exposed. That plus the
-> microphone/speaker wiring, Pterodactyl deployment and the whole end-to-end
-> mechanism is in **[CLOUD.md](CLOUD.md)**.
+> **Phone hotspot is fine.** The PC running IRIS and both boards join the
+> same hotspot; you open the board's IP in a browser like any other page.
+> Set the hotspot to **2.4 GHz** (an ESP32 cannot see 5 GHz, and that looks
+> exactly like a wrong password) and expect addresses like `192.168.43.x`
+> (Android) or `172.20.10.x` (iPhone). `.local` names usually do not work on
+> a hotspot — use the IP the serial monitor prints.
+>
+> *(Running IRIS on a VPS instead is possible but optional — see
+> [CLOUD.md](CLOUD.md). Nothing here needs it.)*
 
-### Sensor pins — change them in CONFIG:
+### Sensor pins — this is the wiring the firmware ships with
+
+Four HC-SR04 distance sensors (two looking ahead, two behind), DHT22, PIR,
+flame, MQ-2 gas, LDR. Every pin below is the firmware's default, so with this
+wiring you change only the WiFi lines.
 
 | Sensor | Pin | Note |
 |---|---|---|
-| PIR HC-SR501 OUT | GPIO 4 | 3.3V output, connect directly |
-| MQ-2 gas AO | GPIO 5 | ⚠ through a 1k/2k voltage divider (AO can reach ~4V) |
-| LDR divider midpoint | GPIO 6 | LDR + 10k resistor from 3.3V |
-| HC-SR04 #1 (front) TRIG | GPIO 7 | direct |
-| HC-SR04 #1 (front) ECHO | GPIO 8 | ⚠ through a 1k/2k divider (ECHO is 5V) |
-| HC-SR04 #2 (rear) TRIG | GPIO 38 | direct |
-| HC-SR04 #2 (rear) ECHO | GPIO 39 | ⚠ through a 1k/2k divider (ECHO is 5V) |
-| DHT11/DHT22 DATA | GPIO 40 | direct. Module boards have the 10k pull-up already; a bare 4-pin sensor needs one 10k from DATA to 3.3V |
-| Flame module DO | GPIO 13 | 3.3V output, direct. Use **DO**, not AO. Most modules are active-LOW — the default matches |
+| HC-SR04 **front-left** TRIG / ECHO | GPIO 4 / **5** | ECHO ⚠ through a 1k/2k divider (ECHO is 5 V) |
+| HC-SR04 **front-right** TRIG / ECHO | GPIO 6 / **7** | ECHO ⚠ divider |
+| HC-SR04 **rear-left** TRIG / ECHO | GPIO 8 / **9** | ECHO ⚠ divider |
+| HC-SR04 **rear-right** TRIG / ECHO | GPIO 10 / **11** | ECHO ⚠ divider |
+| DHT22 DATA | GPIO 12 | direct; VCC on **3.3 V**. A bare 4-pin sensor needs one 10k from DATA to 3.3 V (module boards have it) |
+| PIR HC-SR501 OUT | GPIO 13 | 3.3 V output, direct |
+| Flame module DO | GPIO 14 | direct. Most modules are active-LOW — the default matches |
+| Flame module AO *(optional)* | GPIO 3 | ⚠ through a 1k/2k divider, or leave unwired and set `PIN_FLAME_ADC = -1` |
+| MQ-2 gas AO | GPIO 2 | ⚠ through a 1k/2k divider (AO can reach ~4 V) |
+| MQ-2 gas DO *(optional)* | — | not needed; set `PIN_GAS_DO` (e.g. 42) if you want the module's own threshold too |
+| LDR divider midpoint | GPIO 1 | LDR + 10k resistor from 3.3 V |
 
-**The S3's pins are NOT 5V tolerant** — skipping the ECHO dividers can kill
-inputs. Power PIR/MQ-2/HC-SR04 from the 5V pin, the LDR and the DHT from 3.3V.
-Set any unused sensor's pin to `-1`.
+**Why these and not others.** Analog readings only work on **GPIO 1–10**
+(ADC1); GPIO 11–20 are ADC2, which stops working the moment WiFi comes up and
+silently returns garbage. That is why the gas, light and flame AO wires are on
+1, 2 and 3, and the boot log warns if you move one onto 11–20. **GPIO 19 and
+20 are the S3's USB pins** — nothing goes on them.
 
-**Two ultrasonics fire alternately, never together.** If both ping at the same
-instant each one hears the other's burst, and the false echo looks exactly like
-a broken sensor rather than like interference. The firmware reads one per slot
-and alternates, so each still refreshes several times a second.
+**The S3's pins are NOT 5 V tolerant** — skipping the ECHO dividers can kill
+inputs. Power the PIR, MQ-2 and HC-SR04s from the 5 V rail, the LDR, DHT and
+OLEDs from 3.3 V. Set any unused sensor's pin to `-1`.
 
-**The DHT is slow on purpose.** A DHT11 needs about a second between reads and
-a DHT22 two, so climate is sampled every 2.5 s (`climateEveryMs`) and the last
-good value is cached in between. Set `DHT_KIND` to `DHT11` (blue module) or
-`DHT22` (white module) — the wrong one reads as `nan` and IRIS simply omits it
-rather than reporting a made-up number.
+**Four ultrasonics fire one at a time and never block.** Firing two together
+means each hears the other's ping, and the false echo looks exactly like a
+broken sensor. The firmware fires one every 60 ms and times the echo with an
+interrupt, so the eyes keep animating and a face command never waits behind a
+distance measurement. Each sensor refreshes about four times a second.
+`/sensors` reports them as `distances: {front_left, front_right, rear_left,
+rear_right}` (`null` = no echo) plus `distance_cm` (nearest ahead) and
+`distance_rear_cm` (nearest behind).
 
-Both extra sensors are optional: leave `PIN_US_TRIG2`/`PIN_US_ECHO2`/`PIN_DHT`
-at `-1` and everything else keeps working.
+**The DHT is slow on purpose.** A DHT22 needs about two seconds between reads,
+so climate is sampled every 2.5 s and the last good value is cached in
+between. `DHT_KIND` is `DHT22` (white module); set `DHT11` for the blue one —
+the wrong one reads as `nan` and IRIS simply omits it rather than reporting a
+made-up number.
 
-**Analog sensors must be on GPIO 1–10.** GPIO 11–20 are ADC2, and ADC2 stops
-working the moment WiFi comes up — the reading silently returns garbage. The
-firmware prints a warning at boot if you have put one there.
-
-### The eyes — two 0.96"/0.98" OLEDs
+### The eyes — two 0.96" OLEDs
 
 Almost every SSD1306 module is hard-wired to I2C address **0x3C**, and two
 devices cannot share an address on one bus. Rather than make you solder the
@@ -409,16 +423,38 @@ address jumper, each eye gets **its own I2C bus** — the S3 has two:
 
 | OLED pin | Left eye | Right eye |
 |---|---|---|
-| SDA | GPIO 9 | GPIO 11 |
-| SCL | GPIO 10 | GPIO 12 |
-| VCC | 3.3V | 3.3V |
+| SDA | GPIO **15** | GPIO **17** |
+| SCL | GPIO **16** | GPIO **18** |
+| VCC | 3.3 V | 3.3 V |
 | GND | GND | GND |
 
-That is all. No jumpers, no soldering, no address changes.
+That is all. No jumpers, no soldering, no address changes. **Do not put an eye
+on GPIO 19/20** — those are the USB data lines.
+
+At boot the serial monitor tells you exactly what it found on each bus:
+
+```
+  [eyes] left OLED ok at 0x3C on SDA 15 / SCL 16 (800 kHz)
+  [eyes] right OLED did NOT answer on SDA 17 / SCL 18
+  [eyes] right bus scan: nothing answered — check VCC, GND, SDA, SCL
+```
+
+An eye that "answered but would not initialise" is usually a 1.3" **SH1106**
+module, which this firmware does not drive — 0.96" modules are SSD1306. If
+only one eye responds, the other keeps animating; the page and `/status`
+say which side is missing.
 
 *(If you have already moved one module to 0x3D, set `SHARED_BUS = true` and
 wire both to the left-eye pins instead. If left and right come out reversed,
 set `SWAP_EYES = true` — no rewiring.)*
+
+### How fast it responds
+
+IRIS sends every face command as one UDP datagram (port 8267) and the board
+answers in the same loop pass — about a millisecond on the board, plus
+whatever the WiFi adds (typically 5–20 ms on a hotspot). HTTP still works for
+everything, so the browser page and `curl` need nothing new. The page shows
+the count of fast commands handled.
 
 ### Register it
 
@@ -477,9 +513,10 @@ what's the humidity       ·  nami kitni hai
 check the sensors
 ```
 
-With both HC-SR04s fitted, "how far is the object" answers with one phrase —
-*"82 cm ahead, 15 cm behind"* — rather than two numbers you have to pair up
-yourself. With only the front one, it says *"nearest object 82 cm away"*.
+With all four HC-SR04s fitted, "how far is the object" answers with one
+phrase — *"40 cm ahead, 12 cm behind on the left"* — naming a side only when
+the two sensors on that side disagree by more than 15 cm. With only front
+sensors, it says *"nearest object 82 cm ahead"*.
 
 Flame and gas do not wait to be asked: the board reports them the instant it
 sees them, and IRIS says so out loud with the eyes going wide. Repeats are
@@ -488,17 +525,18 @@ into a voice that will not stop.
 
 ### Give it a microphone and a speaker
 
-Wire an **INMP441** I2S microphone and a **MAX98357A** I2S amplifier and you can
-just talk to the robot: it uploads what you said, IRIS answers, and the reply
-plays through the speaker while the eyes bounce along with it. Pins and the
-tuning knobs are in **[CLOUD.md](CLOUD.md#6-wiring-the-microphone-and-speaker)**.
+Optional, and off by default (all six voice pins are `-1`). Wire an
+**INMP441** I2S microphone and a **MAX98357A** I2S amplifier, set the pins
+(mic SCK 38, WS 39, SD 40; amp BCLK 41, LRC 42, DIN 21 are free), and you can
+just talk to the robot. The details are in
+**[CLOUD.md](CLOUD.md#6-wiring-the-microphone-and-speaker)**.
 
 ### Test it with no software at all
 
 Open the board's address in a browser: a button for every expression, a
 talking test, a gaze pad, and live sensor readings. If an OLED did not
-respond it says so there — the usual cause is VCC/GND, or both modules wired
-to the same bus.
+respond it says which side — the usual cause is VCC/GND, both modules wired
+to the same bus, or an eye on the USB pins 19/20.
 
 No router, or a wrong WiFi password? After 25 seconds the board serves its own
 network: join **`iris-face`** with password **`iriscalib`** and open
@@ -515,9 +553,9 @@ a frozen face always means a real fault rather than a slow boot.
            ESP32-S3            ESP32 "robot"
            face + sensors      BTS7960 x2 motors
            (2 OLED eyes,       (esp32-iris-node-
-            DHT/PIR/gas/        bts7960)
-            flame/light/
-            ultrasonic)
+            4 ultrasonic,       bts7960)
+            DHT22/PIR/gas/
+            flame/light)
 ```
 
 If a board currently runs its **own** voice/AI code (mic + STT on the ESP):

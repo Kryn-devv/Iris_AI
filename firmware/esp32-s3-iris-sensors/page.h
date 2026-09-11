@@ -33,7 +33,7 @@ font-size:11.5px;color:var(--dm);overflow-x:auto;white-space:pre-wrap;margin:0}
 .tip{font-size:11.5px;color:var(--dm);line-height:1.55;background:#5eead40d;border-left:2px solid var(--ln);
 padding:8px 10px;border-radius:0 8px 8px 0;margin-bottom:8px}
 </style></head><body><div class=wrap>
-<h1>IRIS FACE</h1><div class=sub>two 128&times;64 OLED eyes &middot; sensors &middot; live</div>
+<h1>IRIS FACE</h1><div class=sub>two 128&times;64 OLED eyes &middot; four distance sensors &middot; live</div>
 <div class=st id=st>&nbsp;</div>
 
 <h2>Expressions</h2>
@@ -88,7 +88,8 @@ async function tick(){try{const j=await(await fetch('/status')).json();
  mark(j.face.emotion);
  let s='face    '+j.face.emotion+(j.face.speaking?'   [speaking]':'')
   +(j.face.dozing?'   [dozing]':'')
-  +'\neyes    '+(j.face.eyes_ok?'both OLEDs found':'** an OLED did NOT respond **')
+  +'\neyes    '+(j.face.eyes_ok?'both OLEDs found':('** '+(j.face.left_eye_ok?'':'LEFT ')+(j.face.right_eye_ok?'':'RIGHT ')+'eye did NOT respond — see the serial monitor **'))
+  +'\nfast    UDP '+(j.fast&&j.fast.udp?j.fast.udp+'  ('+j.fast.handled+' commands)':'off')
   +'\nfps     '+j.face.fps+'   look '+j.face.look_x+','+j.face.look_y
   +'\nlink    '+j.link+(j.ap_mode?' (own network)':'')+'  '+j.rssi+'dBm'
   +'\nup      '+j.uptime_s+'s   heap '+j.free_heap;
@@ -96,7 +97,12 @@ async function tick(){try{const j=await(await fetch('/status')).json();
  s+='\n\nmotion  '+(r.motion?'YES':(r.motion_recent?'recent':'no'));
  if('gas_raw' in r) s+='\ngas     '+r.gas_raw+(r.gas_alarm?'   ** ALARM **':'  (normal)');
  if('light_percent' in r) s+='\nlight   '+r.light_percent+'%';
- if('distance_cm' in r) s+='\ndistance '+r.distance_cm+' cm';
+ if('flame' in r) s+='\nflame   '+(r.flame?'** FIRE **':'no')+('flame_raw' in r?'  ('+r.flame_raw+')':'');
+ if('temperature_c' in r) s+='\ntemp    '+r.temperature_c+' °C';
+ if('humidity_pct' in r) s+='\nhumidity '+r.humidity_pct+' %';
+ if(r.distances){for(const k in r.distances){const v=r.distances[k];
+  s+='\n'+(k+'          ').slice(0,12)+(v===null?'no echo':v+' cm')}}
+ else if('distance_cm' in r) s+='\ndistance '+r.distance_cm+' cm';
  $('out').textContent=s}catch(e){$('out').textContent='offline'}}
 
 buildEmotions();tick();setInterval(tick,900);
