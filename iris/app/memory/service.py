@@ -9,6 +9,7 @@ from iris.app.memory.episodic import EpisodicMemory
 from iris.app.memory.semantic import SemanticMemory
 from iris.app.memory.project import ProjectMemory
 from iris.app.memory.long_term import LongTermMemory
+from iris.app.database.database import AsyncSessionLocal
 from iris.app.schemas.memory import MemoryRecord, MemoryType, ConfidenceLevel
 from iris.app.memory.sanitizer import MemorySanitizer
 from iris.app.core.logging import get_logger
@@ -60,14 +61,46 @@ class MemoryRelevanceScorer:
 class MemoryService:
     """Central Memory Service orchestrating Working, Conversation, Episodic, Semantic, and Project memories."""
 
-    def __init__(self):
+    def __init__(self, long_term_memory: Optional[LongTermMemory] = None):
         self.working_memory = WorkingMemory()
         self.conversation_memory = ConversationMemory()
         self.episodic_memory = EpisodicMemory()
         self.semantic_memory = SemanticMemory()
         self.project_memory = ProjectMemory()
-        self.long_term_memory = LongTermMemory()
+        # Durable facts go to SQLite as well, and are read back on the first
+        # touch after boot — "remember my budget" has to outlive a restart.
+        # Nothing reaches the database until main() has initialised it.
+        self.long_term_memory = long_term_memory or LongTermMemory(session_factory=AsyncSessionLocal)
         self.relevance_scorer = MemoryRelevanceScorer()
+        self._hydrated = False
+
+    #: Layers whose facts are worth keeping across restarts. Working memory is
+    #: scratch by definition and conversation history has its own store.
+    _DURABLE = (MemoryType.SEMANTIC, MemoryType.PROJECT, MemoryType.EPISODIC)
+
+    async def _ensure_hydrated(self) -> None:
+        """Load what the previous run remembered into the in-memory layers."""
+        if self._hydrated:
+            return
+        self._hydrated = True
+        if not self.long_term_memory.persistent():
+            return
+        loaded = 0
+        for key, value, meta in await self.long_term_memory.list_all():
+            layer = str(meta.get("layer", MemoryType.SEMANTIC.value))
+            store_meta = {k: v for k, v in meta.items() if k != "layer"}
+            try:
+                if layer == MemoryType.PROJECT.value:
+                    await self.project_memory.remember(key, value, store_meta)
+                elif layer == MemoryType.EPISODIC.value:
+                    await self.episodic_memory.remember(key, value, store_meta)
+                else:
+                    await self.semantic_memory.remember(key, value, store_meta)
+                loaded += 1
+            except Exception as exc:  # noqa: BLE001 - one bad row must not block boot
+                logger.warning("Skipped a stored memory '%s': %s", key, exc)
+        if loaded:
+            logger.info("Restored %d remembered facts from the database.", loaded)
 
     async def remember(
         self,
@@ -77,6 +110,7 @@ class MemoryService:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Sanitize and store a memory entry in the appropriate memory layer."""
+        await self._ensure_hydrated()
         meta = metadata or {}
         sanitized_key = MemorySanitizer.sanitize_text(key)
         sanitized_val = MemorySanitizer.sanitize_value(value)
@@ -88,13 +122,19 @@ class MemoryService:
         elif memory_type == MemoryType.PROJECT:
             await self.project_memory.remember(sanitized_key, sanitized_val, meta)
         else:  # SEMANTIC / DEFAULT
+            memory_type = MemoryType.SEMANTIC
             await self.semantic_memory.remember(sanitized_key, sanitized_val, meta)
-            await self.long_term_memory.remember(sanitized_key, sanitized_val, meta)
+
+        if memory_type in self._DURABLE:
+            durable_meta = {k: v for k, v in meta.items() if k != "type"}
+            durable_meta["layer"] = memory_type.value
+            await self.long_term_memory.remember(sanitized_key, sanitized_val, durable_meta)
 
         logger.info(f"Memory stored [{memory_type.value}]: key='{sanitized_key}'")
 
     async def retrieve(self, key: str, memory_type: Optional[MemoryType] = None) -> Optional[Any]:
         """Retrieve stored value by key."""
+        await self._ensure_hydrated()
         sanitized_key = MemorySanitizer.sanitize_text(key)
         if memory_type == MemoryType.WORKING:
             return await self.working_memory.retrieve(sanitized_key)
@@ -122,6 +162,7 @@ class MemoryService:
         min_relevance: float = 0.1,
     ) -> List[Tuple[MemoryRecord, float]]:
         """Search memory entries across layers using relevance scoring."""
+        await self._ensure_hydrated()
         records: List[MemoryRecord] = []
 
         if memory_type is None or memory_type == MemoryType.SEMANTIC:
@@ -150,12 +191,17 @@ class MemoryService:
 
     async def forget(self, key: str, memory_type: Optional[MemoryType] = None) -> bool:
         """Forget/delete memory entry across layers."""
+        await self._ensure_hydrated()
         sanitized_key = MemorySanitizer.sanitize_text(key)
         forgot_any = False
 
+        if memory_type is None or memory_type in self._DURABLE:
+            # Whatever layer held it, the durable copy goes too — otherwise the
+            # forgotten fact comes back on the next restart.
+            forgot_any |= await self.long_term_memory.forget(sanitized_key)
+
         if memory_type is None or memory_type == MemoryType.SEMANTIC:
             forgot_any |= await self.semantic_memory.forget(sanitized_key)
-            await self.long_term_memory.forget(sanitized_key)
 
         if memory_type is None or memory_type == MemoryType.PROJECT:
             forgot_any |= await self.project_memory.forget(sanitized_key)

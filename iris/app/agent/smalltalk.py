@@ -69,12 +69,23 @@ def _name() -> str:
     return settings.ASSISTANT_NAME
 
 
+#: What may follow a greeting, a thank-you or a goodbye and still leave it
+#: small talk: the assistant's name, a pet name, "a lot", punctuation. It used
+#: to be "any 15 characters", which made "hey open youtube" a greeting — the
+#: smalltalk layer runs BEFORE the command engine, so the command was lost.
+_FILLER_TAIL = (
+    r"(?:[\s!,.?]+(?:there|iris|" + re.escape(settings.ASSISTANT_NAME.lower()) +
+    r"|again|buddy|dear|ji|dost|bhai|yaar|bro|friend|everyone|all|a lot|so much"
+    r"|very much|for now|for today|then|boss|sir|madam|mate|man))*[\s!,.?]*$"
+)
+
+
 _RULES = [
     _Rule(
         # (?=$|[\s!,.?]) instead of \b: Devanagari vowel signs are not word
         # characters, so \b never matches after "नमस्ते".
         r"^(hi|hii+|hello|hey|yo|hola|namaste|नमस्ते|नमस्कार"
-        r"|good (morning|afternoon|evening))(?=$|[\s!,.?]).{0,15}$",
+        r"|good (morning|afternoon|evening))(?=$|[\s!,.?])" + _FILLER_TAIL,
         {
             LanguageStyle.ENGLISH: lambda m: (
                 f"{_greeting_for_hour(datetime.datetime.now().hour)}! I'm {_name()}. "
@@ -146,7 +157,7 @@ _RULES = [
     ),
     _Rule(
         r"^(thanks|thank you|thx|ty|great job|well done|awesome|nice|perfect"
-        r"|shukriya|dhanyavad|dhanyawad|शुक्रिया|धन्यवाद)(?=$|[\s!,.?]).{0,20}$",
+        r"|shukriya|dhanyavad|dhanyawad|शुक्रिया|धन्यवाद)(?=$|[\s!,.?])" + _FILLER_TAIL,
         {
             LanguageStyle.ENGLISH: lambda m: random.choice(
                 ("Anytime!", "Happy to help!", "You're welcome!", "Glad it worked!")
@@ -160,7 +171,7 @@ _RULES = [
         },
     ),
     _Rule(
-        r"^(bye|goodbye|good night|see you|later|gn)\b.{0,10}$",
+        r"^(bye|goodbye|good night|see you|later|gn)\b" + _FILLER_TAIL,
         lambda m: "Goodbye! I'll be right here when you need me.",
     ),
     _Rule(
@@ -196,6 +207,14 @@ def _normalize_style(style: Union[LanguageStyle, str, None]) -> LanguageStyle:
     return LanguageStyle.ENGLISH
 
 
+_LEADING_GREETING = re.compile(
+    r"^(?:hi|hii+|hello|hey|yo|hola|namaste|नमस्ते|नमस्कार|good (?:morning|afternoon|evening))"
+    r"(?:[\s,!.]+(?:there|iris|" + re.escape(settings.ASSISTANT_NAME.lower()) + r"|dear|ji|dost|bhai|yaar|bro))*"
+    r"[\s,!.]+",
+    re.IGNORECASE,
+)
+
+
 def match_smalltalk(
     text: str, style: Union[LanguageStyle, str, None] = LanguageStyle.ENGLISH
 ) -> Optional[str]:
@@ -212,4 +231,14 @@ def match_smalltalk(
         m = rule.pattern.search(cleaned)
         if m:
             return rule.respond(m, resolved_style)
+    # "hello iris, how are you" is a greeting AND a pleasantry. The greeting
+    # alone no longer swallows whatever follows it (that is how "hey open
+    # youtube" got lost), so try the rest on its own: small talk still gets a
+    # small-talk answer, and a command falls through to the command engine.
+    rest = _LEADING_GREETING.sub("", cleaned, count=1).strip(" ,.!?")
+    if rest and rest != cleaned:
+        for rule in _RULES:
+            m = rule.pattern.search(rest)
+            if m:
+                return rule.respond(m, resolved_style)
     return None

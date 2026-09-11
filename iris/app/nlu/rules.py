@@ -23,7 +23,9 @@ _FILLER_PREFIX = re.compile(
     r"(?:please\s+)?",
     re.IGNORECASE,
 )
-_TRAILING_POLITENESS = re.compile(r"\s*(?:please|for me|thanks|thank you|now)\s*[.!?]*$", re.IGNORECASE)
+# Anchored to a word boundary: with a bare `\s*` the alternation also matched
+# the TAIL of the last word, so "play let it snow" became "play let it s".
+_TRAILING_POLITENESS = re.compile(r"(?:^|\s+)(?:please|for me|thanks|thank you|now)\s*[.!?]*$", re.IGNORECASE)
 _WHITESPACE = re.compile(r"\s+")
 
 
@@ -177,11 +179,12 @@ def _build_open_target(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
         if "/" in target or "\\" in target or target.startswith("~"):
             return {"__tool__": "open_path", "path": target}
         return {"__tool__": "find_and_open", "name": Path(target).stem, "kind": "file"}
+    # A URL has slashes too, so it is recognised BEFORE the path test —
+    # otherwise "open https://github.com/x" went looking for a folder.
+    if lowered.startswith(("http://", "https://")) or lowered in KNOWN_SITES or _DOMAIN_RX.match(lowered):
+        return {"__tool__": "open_website", "site": target}
     if "/" in target or "\\" in target or target.startswith("~"):
         return {"__tool__": "open_path", "path": target}
-
-    if lowered in KNOWN_SITES or _DOMAIN_RX.match(lowered) or lowered.startswith(("http://", "https://")):
-        return {"__tool__": "open_website", "site": target}
 
     # Known folders, tolerating "my X", "X folder" and "X directory".
     for candidate in (
@@ -195,6 +198,25 @@ def _build_open_target(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
         if folder:
             return {"__tool__": "open_path", "path": folder}
     return {"__tool__": "open_app", "app": target}
+
+
+def _build_unit_convert(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
+    try:
+        value = float(m.group("value"))
+    except ValueError:
+        return None
+    return {"value": value, "from_unit": m.group("from_unit"), "to_unit": m.group("to_unit")}
+
+
+_WEATHER_TIME_WORDS = frozenset({"today", "tomorrow", "now", "outside", "tonight",
+                                 "aaj", "kal", "abhi", "aj"})
+
+
+def _build_weather(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
+    location = (m.group("location") or "").strip(" ,.")
+    if not location or location.lower() in _WEATHER_TIME_WORDS:
+        return {}
+    return {"location": location}
 
 
 def _build_motor(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
@@ -537,9 +559,14 @@ RULES: list[Rule] = [
         name="hinglish_weather",
         intent="web",
         tool="weather",
-        pattern=_rx(r"^(?:(?P<q>.+?)\s+(?:ka|mein|me)\s+)?mausam(?:\s+kaisa\s+hai)?$|^weather\s+kaisa\s+hai$"),
+        pattern=_rx(
+            r"^(?:(?:aaj|kal|abhi)\s+(?:ka\s+)?)?(?:(?P<q>.+?)\s+(?:ka|mein|me)\s+)?mausam(?:\s+kaisa\s+hai)?$"
+            r"|^weather\s+kaisa\s+hai$"
+        ),
         builder=lambda m, c: (
-            {"location": m.group("q").strip()} if m.groupdict().get("q") else {}
+            {"location": m.group("q").strip()}
+            if m.groupdict().get("q") and m.group("q").strip().lower() not in _WEATHER_TIME_WORDS
+            else {}
         ),
         confidence=0.95,
     ),
@@ -665,7 +692,13 @@ RULES: list[Rule] = [
         name="open_target",
         intent="desktop",
         tool="__dynamic__",
-        pattern=_rx(r"^(?:open|launch|start|run)\s+(?:up\s+)?(?:the\s+)?(?P<target>[\w .+&/:~\\\\-]{1,80})$"),
+        pattern=_rx(
+            r"^(?:open|launch|start|run)\s+(?:up\s+)?"
+            # "start a timer for 10 minutes" is a timer, not an app called
+            # "a timer for 10 minutes" — those words belong to the rules below.
+            r"(?!(?:a\s+|the\s+|my\s+)?(?:timer|countdown|stopwatch|reminder|alarm)\b)"
+            r"(?:the\s+)?(?P<target>[\w .+&/:~\\\\-]{1,80})$"
+        ),
         builder=_build_open_target,
         confidence=0.95,
     ),
@@ -846,14 +879,16 @@ RULES: list[Rule] = [
         name="shutdown",
         intent="power",
         tool="shutdown_pc",
-        pattern=_rx(r"(?:shut\s*down|power\s+off|turn\s+off)\s+(?:my\s+|the\s+)?(?:pc|computer|laptop|machine|system)"),
+        # Anchored: without `$` this matched a prefix of "turn off the computer
+        # screen" and offered to shut the machine down.
+        pattern=_rx(r"^(?:shut\s*down|power\s+off|turn\s+off)\s+(?:my\s+|the\s+)?(?:pc|computer|laptop|machine|system)$"),
         confidence=0.98,
     ),
     Rule(
         name="restart",
         intent="power",
         tool="restart_pc",
-        pattern=_rx(r"(?:restart|reboot)\s+(?:my\s+|the\s+)?(?:pc|computer|laptop|machine|system)"),
+        pattern=_rx(r"^(?:restart|reboot)\s+(?:my\s+|the\s+)?(?:pc|computer|laptop|machine|system)$"),
         confidence=0.98,
     ),
     Rule(
@@ -898,7 +933,7 @@ RULES: list[Rule] = [
         intent="automation",
         tool="set_timer",
         pattern=_rx(
-            r"^(?:set\s+)?(?:a\s+)?timer\s+(?:for\s+)?(?P<amount>[\w.]+)\s+(?P<unit>seconds?|secs?|minutes?|mins?|hours?|hrs?)"
+            r"^(?:(?:set|start|run|begin)\s+)?(?:a\s+)?timer\s+(?:for\s+)?(?P<amount>[\w.]+)\s+(?P<unit>seconds?|secs?|minutes?|mins?|hours?|hrs?)"
             r"(?:\s+(?:for|called|named)\s+(?P<label>.+))?$"
         ),
         builder=_build_timer,
@@ -928,10 +963,14 @@ RULES: list[Rule] = [
         tool="weather",
         pattern=_rx(
             r"(?:what(?:'s| is| will)?\s+)?(?:the\s+)?(?:weather|forecast|temperature)"
-            r"(?:\s+(?:like\s+)?(?:today|tomorrow|outside|now))?"
-            r"(?:\s+in\s+(?P<location>[\w .,-]{2,50}))?"
+            r"(?:\s+like)?"
+            r"(?:\s+(?:today|tomorrow|outside|now|tonight))?"
+            r"(?:\s+in\s+(?P<location>[\w .,-]{2,50}?))?"
+            # "in london today": the time word may follow the city too, and
+            # must not be swallowed into it — "london today" geocodes nowhere.
+            r"(?:\s+(?:today|tomorrow|outside|now|tonight))?$"
         ),
-        builder=lambda m, c: {"location": m.group("location").strip()} if m.group("location") else {},
+        builder=_build_weather,
         confidence=0.93,
     ),
     Rule(
@@ -1126,6 +1165,9 @@ RULES: list[Rule] = [
         intent="math",
         tool="unit_converter",
         pattern=_rx(r"^convert\s+(?P<value>[\d.]+)\s*(?P<from_unit>[\w°]+)\s+(?:to|into|in)\s+(?P<to_unit>[\w°]+)$"),
+        # Copied verbatim the value arrived as the string "5", and the tool
+        # multiplied it — every conversion failed with a TypeError.
+        builder=_build_unit_convert,
         confidence=0.95,
     ),
 ]

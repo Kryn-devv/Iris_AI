@@ -65,6 +65,17 @@ piece.
   worst being that `/motor` treated a **missing or misspelled `dir` as a
   stop** — so one typo looked exactly like broken wiring.
 
+- **Fifteen bugs from a full read of the assistant, all fixed:**
+  "hey open youtube" was answered with a greeting and never opened anything;
+  "start a timer for 10 minutes" launched an app called "a timer for 10
+  minutes"; "play let it snow" searched for "let it s"; "turn off the
+  computer screen" offered to shut the PC down; "convert 5 kg to lbs" always
+  failed; "weather in london today" looked for a town called "london today";
+  `open https://…` tried to open a folder; a remembered "$500" budget came
+  back as ₹500 — and "remember …" was never saved to disk at all, so every
+  fact died with the process. Memory now lives in the SQLite database and is
+  read back at boot.
+
 ## Retired
 
 - **The relay node.** The 4-channel relay board, its firmware
