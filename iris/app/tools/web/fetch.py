@@ -214,9 +214,15 @@ def html_to_text(html: str) -> str:
     bs4 = try_import("bs4")
     if bs4 is not None:
         soup = bs4.BeautifulSoup(html, "html.parser")
-        for tag in soup(list(_SKIP_TAGS)):
+        for tag in soup(list(_SKIP_TAGS) + ["title"]):
             tag.decompose()
-        return _collapse_whitespace(soup.get_text(separator="\n"))
+        # Break lines at block elements only, like the stdlib extractor below.
+        # ``get_text(separator="\n")`` would also split inline runs, turning
+        # "Hello <b>world</b>." into three lines.
+        for tag in soup(list(_BLOCK_TAGS)):
+            tag.insert_before("\n")
+            tag.insert_after("\n")
+        return _collapse_whitespace(soup.get_text())
 
     extractor = _TextExtractor()
     extractor.feed(html)
