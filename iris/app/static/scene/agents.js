@@ -36,7 +36,10 @@
     ".iris-labels{position:fixed;inset:0;z-index:2;pointer-events:none;overflow:hidden}",
     ".iris-agent-label{position:absolute;left:0;top:0;transform:translate(-50%,0);",
     "  pointer-events:auto;text-align:center;line-height:1.25;white-space:nowrap;",
-    "  opacity:0;visibility:hidden;transition:opacity .18s linear;",
+    /* No CSS transition: opacity is eased in JS below. A transition here fought
+     * the per-frame writes — the declutter pass set 0, the next frame's write
+     * restarted the transition, and an overlapped name never actually faded. */
+    "  opacity:0;visibility:hidden;",
     "  font-family:'Space Grotesk',Inter,system-ui,sans-serif;user-select:none}",
     ".iris-agent-label .n{display:block;font-size:11.5px;font-weight:600;letter-spacing:.11em;",
     "  text-transform:uppercase;text-shadow:0 1px 6px rgba(2,3,8,.95),0 0 2px rgba(2,3,8,1)}",
@@ -398,9 +401,10 @@
         a.label.style.zIndex = String(1000 - Math.round(depth * 900));
 
         /* Remember where this one landed so the declutter pass below can see
-         * which names are printing on top of each other this frame. */
+         * which names are printing on top of each other this frame. The
+         * opacity itself is written ONCE per frame, in declutter(), after the
+         * collision check has had its say. */
         a.lx = lx; a.ly = ly; a.labelOpacity = labelOpacity; a.depth = depth;
-        a.label.style.opacity = labelOpacity.toFixed(3);
         if (!a.placed) {
           a.placed = true;
           a.label.style.visibility = "visible";
@@ -427,6 +431,7 @@
       var vis = [];
       for (var i = 0; i < agents.length; i++) {
         var a = agents[i];
+        a.labelFade = 0;
         if (a.labelOpacity > 0.08 && a.label.offsetWidth) vis.push(a);
       }
       /* Nearest first, so a label only ever yields to something in front —
@@ -461,9 +466,19 @@
             fade = Math.max(fade, Math.min(1, closeness / 0.18));
           }
         }
-        if (fade > 0) {
-          b.label.style.opacity = (b.labelOpacity * (1 - fade)).toFixed(3);
-        }
+        b.labelFade = fade;
+      }
+
+      /* One write per label per frame, eased in JS so a name dissolves and
+       * reappears smoothly instead of popping. */
+      for (var n = 0; n < agents.length; n++) {
+        var c = agents[n];
+        if (c.label.style.visibility === "hidden") continue;
+        var target = c.labelOpacity * (1 - (c.labelFade || 0));
+        if (c.shownOpacity == null) c.shownOpacity = target;
+        else c.shownOpacity += (target - c.shownOpacity) * 0.28;
+        if (Math.abs(c.shownOpacity - target) < 0.004) c.shownOpacity = target;
+        c.label.style.opacity = c.shownOpacity.toFixed(3);
       }
     }
 
