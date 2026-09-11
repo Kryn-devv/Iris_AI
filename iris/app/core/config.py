@@ -217,7 +217,7 @@ class Settings(BaseSettings):
 
     # ----------------------------------------------------------- node links
     #: Shared secret a node presents when it dials in. REQUIRED for node links
-    #: to work at all: this channel switches mains relays and drives motors, so
+    #: to work at all: this channel drives a robot's motors, so
     #: an unset token refuses every connection rather than accepting anonymous
     #: ones. Use a long random string and put the same value in the firmware.
     NODE_LINK_TOKEN: Optional[str] = None

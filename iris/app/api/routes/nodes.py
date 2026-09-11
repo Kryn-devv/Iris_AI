@@ -5,8 +5,8 @@ the *hardware*: an ESP32 opening an outbound WebSocket so a cloud-hosted IRIS
 can reach it through a home router, and a voice round-trip so a microphone and
 speaker on that board become IRIS's ears and mouth.
 
-Both are authenticated with a shared token. A command channel that can switch
-mains relays and drive motors must never be open to whoever finds the port.
+Both are authenticated with a shared token. A command channel that can drive
+a robot must never be open to whoever finds the port.
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ def _require_token(supplied: Optional[str]) -> None:
     """Refuse unless a configured token matches.
 
     With no token configured the answer is a refusal, not a free pass: this
-    endpoint can switch mains relays and drive a robot, and it is reachable
+    endpoint can drive a robot, and it is reachable
     from the internet whenever IRIS is hosted anywhere but a home LAN.
     """
     expected = (settings.NODE_LINK_TOKEN or "").strip()

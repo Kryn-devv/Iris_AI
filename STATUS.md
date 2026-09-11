@@ -66,11 +66,6 @@ piece.
   stop** — so one typo looked exactly like broken wiring.
 
 ## Not working yet — and the single next step for each
-- **Relays / home automation.** Most likely `RELAY_ACTIVE_LOW` is wrong for
-  the module (flip it to `false` and reflash), or the module's VCC has no 5V.
-  Test on the board's own page first — the buttons are labelled with their
-  GPIO — and listen for the click. Click but no appliance → COM/NO screw
-  terminals. No click → power or the active-low flag.
 - **Flashing kept failing with "port busy."** Something still holds the USB
   port — usually a Serial Monitor, sometimes one in a *second* VS Code window.
   `lsof /dev/cu.usbmodem*` names the holder; quitting VS Code entirely and

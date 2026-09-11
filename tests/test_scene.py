@@ -131,8 +131,8 @@ class TestToolAgentMap:
             )
 
     def test_device_tools_belong_to_relay(self, tool_agent_map):
-        """The robot, the relays and the face are all one specialist's job."""
-        for tool in ("device_motor", "device_switch", "device_sensors", "face_emotion"):
+        """The robot, its sensors and its face are all one specialist's job."""
+        for tool in ("device_motor", "device_sensors", "face_emotion"):
             assert tool_agent_map.get(tool) == "relay"
 
     def test_the_constellation_defaults_match_the_mapped_ids(self, tool_agent_map):

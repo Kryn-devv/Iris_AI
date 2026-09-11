@@ -24,7 +24,6 @@ from iris.app.tools.devices.esp32 import (
     DeviceCommandTool,
     DeviceMotorTool,
     DeviceStatusTool,
-    DeviceSwitchTool,
     ListDevicesTool,
     RegisterDeviceTool,
     RemoveDeviceTool,
@@ -46,16 +45,10 @@ def fake_lan(monkeypatch):
         calls.append(str(request.url))
         path = request.url.path
         if path == "/status":
-            return httpx.Response(200, json={"name": "node", "kind": "relay", "relays": ["off"]})
-        if path == "/relay":
-            return httpx.Response(200, json={"ch": int(request.url.params["ch"]),
-                                             "state": request.url.params["state"]})
+            return httpx.Response(200, json={"name": "node", "kind": "motor", "motors": True})
         if path == "/motor":
             return httpx.Response(200, json={"motor": request.url.params["dir"]})
-        if path == "/servo":
-            return httpx.Response(200, json={"servo": int(request.url.params["angle"]),
-                                             "hold": "hold" in request.url.params})
-        if path == "/led/on":
+        if path == "/go":
             return httpx.Response(200, text="OK")
         return httpx.Response(404, json={"error": "unknown endpoint"})
 
@@ -91,15 +84,15 @@ class TestRegistry:
     def test_persistence_roundtrip(self, tmp_path):
         path = tmp_path / "devices.json"
         r1 = DeviceRegistry(path=path)
-        r1.add(Device(name="fan", base_url="http://192.168.1.9", kind="relay"))
+        r1.add(Device(name="fan", base_url="http://192.168.1.9", kind="generic"))
         r2 = DeviceRegistry(path=path)
         assert [d.name for d in r2.list()] == ["fan"]
 
     def test_fuzzy_lookup(self, registry):
-        registry.add(Device(name="kitchen light", base_url="http://192.168.1.5", kind="relay"))
+        registry.add(Device(name="kitchen light", base_url="http://192.168.1.5", kind="generic"))
         assert registry.get("light").name == "kitchen light"
         assert registry.get("the kitchen light").name == "kitchen light"
-        registry.add(Device(name="bedroom light", base_url="http://192.168.1.6", kind="relay"))
+        registry.add(Device(name="bedroom light", base_url="http://192.168.1.6", kind="generic"))
         # ambiguous now
         assert registry.get("light") is None
 
@@ -109,7 +102,7 @@ class TestDeviceTools:
     @pytest.mark.asyncio
     async def test_register_and_list(self, registry, fake_lan):
         reg = RegisterDeviceTool(registry)
-        res = await reg.execute(name="Kitchen Light", address="192.168.1.50", kind="relay")
+        res = await reg.execute(name="Robot", address="192.168.1.50", kind="motor")
         assert res.success and res.result["reachable"]
         listing = await ListDevicesTool(registry).execute()
         assert listing.result["count"] == 1
@@ -119,25 +112,28 @@ class TestDeviceTools:
         res = await RegisterDeviceTool(registry).execute(name="evil", address="8.8.8.8")
         assert not res.success and "local network" in res.error
 
-    @pytest.mark.asyncio
-    async def test_switch_hits_relay_endpoint(self, registry, fake_lan):
-        registry.add(Device(name="fan", base_url="http://192.168.1.9", kind="relay", default_channel=2))
-        res = await DeviceSwitchTool(registry).execute(device="fan", state="on")
-        assert res.success and res.result["state"] == "on"
-        assert any("/relay?ch=2&state=on" in url for url in fake_lan)
+    def test_a_stored_relay_kind_loads_as_generic(self, tmp_path):
+        """devices.json written before the relay node was retired still loads;
+        the retired kind just stops meaning anything special."""
+        path = tmp_path / "devices.json"
+        path.write_text('{"devices": [{"name": "fan", "base_url": "http://192.168.1.9", '
+                        '"kind": "relay", "default_channel": 2}]}')
+        r = DeviceRegistry(path=path)
+        assert [(d.name, d.kind) for d in r.list()] == [("fan", "generic")]
 
     @pytest.mark.asyncio
-    async def test_switch_uses_custom_command_map(self, registry, fake_lan):
-        registry.add(Device(name="bedroom light", base_url="http://192.168.1.8",
-                            kind="relay", commands={"on": "/led/on"}))
-        res = await DeviceSwitchTool(registry).execute(device="bedroom light", state="on")
+    async def test_motor_uses_custom_command_map(self, registry, fake_lan):
+        registry.add(Device(name="robot", base_url="http://192.168.1.8",
+                            kind="motor", commands={"forward": "/go"}))
+        res = await DeviceMotorTool(registry).execute(action="forward")
         assert res.success
-        assert any(url.endswith("/led/on") for url in fake_lan)
+        assert any(url.endswith("/go") for url in fake_lan)
 
     @pytest.mark.asyncio
-    async def test_switch_unknown_device_is_helpful(self, registry):
-        res = await DeviceSwitchTool(registry).execute(device="garage", state="on")
-        assert not res.success and "add device garage" in res.error
+    async def test_motor_unknown_device_is_helpful(self, registry):
+        registry.add(Device(name="robot", base_url="http://192.168.1.60", kind="motor"))
+        res = await DeviceMotorTool(registry).execute(action="forward", device="rover")
+        assert not res.success and "add device rover" in res.error
 
     @pytest.mark.asyncio
     async def test_motor_defaults_to_first_motor_device(self, registry, fake_lan):
@@ -181,19 +177,16 @@ class TestDeviceNLU:
     engine = IntentEngine()
 
     @pytest.mark.parametrize("utterance,tool,expected", [
-        ("add device kitchen light at 192.168.1.50 as relay", "register_device",
-         {"name": "kitchen light", "address": "192.168.1.50", "kind": "relay"}),
-        ("turn on the kitchen light", "device_switch", {"device": "kitchen light", "state": "on"}),
-        ("switch off the fan", "device_switch", {"device": "fan", "state": "off"}),
-        ("fan band karo", "device_switch", {"device": "fan", "state": "off"}),
-        ("light chalu kar do", "device_switch", {"device": "light", "state": "on"}),
-        ("toggle the socket", "device_switch", {"device": "socket", "state": "toggle"}),
+        ("add device robot at 192.168.1.50 as motor", "register_device",
+         {"name": "robot", "address": "192.168.1.50", "kind": "motor"}),
+        ("add device face at 192.168.1.70 as face", "register_device",
+         {"name": "face", "address": "192.168.1.70", "kind": "face"}),
         ("robot forward", "device_motor", {"action": "forward"}),
         ("move the robot left", "device_motor", {"action": "left"}),
         ("robot peeche", "device_motor", {"action": "backward"}),
         ("stop the robot", "device_motor", {"action": "stop"}),
         ("list my devices", "list_devices", {}),
-        ("is the light online", "device_status", {"device": "light"}),
+        ("is the robot online", "device_status", {"device": "robot"}),
     ])
     def test_device_phrases_route(self, utterance, tool, expected):
         match = self.engine.match(utterance)
@@ -202,51 +195,25 @@ class TestDeviceNLU:
         for key, value in expected.items():
             assert match.arguments.get(key) == value
 
-    @pytest.mark.parametrize("utterance,device,state", [
-        ("lights on", "lights", "on"),
-        ("light on", "light", "on"),
-        ("lights off", "lights", "off"),
-        ("fan off", "fan", "off"),
-        ("kitchen light on", "kitchen light", "on"),
-        ("hall lamp off", "hall lamp", "off"),
-    ])
-    def test_bare_on_off_is_the_form_people_actually_type(self, utterance, device, state):
-        """Both other switch rules require turn/switch/power, so the shortest
-        and most natural phrasing matched nothing and fell through to the LLM —
-        which reads as a dead app rather than a missing rule."""
-        match = self.engine.match(utterance)
-        assert match and match.tool_name == "device_switch", utterance
-        assert match.arguments.get("device") == device
-        assert match.arguments.get("state") == state
-
     @pytest.mark.parametrize("utterance", [
-        # English phrases that merely END in "on". These are why a bare
-        # "<something> on" rule needs a fence, not just a pattern.
-        "hold on", "come on", "what's going on", "from now on", "and so on",
-        "carry on", "later on", "move on", "that's on", "why is it on",
-        "keep going on",
+        # The relay node is retired, so appliance talk must not be routed to
+        # any device tool — least of all the robot. It goes to the LLM, which
+        # can say there is no such device, instead of a motor command that a
+        # light switch never meant.
+        "turn on the kitchen light", "switch off the fan", "lights on",
+        "fan band karo", "toggle the socket", "open the curtain", "servo 90",
     ])
-    def test_phrases_that_merely_end_in_on_are_not_devices(self, utterance):
+    def test_appliance_phrases_do_not_reach_a_device_tool(self, utterance):
         match = self.engine.match(utterance)
-        assert match is None or match.tool_name != "device_switch", utterance
-
-    @pytest.mark.parametrize("utterance,not_tool", [
-        ("turn the volume up", "device_switch"),
-        ("turn it up", "device_switch"),
-        ("turn on dark mode", "device_switch"),
-        ("switch off the screen", "device_switch"),
-    ])
-    def test_non_device_phrases_do_not_route_to_devices(self, utterance, not_tool):
-        match = self.engine.match(utterance)
-        assert match is None or match.tool_name != not_tool
+        assert match is None or not match.tool_name.startswith("device_"), utterance
 
     @pytest.mark.parametrize("kind", list(DEVICE_KINDS))
     def test_every_registry_kind_can_be_typed(self, kind):
         """The NLU must accept every kind the registry accepts.
 
-        It listed only relay/motor/generic, so "add device face at <ip> as
-        face" — the exact line docs/ESP32.md tells people to type — matched
-        nothing and fell through to the LLM instead of registering a device.
+        It once listed fewer, so "add device face at <ip> as face" — the exact
+        line docs/ESP32.md tells people to type — matched nothing and fell
+        through to the LLM instead of registering a device.
         """
         match = self.engine.match(f"add device myboard at 192.168.1.50 as {kind}")
         assert match and match.tool_name == "register_device", kind
@@ -402,116 +369,20 @@ class TestSensorNode:
         assert match.arguments.get("sensor") == sensor
 
 
-# ---------------------------------------------------------------- servo
-class TestServo:
-    engine = IntentEngine()
-
-    @pytest.mark.asyncio
-    async def test_named_positions_become_angles(self, registry, fake_lan):
-        from iris.app.tools.devices.esp32 import DeviceServoTool
-
-        registry.add(Device(name="curtain", base_url="http://192.168.1.80", kind="relay"))
-        tool = DeviceServoTool(registry)
-
-        opened = await tool.execute(position="open")
-        assert opened.success and opened.result["angle"] == 180
-        assert any("/servo" in url and "angle=180" in url for url in fake_lan)
-
-        closed = await tool.execute(position="close")
-        assert closed.result["angle"] == 0
-
-        half = await tool.execute(position="half")
-        assert half.result["angle"] == 90
-
-    @pytest.mark.asyncio
-    async def test_hold_is_opt_in(self, registry, fake_lan):
-        """A servo left powered fights its own gearbox, so holding is asked for
-        explicitly and never assumed."""
-        from iris.app.tools.devices.esp32 import DeviceServoTool
-
-        registry.add(Device(name="curtain", base_url="http://192.168.1.80", kind="relay"))
-        tool = DeviceServoTool(registry)
-
-        await tool.execute(angle=45)
-        assert not any("hold" in url for url in fake_lan)
-
-        fake_lan.clear()
-        await tool.execute(angle=45, hold=True)
-        assert any("hold=1" in url for url in fake_lan)
-
-    @pytest.mark.asyncio
-    async def test_out_of_range_angle_refuses_instead_of_clamping(self, registry, fake_lan):
-        """Clamping would park the horn against an end stop and let the servo
-        stall there — that is how the gears strip."""
-        from iris.app.tools.devices.esp32 import DeviceServoTool
-
-        registry.add(Device(name="curtain", base_url="http://192.168.1.80", kind="relay"))
-        res = await DeviceServoTool(registry).execute(angle=270)
-        assert not res.success and "0 to 180" in res.error
-        assert not fake_lan          # nothing was sent to the board
-
-    @pytest.mark.asyncio
-    async def test_angle_or_position_required(self, registry):
-        from iris.app.tools.devices.esp32 import DeviceServoTool
-        registry.add(Device(name="curtain", base_url="http://192.168.1.80", kind="relay"))
-        res = await DeviceServoTool(registry).execute()
-        assert not res.success
-
-    @pytest.mark.asyncio
-    async def test_no_node_explains_how_to_add_one(self, registry):
-        from iris.app.tools.devices.esp32 import DeviceServoTool
-        res = await DeviceServoTool(registry).execute(position="open")
-        assert not res.success and "add device" in res.error
-
-    @pytest.mark.parametrize("utterance,arguments", [
-        ("open the curtain", {"position": "open"}),
-        ("close the curtain", {"position": "close"}),
-        ("shut the blinds", {"position": "close"}),
-        ("open my curtains", {"position": "open"}),
-        ("curtain kholo", {"position": "open"}),
-        ("parda kholo", {"position": "open"}),
-        ("curtain band karo", {"position": "close"}),
-        ("open half the curtain", {"position": "half"}),
-        ("open the curtain halfway", {"position": "half"}),
-        ("set the servo to 45 degrees", {"angle": 45}),
-        ("servo 90", {"angle": 90}),
-        ("servo to 0", {"angle": 0}),
-    ])
-    def test_servo_nlu(self, utterance, arguments):
-        match = self.engine.match(utterance)
-        assert match and match.tool_name == "device_servo", utterance
-        assert match.arguments == arguments
-
-    @pytest.mark.parametrize("utterance", ["servo 181", "rotate servo 200", "servo 999"])
-    def test_impossible_angle_is_not_silently_clamped_by_nlu(self, utterance):
-        match = self.engine.match(utterance)
-        assert match is None or match.tool_name != "device_servo"
-
-    @pytest.mark.parametrize("utterance,tool", [
-        ("open youtube", "open_website"),
-        ("open notepad", "open_app"),
-        ("turn on the kitchen light", "device_switch"),
-        ("close chrome", "close_app"),
-    ])
-    def test_servo_rules_do_not_shadow_existing_commands(self, utterance, tool):
-        match = self.engine.match(utterance)
-        assert match and match.tool_name == tool
-
-
 # --------------------------------------------------------- custom firmware mapping
 class TestMapDeviceCommand:
     @pytest.mark.asyncio
     async def test_map_and_use_custom_command(self, registry, fake_lan):
         from iris.app.tools.devices.esp32 import MapDeviceCommandTool
 
-        registry.add(Device(name="hall light", base_url="http://192.168.1.40", kind="relay"))
-        res = await MapDeviceCommandTool(registry).execute(device="hall light", command="on", path="led/on")
+        registry.add(Device(name="rover", base_url="http://192.168.1.40", kind="motor"))
+        res = await MapDeviceCommandTool(registry).execute(device="rover", command="forward", path="go")
         assert res.success
-        assert registry.get("hall light").commands["on"] == "/led/on"
+        assert registry.get("rover").commands["forward"] == "/go"
 
-        switch_res = await DeviceSwitchTool(registry).execute(device="hall light", state="on")
-        assert switch_res.success
-        assert any(url.endswith("/led/on") for url in fake_lan)
+        drive = await DeviceMotorTool(registry).execute(action="forward", device="rover")
+        assert drive.success
+        assert any(url.endswith("/go") for url in fake_lan)
 
     @pytest.mark.asyncio
     async def test_map_unknown_device_explains(self, registry):
@@ -528,8 +399,8 @@ class TestMapDeviceCommand:
 
     def test_map_command_nlu(self):
         cases = [
-            ("map kitchen light on command to /led/on", "kitchen light", "on", "/led/on"),
-            ("set fan off to /relay1/off", "fan", "off", "/relay1/off"),
+            ("map rover forward command to /go", "rover", "forward", "/go"),
+            ("set rover stop to /halt", "rover", "stop", "/halt"),
         ]
         for utterance, device, command, path in cases:
             match = IntentEngine().match(utterance)
@@ -538,9 +409,9 @@ class TestMapDeviceCommand:
             assert match.arguments["command"] == command
             assert match.arguments["path"] == path
 
-    def test_map_command_does_not_collide_with_switch(self):
-        match = IntentEngine().match("turn on the kitchen light")
-        assert match and match.tool_name == "device_switch"
+    def test_map_command_does_not_collide_with_driving(self):
+        match = IntentEngine().match("move the robot forward")
+        assert match and match.tool_name == "device_motor"
 
 
 # ------------------------------------------------------------ the fast path
@@ -696,19 +567,19 @@ class TestFastPath:
         assert any("dir=forward" in url for url in http)    # and then done over HTTP
 
     @pytest.mark.asyncio
-    async def test_a_relay_is_never_interrogated_on_the_off_chance(self, monkeypatch):
-        """Only kinds whose firmware has a listener are worth asking. A light
-        that comes on 30 ms later is a light that came on, so a relay must not
-        pay a round trip to find out it has no fast path."""
+    async def test_a_face_node_is_never_interrogated_on_the_off_chance(self, monkeypatch):
+        """Only kinds whose firmware has a listener are worth asking. A face
+        that smiles 30 ms later is a face that smiled, so the S3 board must
+        not pay a round trip to find out it has no fast path."""
         http = _mock_http(monkeypatch, lambda r: httpx.Response(
-            200, json={"name": "relay", "kind": "relay", "relays": ["off"]}))
-        dev = Device(name="lamp", base_url="http://127.0.0.1", kind="relay")
+            200, json={"name": "face", "kind": "face", "emotion": "neutral"}))
+        dev = Device(name="face", base_url="http://127.0.0.1", kind="face")
 
-        await transport_mod.device_request(dev, "/relay", {"ch": 1, "state": "on"})
-        await transport_mod.device_request(dev, "/relay", {"ch": 1, "state": "off"})
+        await transport_mod.device_request(dev, "/face", {"emotion": "happy"})
+        await transport_mod.device_request(dev, "/face", {"emotion": "sad"})
 
         assert not any("/status" in u for u in http)
-        assert any("state=on" in u for u in http) and any("state=off" in u for u in http)
+        assert any("emotion=happy" in u for u in http) and any("emotion=sad" in u for u in http)
 
     @pytest.mark.asyncio
     async def test_a_motor_node_on_older_firmware_is_asked_once_only(self, monkeypatch):
@@ -726,22 +597,22 @@ class TestFastPath:
 
     @pytest.mark.asyncio
     async def test_any_kind_picks_up_a_fast_path_it_advertises(self, monkeypatch):
-        """No round trip is spent asking a relay, but if one of its own
+        """No round trip is spent asking a face node, but if one of its own
         /status answers mentions a port, it gets datagrams from then on. That
         is what stops this module from having to be edited when another
         firmware grows the listener."""
-        srv, node, port = await _serve_udp(answer={"relay": "on"})
+        srv, node, port = await _serve_udp(answer={"emotion": "happy"})
         try:
             _mock_http(monkeypatch, lambda r: httpx.Response(
-                200, json={"kind": "relay", "relays": ["off"], "fast": {"udp": port}}))
-            dev = Device(name="lamp", base_url="http://127.0.0.1", kind="relay")
+                200, json={"kind": "face", "emotion": "neutral", "fast": {"udp": port}}))
+            dev = Device(name="face", base_url="http://127.0.0.1", kind="face")
 
             await transport_mod.device_request(dev, "/status")     # over HTTP
             assert node.seen == []
-            await transport_mod.device_request(dev, "/relay", {"ch": 1, "state": "on"})
+            await transport_mod.device_request(dev, "/face", {"emotion": "happy"})
         finally:
             srv.close()
-        assert node.seen == ["/relay?ch=1&state=on"]
+        assert node.seen == ["/face?emotion=happy"]
 
     @pytest.mark.asyncio
     async def test_a_board_that_is_off_does_not_cost_two_timeouts_per_command(
@@ -806,9 +677,9 @@ class TestFastPath:
                     lambda r: httpx.Response(200, json={"ok": True})))
 
         monkeypatch.setattr(transport_mod, "_client", fake_client)
-        dev = Device(name="robot", base_url="http://127.0.0.1", kind="relay")
+        dev = Device(name="robot", base_url="http://127.0.0.1", kind="generic")
 
-        await transport_mod.device_request(dev, "/relay", {"ch": 1, "state": "on"})
+        await transport_mod.device_request(dev, "/motor", {"dir": "forward"})
         await transport_mod.device_request(dev, "/status")
 
         command, reading = seen[0], seen[-1]

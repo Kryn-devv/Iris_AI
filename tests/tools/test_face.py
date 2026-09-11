@@ -415,7 +415,7 @@ class TestFaceIntents:
         ("stop the robot", "device_motor"),
         ("is there any motion", "device_sensors"),
         ("gas level", "device_sensors"),
-        ("turn on the fan", "device_switch"),
+        ("what's the temperature", "device_sensors"),
         ("open youtube", "open_website"),
         ("mute", "volume"),
         ("volume up", "volume"),

@@ -4,7 +4,7 @@
  * whether this is pleasant to leave open all day: a performance mode, respect
  * for "reduce motion", and not burning a battery on a hidden tab.
  *
- * The tool -> agent map below is EXPLICIT rather than keyword-matched. All 78
+ * The tool -> agent map below is EXPLICIT rather than keyword-matched. All 76
  * registered tools are listed, so a tool that gets renamed shows up as an
  * unmapped name in the console rather than silently lighting the wrong
  * specialist — which is the kind of wrong that nobody notices for months.
@@ -13,7 +13,7 @@
   "use strict";
 
   /* Every tool IRIS registers, grouped by the specialist that owns it.
-   * operator 21 · scout 11 · scribe 17 · relay 15 · sentinel 14  = 78 */
+   * operator 21 · scout 11 · scribe 17 · relay 13 · sentinel 14  = 76 */
   var AGENT_TOOLS = {
     operator: [
       /* desktop */
@@ -43,9 +43,9 @@
     relay: [
       /* automation: timers, routines, and everything on the far side of WiFi */
       "cancel_reminder", "device_command", "device_motor", "device_sensors",
-      "device_servo", "device_status", "device_switch", "face_emotion", "list_devices",
-      "list_reminders", "map_device_command", "register_device", "remove_device",
-      "set_reminder", "set_routine", "set_timer",
+      "device_status", "face_emotion", "list_devices", "list_reminders",
+      "map_device_command", "register_device", "remove_device", "set_reminder",
+      "set_routine", "set_timer",
     ],
     sentinel: [
       /* system — including every high-risk action, which is why it is the one

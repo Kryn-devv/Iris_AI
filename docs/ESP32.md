@@ -1,18 +1,25 @@
 # Connecting ESP32 boards to IRIS
 
-IRIS can command any ESP32 on your WiFi — relay boards for home automation
-(lights, fans, sockets) and motor drivers for the robot base. Each board runs a
-tiny web server; IRIS calls it over HTTP on your local network. Nothing leaves
-your LAN, and IRIS refuses to send device commands to non-local addresses.
+IRIS drives two ESP32 boards over your WiFi: the **robot base** (an ESP32 with
+two BTS7960 motor drivers) and the **S3 board** (an ESP32-S3 with two OLED
+eyes and the sensors — temperature, humidity, motion, gas, flame, light,
+distance). Each board runs a tiny web server; IRIS calls it over HTTP on your
+local network. Nothing leaves your LAN, and IRIS refuses to send device
+commands to non-local addresses.
 
 There are two ways to hook a board up. **Both can be mixed freely** — one
 registry holds all your devices.
 
 ---
 
-## Path A — flash the IRIS node firmware (recommended)
+## Path A — flash the IRIS firmware (recommended)
 
-One universal sketch: `firmware/esp32-iris-node/esp32-iris-node.ino`.
+Two sketches, one per board:
+
+| Board | Sketch | Section |
+|---|---|---|
+| robot base, 2× BTS7960 | `firmware/esp32-iris-node-bts7960/` | [Robot with BTS7960 drivers](#robot-with-bts7960-drivers-2-boards-4-wheel-drive) |
+| ESP32-S3 eyes + sensors | `firmware/esp32-s3-iris-sensors/` | [The S3 node](#the-s3-node--the-robots-face-and-senses) |
 
 ### 1. Prepare your uploader (once) — Arduino IDE **or** PlatformIO
 
@@ -38,214 +45,71 @@ PlatformIO project (`platformio.ini` included, compile-verified):
 > port), then replug.
 
 ### 2. Configure the sketch
-Open the `.ino` and edit the CONFIG block:
+Each sketch has one CONFIG block at the top. On both boards the only lines
+that *must* change are the WiFi name and password:
 
-| Setting | What to put |
-|---|---|
-| `WIFI_SSID` / `WIFI_PASS` | your WiFi name and password |
-| `DEVICE_NAME` | e.g. `"kitchen-light"`, `"robot"` — also becomes `http://<name>.local` |
-| `DEVICE_KIND` | `"relay"` for lights/fans/sockets, `"motor"` for the robot |
-| `RELAY_PINS` | the GPIOs your relay module IN pins connect to (default 26, 27, 32, 33) |
-| `RELAY_ACTIVE_LOW` | keep `true` for the common blue relay modules |
-| `MOTORS_ENABLED` | `true` on the robot board (L298N pins are in the sketch) |
-| `PIN_SERVO` | GPIO for the servo's **signal** wire (default 19); `-1` if no servo |
-| `SERVO_POWER_CH` | relay channel that switches the servo's **+** (default 3); `0` if it is hard-wired to 5V |
-
-### 3. Wiring (typical)
-**Relay module:** ESP32 `5V/VIN → VCC`, `GND → GND`, `GPIO26 → IN1`,
-`GPIO27 → IN2`, …
-
-**A relay is a switch, nothing more.** Each channel has three screw terminals:
-COM, NO and NC. The **+ wire coming from the power rail goes to COM**, the
-**+ wire going on to the appliance goes to NO**, and the appliance's **− goes
-straight to the shared ground — never through the relay.** NC is the terminal
-that is connected when the channel is off; leave it empty for a normally-off
-appliance. That is the whole of it: the relay interrupts the positive wire, and
-the negative is always joined.
-
-Because the relay only opens and closes a contact, it does not care what
-voltage runs through it. Switching a 12V strip or a 5V servo needs no AC
-anywhere in the build. If you *do* put mains through the COM/NO terminals,
-that is a live-mains job with real shock risk — a low-voltage DC load is the
-safer build and the one the rest of these docs assume.
-
-**Servo:** the **signal** (orange/yellow) wire goes to `PIN_SERVO`. The
-**power** (red) wire does **not** come from any ESP32 pin — the onboard
-regulator cannot source a servo's stall current and trying it browns out the
-board halfway through a move. Feed the red wire from the 5V rail through the
-relay channel named in `SERVO_POWER_CH`, and the brown/black wire to the shared
-ground.
-
-That relay channel is what stops an idle servo buzzing. After each move the
-firmware opens the channel, so the servo goes properly dead instead of fighting
-its own gearbox and cooking itself holding position. Ask for `hold` when you
-actually want it to keep pushing. On each command the pulse is set *before* the
-channel closes, so the servo wakes up already knowing where to go.
-
-**L298N motor driver:** `GPIO25 → ENA`, `GPIO13 → IN1`, `GPIO12 → IN2`,
-`GPIO14 → ENB`, `GPIO21 → IN3`, `GPIO22 → IN4`, common GND between ESP32 and
-driver, motor battery to the driver's 12V input.
-
-> **Using BTS7960 instead of L298N?** (Common for a 4-wheel-drive robot with
-> two driver boards — one per side.) Don't use this sketch's motor section.
-> Flash **`firmware/esp32-iris-node-bts7960/esp32-iris-node-bts7960.ino`**
-> instead — same `/motor` API, wired for two BTS7960 boards. See its own
-> wiring table below.
-
-### One 12V battery, three appliances — the whole power tree
-
-> **There is a drawn version of everything below** in
-> **[`wiring-12v.html`](wiring-12v.html)** — open it in any browser (no server
-> needed) for the four diagrams: the power tree, what a relay channel actually
-> is, all four channels at once, and the fan's flyback diode. Print it and take
-> it to the bench.
-
-This is the build most people end up with: a 12V battery, a 4-channel relay
-module, and three things to switch — a **12V DC light**, a **3V DC fan** and a
-**servo**.
-
-**There is no AC anywhere in it.** Every load is 12V DC or lower, so nothing
-here involves mains voltage, a plug, or live wiring. A relay *can* switch AC,
-which is why every tutorial warns about it, but you are not using it that way.
-The 12V battery is the only source in the system.
-
-#### What you need beyond the parts you have
-
-| Part | Why | Roughly |
-|---|---|---|
-| 2 × LM2596 buck converter (**3A**, adjustable) | the battery is 12V; the ESP32 and relay need 5V and the fan needs 3V | £2 each |
-| Inline blade fuse holder + **5A** fuse | a pinched wire otherwise puts a battery's full short-circuit current into a spark | £1 |
-| Rocker switch (rated 12V 5A+) | one thing that kills the whole system | £1 |
-| 1 × **1N4007** diode | the fan is a motor; see the flyback note below | pennies |
-
-Get **3A** buck modules, not the 2A ones. The reason is in the current budget
-below.
-
-#### The three rails
-
-```
-                 ┌─ 5A fuse ─ switch ─┬──────────────────────── 12V rail
-  12V battery  + ┘                    ├─ buck #1 ─▶ 5.0V ────── 5V rail
-               −  ───────────────┐    └─ buck #2 ─▶ 3.2V ────── 3V rail
-                                 └────────────────────────────── GROUND
+```cpp
+const char* WIFI_SSID = "your wifi name";
+const char* WIFI_PASS = "your wifi password";
 ```
 
-| Rail | Feeds |
-|---|---|
-| **12V** | relay CH1 COM (→ the 12V light) |
-| **5V** | ESP32 `5V`/`VIN` pin · relay module `VCC` · relay CH3 COM (→ the servo) |
-| **3V** | relay CH2 COM (→ the fan) |
-| **GROUND** | battery − · both bucks' − out · ESP32 `GND` · relay `GND` · light − · fan − · servo brown — **all joined at one point** |
+Everything else — motor pins and directions on the robot, sensor pins and
+OLED wiring on the S3 — has a default that matches the wiring in the sections
+below, and the robot's pins are calibrated from its own web page rather than
+by editing code. **Both boards need a 2.4 GHz network**; an ESP32 cannot see
+a 5 GHz-only one, and a phone hotspot set to 5 GHz looks exactly like a wrong
+password.
 
-Every black wire in the build meets at that one point. A build where the
-appliance grounds come back separately works by luck; a build with one star
-ground works by design.
+### 3. Wiring
+The robot's motor wiring is on its own printable sheet,
+**[`wiring-motors.html`](wiring-motors.html)** (open it in any browser), and
+the S3's sensor and OLED pins are in [the S3 section](#sensor-pins--change-them-in-config)
+below. Two rules apply to both boards:
 
-#### The relay channels
-
-| CH | ESP32 pin → IN | COM ← from | NO → to | What it switches |
-|---|---|---|---|---|
-| 1 | GPIO 26 → IN1 | 12V rail | light **+** | the 12V light |
-| 2 | GPIO 27 → IN2 | 3V rail | fan **+** | the 3V fan |
-| 3 | GPIO 32 → IN3 | 5V rail | servo **red** | the servo's power |
-| 4 | GPIO 33 → IN4 | — | — | spare |
-
-Leave **NC** empty on all four. NC is the terminal that is connected when the
-channel is *off*, which is not what you want for any of these.
-
-The servo's **signal** wire (orange or yellow) does **not** go through the
-relay — a relay cannot make a pulse. It goes straight from **GPIO 19** to the
-servo. CH3 only decides whether the servo has power. Its brown/black wire goes
-to the shared ground like everything else.
-
-#### Assemble it in this order
-
-The order matters more than the wiring does, because two of these steps are
-where parts get destroyed.
-
-1. Build the 12V side — battery lead, fuse holder, switch, and the two bucks'
-   **inputs**. **Do not connect the battery yet.** Nothing on the bucks' outputs.
-2. Battery on, switch on. Put a multimeter on **buck #1's output** and turn its
-   little screw until it reads **5.0 V**. Switch off.
-3. Same for **buck #2**, until it reads **3.2 V**. Switch off, battery off.
-4. **Only now** connect the loads. A buck module out of the box can be set
-   anywhere from 1.25V to nearly its input voltage — connecting the 3V fan
-   before you have set that screw is how a 3V fan dies in one second.
-5. Wire the relay COM/NO terminals, the four IN signal wires, the servo, and
-   the ESP32's 5V and GND.
-6. Battery on. The relay board's power LED lights, the ESP32 prints its IP,
-   and every channel starts **off**.
-
-#### Current budget — why 3A buck modules
-
-| On the 5V rail | Draw |
-|---|---|
-| ESP32 with WiFi transmitting | ~250 mA in bursts |
-| Relay module, all four coils closed | ~280 mA |
-| SG90 servo, moving | ~400 mA |
-| SG90 servo, stalled against a stop | ~700 mA |
-| MG996R servo, stalled | up to 2.5 A |
-
-A 2A module survives the typical case and browns out the ESP32 halfway through
-a servo move — which reads as "the board keeps rebooting when the curtain
-moves", not as a power problem. A 3A module has the headroom. The 12V light and
-the 3V fan each sit on their own rail and are small (a 12V 5W strip is ~0.4 A,
-a small fan 100–250 mA), so the 5A fuse covers the whole system comfortably
-while still being far below what the wire can carry.
-
-#### Three things worth knowing before you power it
-
-**The fan needs a flyback diode.** A DC motor's coil field collapses when the
-relay opens and drives a reverse voltage spike back down the wire. It arcs the
-relay contacts and can reset the ESP32. Put the **1N4007 across the fan's own
-two terminals, with the stripe (cathode) on the + side**. It does nothing at
-all in normal running and absorbs the spike on switch-off.
-
-**Nothing motorised comes off an ESP32 pin.** Not the fan, not the servo. The
-3.3V regulator on the board cannot source a motor's current, and the 5V pin is
-just the incoming supply passed through — hanging a servo on it drags the
-board's own supply down with it. Both get their power from the 5V rail, through
-the relay.
-
-**A 3.3V GPIO driving a 5V relay module usually works, and sometimes doesn't.**
-The relay's opto-input is designed around 5V logic. Most modules trigger fine
-at 3.3V. If one channel never clicks while the others do, that is the cause,
-not your wiring — the fix is a module labelled "3V3" or a 4-channel level
-shifter, not more soldering.
+- **One shared ground.** Every GND — battery, drivers, sensors, both ESP32s —
+  meets at one point. A sensor with its own floating ground reads garbage.
+- **Nothing motorised comes off an ESP32 pin.** The pins drive *signals*; the
+  motors and the OLEDs take their power from the supply rails. The 3.3 V pin
+  is a regulator output, not a power rail for anything else.
 
 ### 4. Flash and find the IP
-Select your board (*Tools → Board → ESP32 Dev Module*), the right COM port,
-and Upload. Open **Serial Monitor at 115200** — on connect the board prints:
+Select your board (*Tools → Board → ESP32 Dev Module* for the robot,
+*ESP32S3 Dev Module* for the S3), the right COM port, and Upload. Open
+**Serial Monitor at 115200** — on connect the robot prints:
 
 ```
 =================================
-  IRIS node online:  http://192.168.1.73
-  Register in IRIS:  add device kitchen-light at 192.168.1.73
+  IRIS robot (BTS7960 x2) online:  http://192.168.1.74
+  Calibrate:        open that address in a browser
+  Register in IRIS: add device robot at 192.168.1.74 as motor
+  Fast path:        UDP 8267, control socket ws://192.168.1.74:81
 =================================
 ```
 
-It also serves its own control page at that IP (like your existing boards do),
-so you can always drive it from a phone browser directly.
+and the S3 prints the same shape with `IRIS S3 node online` and `as face`.
+Each board also serves its own control page at that IP, so you can always
+drive the robot or test the face from a phone browser directly.
 
 ### 5. Register it with IRIS
-Say (or type) to IRIS:
+Say (or type) to IRIS — one line per board, exactly as the serial monitor
+printed it:
 
 ```
-add device kitchen light at 192.168.1.73 as relay
 add device robot at 192.168.1.74 as motor
+add device face at 192.168.1.70 as face
 ```
 
 Done. Now these work — by voice too:
 
 ```
-turn on the kitchen light        light chalu karo
-switch off the fan               fan band karo
-toggle the socket                robot forward
-move the robot left              stop the robot
-is the light online              list my devices
-open the curtain                 curtain kholo
-close the curtain                parda kholo
-open the curtain halfway         set the servo to 45 degrees
+robot forward                    robot aage
+move the robot left              robot peeche
+stop the robot                   robot ruko
+what's the temperature           kitna garam hai
+is there any motion              gas level
+how far is the object            is there a fire
+look happy                       look surprised
+is the robot online              list my devices
 ```
 
 > Tip: give your router a DHCP reservation for each board (or use the
@@ -256,9 +120,9 @@ open the curtain halfway         set the servo to 45 degrees
 ## Robot with BTS7960 drivers (2 boards, 4-wheel-drive)
 
 For a skid-steer robot where **two BTS7960 modules** each drive one side's
-motors, flash `firmware/esp32-iris-node-bts7960/` — **not** the plain
-`esp32-iris-node.ino` (that one is wired for an L298N and cannot drive a
-BTS7960 correctly).
+motors, flash `firmware/esp32-iris-node-bts7960/`. The full wiring, with
+every wire named and the one rule that saves a driver, is on
+**[`wiring-motors.html`](wiring-motors.html)**.
 
 ### You only edit two lines
 
@@ -431,7 +295,6 @@ control, whatever), keep it exactly as it is.
 ### 1. Register each board with the IP you already have
 
 ```
-add device hall light at 192.168.1.40 as relay
 add device robot at 192.168.1.41 as motor
 add device room sensor at 192.168.1.42 as sensor
 ```
@@ -442,8 +305,6 @@ IRIS will say it "did not answer yet" — that's fine, it still registers.
 ### 2. Map each command to the real URL your firmware already answers — by voice, no file editing
 
 ```
-map hall light on command to /relay1on
-map hall light off command to /relay1off
 map robot forward command to /move?dir=fwd
 map robot stop command to /move?dir=stop
 ```
@@ -456,32 +317,37 @@ calls (browser dev tools → Network tab shows every request).
 ### 3. Just talk normally — IRIS now calls YOUR firmware's real endpoints
 
 ```
-turn on the hall light         ·  hall light chalu karo
-robot forward                  ·  robot stop
+robot forward                  ·  robot aage
+stop the robot                 ·  robot ruko
 ```
 
 No JSON, no reflashing. (Advanced: `devices.json` in the data directory
 holds the same mapping if you ever want to edit it directly, but the voice
-commands above do the same thing.) For a one-off call that has no permanent
-command name:
-
-```
-device_command bedroom light /servo?angle=90
-```
+commands above do the same thing.) A one-off call that has no permanent
+command name — "send /selftest to the robot" — has no fixed phrasing; the AI
+side picks the `device_command` tool for it, so it needs an LLM key. With no
+key, open the board's own page in a browser instead.
 
 ---
 
 ## The API (what IRIS calls)
 
-| Endpoint | Example | Meaning |
-|---|---|---|
-| `GET /status` | `/status` | JSON: name, kind, ip, rssi, relay states |
-| `GET /relay` | `/relay?ch=1&state=on` | channel 1 on / off / toggle |
-| `GET /servo` | `/servo?angle=90` | point the servo; add `&hold=1` to keep it powered |
-| `GET /motor` | `/motor?dir=forward&speed=200&ms=1500` | drive; auto-stops after `ms` |
+Both boards answer these over plain HTTP; the robot also takes the drive
+commands over UDP and a WebSocket (see *How fast it responds*).
+
+| Board | Endpoint | Example | Meaning |
+|---|---|---|---|
+| both | `GET /status` | `/status` | JSON: name, kind, ip, rssi, what the board is doing |
+| robot | `GET /motor` | `/motor?dir=forward&speed=200&ms=1500` | drive; `dir` is required; auto-stops after `ms` |
+| robot | `GET /tank` | `/tank?left=150&right=-150` | each side −255…255 |
+| robot | `GET /stop` | `/stop` | stop now |
+| S3 | `GET /sensors` | `/sensors` | JSON: temperature, humidity, motion, gas, flame, light, distances |
+| S3 | `GET /face` | `/face?emotion=happy` | show an expression; `/face/list` names them all |
+| S3 | `GET /look` | `/look?x=-60&y=0` | move the gaze, −100…100 on each axis; `/blink?count=2` blinks |
+| S3 | `GET /speak` | `/speak?ms=2000` | animate the mouth for that long (IRIS calls it while it talks) |
 
 Timed moves auto-stop even if WiFi drops mid-command (the deadline runs on the
-board), and the board reconnects to WiFi by itself.
+board), and both boards reconnect to WiFi by themselves.
 
 ## The S3 node — the robot's face and senses
 
@@ -639,18 +505,19 @@ network: join **`iris-face`** with password **`iriscalib`** and open
 `http://192.168.4.1`. The eyes animate while it is still trying to connect, so
 a frozen face always means a real fault rather than a slow boot.
 
-## One brain, many bodies (the recommended 3-board setup)
+## One brain, two bodies
 
 ```
                  your PC (IRIS = the only brain: voice, AI, decisions)
                           │  WiFi / HTTP
-      ┌───────────────────┼───────────────────────┐
-      ▼                   ▼                       ▼
- ESP32-S3            ESP32 "robot"           ESP32 "relays"
- face + sensors      BTS7960 x2 motors       lights/fans/sockets
- (2 OLED eyes,       (esp32-iris-node-       (esp32-iris-node, or your
-  PIR/gas/light/      bts7960)                existing sketch + command map)
-  ultrasonic)
+                ┌─────────┴─────────┐
+                ▼                   ▼
+           ESP32-S3            ESP32 "robot"
+           face + sensors      BTS7960 x2 motors
+           (2 OLED eyes,       (esp32-iris-node-
+            DHT/PIR/gas/        bts7960)
+            flame/light/
+            ultrasonic)
 ```
 
 If a board currently runs its **own** voice/AI code (mic + STT on the ESP):
@@ -663,10 +530,9 @@ IRIS hears, thinks, and calls them.
 Register as many as you want — each is just a name + IP:
 
 ```
-add device kitchen light at 192.168.1.73 as relay
-add device bedroom fan at 192.168.1.75 as relay
-add device water pump at 192.168.1.76 as relay
 add device robot at 192.168.1.74 as motor
+add device face at 192.168.1.70 as face
+add device garage sensor at 192.168.1.76 as sensor
 ```
 
 `list my devices` shows them all; `check devices` pings every one.
@@ -678,15 +544,15 @@ add device robot at 192.168.1.74 as motor
   Click Upload again and, while the terminal prints `Connecting....`, press
   and **hold the BOOT button** on the board until `Writing at 0x...` lines
   appear. Stronger version: hold BOOT, tap EN/RST once, keep holding BOOT.
-  Still stuck? Disconnect driver/relay wiring for the first flash (a powered
-  BTS7960/relay can back-feed pins and block boot mode), use a direct USB
+  Still stuck? Disconnect the driver wiring for the first flash (a powered
+  BTS7960 can back-feed pins and block boot mode), use a direct USB
   port and a known-good data cable, or add `upload_speed = 115200` under the
   env in `platformio.ini`.
 
 - **"Could not reach the device"** — board and PC must be on the *same* WiFi
   network (not guest WiFi); check the IP in Serial Monitor; ping it from the PC.
-- **Relay clicks inverted** — flip `RELAY_ACTIVE_LOW` in the sketch.
-- **Robot turns the wrong way** — swap the IN1/IN2 (or IN3/IN4) wires or pins.
+- **Robot turns the wrong way** — open the robot's own page and use the
+  *swap sides* / *invert* switches, then *save*. No re-wiring.
 - **IP changes after reboot** — set a DHCP reservation in your router, or
   register the device with its `.local` name instead of the IP.
 - **`.local` name not found on Windows** — install Apple Bonjour or just use the IP.

@@ -23,17 +23,18 @@ the board — and does not need to.
                     ▲                    │
        sensor readings, speech           commands, speech audio
                     │                    ▼
-   ┌────────────────────────┬────────────────────────┬─────────────────────┐
-   │  ESP32-S3  "face"      │  ESP32  "robot"        │  ESP32  "relays"    │
-   │  2 OLED eyes           │  2× BTS7960, 4 motors  │  lights, fans,      │
-   │  PIR · gas · light     │                        │  sockets            │
-   │  flame · ultrasonic    │                        │                     │
-   │  I2S mic + speaker     │                        │                     │
-   └────────────────────────┴────────────────────────┴─────────────────────┘
+   ┌────────────────────────┬────────────────────────┐
+   │  ESP32-S3  "face"      │  ESP32  "robot"        │
+   │  2 OLED eyes           │  2× BTS7960, 4 motors  │
+   │  DHT · PIR · gas       │                        │
+   │  flame · light         │                        │
+   │  ultrasonic            │                        │
+   │  I2S mic + speaker     │                        │
+   └────────────────────────┴────────────────────────┘
 ```
 
 Every board is a **body**: it has no AI on it, it just does what it is told and
-reports what it senses. One brain, many bodies. Add a fourth board and nothing
+reports what it senses. One brain, many bodies. Add a third board and nothing
 about the brain changes.
 
 A **laptop, tablet or phone is not a body** — it is a window. The dashboard is
@@ -163,11 +164,11 @@ Two different tokens, and they do different jobs:
 | Token | Who uses it | What it protects |
 |---|---|---|
 | `API_TOKEN` | you, from a browser or your phone | the web UI and the normal API |
-| `NODE_LINK_TOKEN` | your ESP32 boards | the socket that switches relays and drives motors |
+| `NODE_LINK_TOKEN` | your ESP32 boards | the socket that drives the robot |
 
 **`NODE_LINK_TOKEN` is required, not optional.** With it unset, IRIS refuses
 every node connection rather than accepting anonymous ones — because that
-channel can switch mains relays. Generate one with:
+channel drives a robot. Generate one with:
 
 ```bash
 python -c "import secrets; print(secrets.token_urlsafe(32))"
@@ -211,7 +212,7 @@ better, because a VPS is awake when your laptop is not.
 | | |
 |---|---|
 | **Presentations, documents, spreadsheets, code** | `create_presentation` uses python-pptx, `write_document` python-docx, `create_spreadsheet` openpyxl. All pure Python, no screen involved. The file appears as a **download link in the conversation** — click it and it lands on your laptop |
-| Every device command | robot, relays, servo, face, sensors |
+| Every device command | robot, face, sensors |
 | The voice loop | speech-to-text, the LLM, text-to-speech |
 | Conversation, memory, reminders, routines, the scheduler | |
 | Web search, page fetch, Wikipedia, weather, news | |
@@ -276,7 +277,7 @@ both show the same live state, because neither of them holds any of it.
 |---|---|
 | The agent, tools, memory, LLM calls, scheduler | the VPS |
 | Speech-to-text, text-to-speech | the VPS |
-| Every device command (relays, servo, robot, sensors) | the VPS → the boards |
+| Every device command (robot, face, sensors) | the VPS → the boards |
 | Drawing the page: layout, the hologram canvas | the laptop's browser, like any website |
 
 **The one thing worth deciding.** The dashboard can use the laptop's
@@ -462,36 +463,7 @@ records only while held.
 
 ---
 
-## 7. Home appliances — where the relay board fits
-
-Nothing changes for the relay board. It is the same "body" pattern, and it has
-two paths depending on what is already on it.
-
-### If you flash the IRIS relay firmware
-
-`firmware/esp32-iris-node/` with `DEVICE_KIND = "relay"`. Then:
-
-```
-add device kitchen light at 192.168.1.73 as relay
-turn on the kitchen light      ·  light chalu karo
-switch off the fan             ·  fan band karo
-```
-
-### If it already runs your own code (recommended — you already wrote it)
-
-**Don't reflash it.** IRIS does not care what code is on the board, only that
-it answers an HTTP GET. Register the IP you already have and map your existing
-URLs by voice:
-
-```
-add device hall light at 192.168.1.40 as relay
-map hall light on command to /relay1on
-map hall light off command to /relay1off
-```
-
-From then on "turn on the hall light" calls exactly `/relay1on`.
-
-### All three boards dial out
+## 7. Both boards dial out
 
 Every firmware in this repo can reach a VPS-hosted IRIS, because every one of
 them dials *out*:
@@ -499,7 +471,6 @@ them dials *out*:
 | Board | Sketch | Set |
 |---|---|---|
 | sensors + eyes + voice | `esp32-s3-iris-sensors` | `CLOUD_HOST`, `CLOUD_TOKEN` |
-| relays + servo | `esp32-iris-node` | `CLOUD_HOST`, `CLOUD_TOKEN` |
 | robot base (2× BTS7960) | `esp32-iris-node-bts7960` | `CLOUD_HOST`, `CLOUD_TOKEN` |
 
 `CLOUD_TOKEN` must equal `NODE_LINK_TOKEN` in IRIS's `.env`. Leave `CLOUD_HOST`
@@ -552,7 +523,7 @@ arrives.
 | the node socket | `NODE_LINK_TOKEN`. Unset ⇒ every connection refused, not allowed |
 | the node voice endpoint | the same token, checked before any audio is read |
 | the web UI and API | `API_TOKEN`, enforced for every non-local client |
-| device addresses | LAN-only. IRIS refuses to send a device command to a public address, so a bad reply cannot redirect a relay command to the internet |
+| device addresses | LAN-only. IRIS refuses to send a device command to a public address, so a bad reply cannot redirect a drive command to the internet |
 | your home network | nothing is exposed. The board dials out; no port is forwarded |
 | the token in transit | only as safe as TLS. Use port 443 and `CLOUD_TLS = true` |
 

@@ -621,7 +621,7 @@
       const count = document.getElementById("deviceCount");
       count.textContent = d.count ? `(${d.devices.filter((x) => x.online).length}/${d.count} online)` : "";
       if (!d.count) {
-        list.textContent = "none registered — say “add device light at 192.168.1.50”";
+        list.textContent = "none registered — say “add device robot at 192.168.1.60 as motor”";
       } else {
         list.innerHTML = "";
         for (const dev of d.devices) {
@@ -629,20 +629,23 @@
           row.className = "device-row";
           const dot = dev.online ? '<span class="ok">●</span>' : '<span class="bad">●</span>';
           row.innerHTML = `${dot} <b>${escapeHtml(dev.name)}</b> <span class="muted">${escapeHtml(dev.kind)}</span>`;
-          if (dev.kind !== "motor") {
+          if (dev.kind === "motor") {
+            /* The one button worth having next to a robot is the one that
+             * stops it. A 4xx is reported as a failure, not as "stopped". */
             const btn = document.createElement("button");
             btn.className = "btn ghost small dev-toggle";
-            btn.textContent = "toggle";
+            btn.textContent = "stop";
             btn.onclick = async () => {
               btn.disabled = true;
               try {
-                await fetch(`/api/v1/devices/${encodeURIComponent(dev.name)}/switch`, {
+                const res = await fetch(`/api/v1/devices/${encodeURIComponent(dev.name)}/motor`, {
                   method: "POST",
                   headers: { "Content-Type": "application/json", ...authHeaders() },
-                  body: JSON.stringify({ state: "toggle" }),
+                  body: JSON.stringify({ action: "stop" }),
                 });
-                tick(`${dev.name} toggled`, "ok");
-              } catch { tick(`${dev.name} unreachable`, "fail"); }
+                if (!res.ok) throw new Error(String(res.status));
+                tick(`${dev.name} stopped`, "ok");
+              } catch { tick(`${dev.name} did not answer`, "fail"); }
               btn.disabled = false;
             };
             row.appendChild(btn);

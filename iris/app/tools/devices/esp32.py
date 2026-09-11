@@ -1,12 +1,13 @@
-"""ESP32 / smart-device control tools.
+"""ESP32 device control tools.
 
-Lets IRIS drive the user's WiFi hardware — ESP32 boards running relays
-(lights, fans, sockets, home automation) and motor drivers (the robot base) —
-by calling the small HTTP servers those boards expose on the LAN.
+Lets IRIS drive the user's WiFi hardware — the BTS7960 robot base and the
+ESP32-S3 sensor/face board — by calling the small HTTP servers those boards
+expose on the LAN (or, for a board that dials in, down its node link).
 
-Works out of the box with the bundled ``firmware/esp32-iris-node`` sketch
-(uniform ``/status`` / ``/relay`` / ``/motor`` API) and with any existing
-custom firmware through per-device command maps. See ``docs/ESP32.md``.
+Works out of the box with the bundled firmware (``firmware/esp32-iris-node-
+bts7960`` answers ``/status`` and ``/motor``; ``firmware/esp32-s3-iris-sensors``
+answers ``/status``, ``/sensors`` and ``/face``) and with any existing custom
+firmware through per-device command maps. See ``docs/ESP32.md``.
 """
 
 from __future__ import annotations
@@ -65,9 +66,9 @@ def _require_device(registry: DeviceRegistry, name: str) -> Device:
 class RegisterDeviceTool(BaseTool):
     name = "register_device"
     description = (
-        "Register an ESP32 or smart device on the local network so IRIS can control it. "
-        "Give it a name, its IP address (or .local name) and what it is: relay (lights, fans, "
-        "sockets), motor (robot base) or generic."
+        "Register an ESP32 board on the local network so IRIS can control it. "
+        "Give it a name, its IP address (or .local name) and what it is: motor (the robot base), "
+        "sensor or face (the S3 board), or generic."
     )
     category = ToolCategory.AUTOMATION
     permission_level = PermissionLevel.LOW_RISK_ACTION
@@ -77,28 +78,27 @@ class RegisterDeviceTool(BaseTool):
         properties={
             "name": {"type": "string", "description": "Friendly name, e.g. 'kitchen light', 'robot'"},
             "address": {"type": "string", "description": "LAN IP or host, e.g. 192.168.1.50 or robot.local"},
-            "kind": {"type": "string", "enum": list(DEVICE_KINDS), "description": "relay | motor | generic"},
-            "channel": {"type": "integer", "description": "Relay channel this name controls (default 1)"},
+            "kind": {"type": "string", "enum": list(DEVICE_KINDS),
+                     "description": "motor | sensor | face | generic"},
         },
         required=["name", "address"],
     )
     examples = [
-        ToolExample(utterance="add device kitchen light at 192.168.1.50",
-                    arguments={"name": "kitchen light", "address": "192.168.1.50", "kind": "relay"}),
-        ToolExample(utterance="register my robot at robot.local as a motor device",
-                    arguments={"name": "robot", "address": "robot.local", "kind": "motor"}),
+        ToolExample(utterance="add device robot at 192.168.1.60 as motor",
+                    arguments={"name": "robot", "address": "192.168.1.60", "kind": "motor"}),
+        ToolExample(utterance="add device face at 192.168.1.70 as face",
+                    arguments={"name": "face", "address": "192.168.1.70", "kind": "face"}),
     ]
 
     def __init__(self, registry: Optional[DeviceRegistry] = None):
         self.registry = registry or default_device_registry
 
-    async def _run(self, name: str, address: str, kind: str = "generic", channel: int = 1) -> Dict[str, Any]:
+    async def _run(self, name: str, address: str, kind: str = "generic") -> Dict[str, Any]:
         try:
             device = Device(
                 name=normalize_name(name),
                 base_url=normalize_base_url(address),
                 kind=kind if kind in DEVICE_KINDS else "generic",
-                default_channel=max(1, int(channel)),
             )
         except DeviceError as exc:
             raise ToolError(str(exc)) from exc
@@ -165,55 +165,6 @@ class RemoveDeviceTool(BaseTool):
         return {"removed": name, "speech": f"Removed {name}."}
 
 
-class DeviceSwitchTool(BaseTool):
-    name = "device_switch"
-    description = (
-        "Turn a registered smart device (light, fan, socket, relay) on or off, or toggle it. "
-        "Uses the device's custom command map when defined, otherwise the IRIS node relay API."
-    )
-    category = ToolCategory.AUTOMATION
-    permission_level = PermissionLevel.DESKTOP_ACTION
-    aliases = ["turn on", "turn off", "switch on", "switch off", "light on", "light off"]
-    network = True
-    mutating = True
-    input_schema = ToolParameterSchema(
-        properties={
-            "device": {"type": "string", "description": "Registered device name, e.g. 'kitchen light'"},
-            "state": {"type": "string", "enum": ["on", "off", "toggle"], "description": "Target state"},
-            "channel": {"type": "integer", "description": "Relay channel (defaults to the device's channel)"},
-        },
-        required=["device", "state"],
-    )
-    examples = [
-        ToolExample(utterance="turn on the kitchen light", arguments={"device": "kitchen light", "state": "on"}),
-        ToolExample(utterance="switch off the fan", arguments={"device": "fan", "state": "off"}),
-    ]
-
-    def __init__(self, registry: Optional[DeviceRegistry] = None):
-        self.registry = registry or default_device_registry
-
-    async def _run(self, device: str, state: str, channel: Optional[int] = None) -> Dict[str, Any]:
-        state = str(state).strip().lower()
-        if state not in ("on", "off", "toggle"):
-            raise ToolError(f"State must be on, off or toggle — got '{state}'.")
-        target = _require_device(self.registry, device)
-
-        custom = target.command_path(state)
-        if custom:
-            data = await device_request(target, custom)
-        else:
-            ch = channel or target.default_channel
-            data = await device_request(target, "/relay", {"ch": ch, "state": state})
-
-        spoken_state = data.get("state", state) if isinstance(data, dict) else state
-        return {
-            "device": target.name,
-            "state": spoken_state,
-            "response": data,
-            "speech": f"{target.name.capitalize()} {'toggled' if state == 'toggle' else 'turned ' + state}.",
-        }
-
-
 class DeviceMotorTool(BaseTool):
     name = "device_motor"
     description = (
@@ -253,11 +204,13 @@ class DeviceMotorTool(BaseTool):
         if action not in _MOTOR_ACTIONS:
             raise ToolError(f"Motor action must be one of {', '.join(_MOTOR_ACTIONS)}.")
 
-        target = self.registry.get(device) if device else self.registry.first_of_kind("motor")
+        # A name that was given but is unknown is a different problem from
+        # having no robot at all, and gets the message that names the fix.
+        target = _require_device(self.registry, device) if device else self.registry.first_of_kind("motor")
         if target is None:
             raise ToolError(
-                "No motor device is registered. Say: add device robot at 192.168.1.60 "
-                "(kind motor) after flashing the IRIS node firmware.",
+                "No motor device is registered. Say: add device robot at 192.168.1.60 as motor "
+                "after flashing firmware/esp32-iris-node-bts7960.",
                 speech="I don't have a robot registered yet.",
             )
 
@@ -280,131 +233,11 @@ class DeviceMotorTool(BaseTool):
         }
 
 
-#: Named positions, so nobody has to remember that a curtain opens at 180.
-SERVO_PRESETS = {
-    "open": 180,
-    "close": 0,
-    "closed": 0,
-    "shut": 0,
-    "half": 90,
-    "halfway": 90,
-    "middle": 90,
-    "centre": 90,
-    "center": 90,
-    "khol": 180,
-    "band": 0,
-}
-
-
-class DeviceServoTool(BaseTool):
-    """Point a hobby servo at an angle — a curtain, a door latch, a valve.
-
-    The servo's power runs through a relay channel on the node, and the
-    firmware opens that channel once the move is done. So a servo left alone
-    is genuinely off rather than buzzing against its own gearbox, and
-    ``hold=True`` is the explicit way to ask it to keep pushing.
-    """
-
-    name = "device_servo"
-    description = (
-        "Move a servo on a registered ESP32 node to an angle from 0 to 180 degrees, or to a "
-        "named position (open, close, half). For curtains, doors, latches and valves."
-    )
-    category = ToolCategory.AUTOMATION
-    permission_level = PermissionLevel.DESKTOP_ACTION
-    aliases = ["servo", "move servo", "open curtain", "close curtain", "set angle"]
-    network = True
-    mutating = True
-    input_schema = ToolParameterSchema(
-        properties={
-            "angle": {"type": "integer", "minimum": 0, "maximum": 180,
-                      "description": "Target angle in degrees, 0-180"},
-            "position": {"type": "string", "enum": sorted(SERVO_PRESETS),
-                         "description": "Named position instead of an angle"},
-            "device": {"type": "string",
-                       "description": "Node name (defaults to the first relay device)"},
-            "hold": {"type": "boolean",
-                     "description": "Keep the servo powered and holding position (default false)"},
-        },
-    )
-    examples = [
-        ToolExample(utterance="open the curtain", arguments={"position": "open"}),
-        ToolExample(utterance="set the servo to 45 degrees", arguments={"angle": 45}),
-        ToolExample(utterance="close the curtain", arguments={"position": "close"}),
-    ]
-
-    def __init__(self, registry: Optional[DeviceRegistry] = None):
-        self.registry = registry or default_device_registry
-
-    async def _run(
-        self,
-        angle: Optional[int] = None,
-        position: Optional[str] = None,
-        device: Optional[str] = None,
-        hold: bool = False,
-    ) -> Dict[str, Any]:
-        if angle is None and position is None:
-            raise ToolError(
-                "Give an angle from 0 to 180, or a position like open or close.",
-                speech="How far should I move it?",
-            )
-        if angle is None:
-            key = str(position).strip().lower()
-            if key not in SERVO_PRESETS:
-                raise ToolError(
-                    f"I don't know the position '{position}'. "
-                    f"Known: {', '.join(sorted(SERVO_PRESETS))}."
-                )
-            angle = SERVO_PRESETS[key]
-
-        try:
-            angle = int(angle)
-        except (TypeError, ValueError):
-            raise ToolError(f"'{angle}' is not an angle. Give a number from 0 to 180.")
-        if not 0 <= angle <= 180:
-            # Clamping silently would park a curtain rail against its end stop
-            # and let the servo stall there, which is how gears get stripped.
-            raise ToolError(
-                f"A servo only turns 0 to 180 degrees — {angle} is outside that.",
-                speech="That angle is past what the servo can reach.",
-            )
-
-        target = self.registry.get(device) if device else self._pick_servo_device()
-        if target is None:
-            raise ToolError(
-                "No node with a servo is registered. Flash firmware/esp32-iris-node and say: "
-                "add device curtain at 192.168.1.80 as relay",
-                speech="I don't have a servo node registered yet.",
-            )
-
-        params: Dict[str, Any] = {"angle": angle}
-        if hold:
-            params["hold"] = 1
-        data = await device_request(target, "/servo", params)
-
-        named = next((k for k, v in SERVO_PRESETS.items() if v == angle), None)
-        spoken = f"{target.name.capitalize()} {named}." if named in ("open", "close") \
-            else f"{target.name.capitalize()} at {angle} degrees."
-        return {
-            "device": target.name,
-            "angle": angle,
-            "hold": bool(hold),
-            "response": data,
-            "speech": spoken,
-            "display": f"{target.name}: servo {angle}\u00b0",
-        }
-
-    def _pick_servo_device(self) -> Optional[Device]:
-        """The servo lives on the relay node — its power is a relay channel."""
-        return (self.registry.first_of_kind("relay")
-                or self.registry.first_of_kind("generic"))
-
-
 class DeviceCommandTool(BaseTool):
     name = "device_command"
     description = (
         "Send a named custom command to a registered device (from its command map), "
-        "or GET a relative path on it, e.g. '/servo?angle=90'. For advanced device control."
+        "or GET a relative path on it, e.g. '/motor?dir=stop'. For advanced device control."
     )
     category = ToolCategory.AUTOMATION
     permission_level = PermissionLevel.DESKTOP_ACTION
@@ -604,15 +437,15 @@ class MapDeviceCommandTool(BaseTool):
     """Map a named command to a URL path on a device running its OWN custom
     firmware, so an existing sketch works with IRIS without reflashing.
 
-    Example: if a homemade board already answers a GET to '/led/on' to turn a
-    light on, this tool records "on -> /led/on" for that device, and from then
-    on 'turn on the kitchen light' calls that exact path instead of the
-    uniform IRIS-node relay API.
+    Example: if a homemade robot already answers a GET to '/go' to move off,
+    this tool records "forward -> /go" for that device, and from then on
+    'robot forward' calls that exact path instead of the uniform IRIS-node
+    ``/motor`` API.
     """
 
     name = "map_device_command"
     description = (
-        "Map a named command (on, off, toggle, or any custom name) to a URL path on a "
+        "Map a named command (forward, stop, or any custom name) to a URL path on a "
         "registered device that runs its own custom firmware — for existing boards, not "
         "ones flashed with the IRIS node firmware."
     )
@@ -622,19 +455,19 @@ class MapDeviceCommandTool(BaseTool):
     input_schema = ToolParameterSchema(
         properties={
             "device": {"type": "string", "description": "Registered device name"},
-            "command": {"type": "string", "description": "Command name: on, off, toggle, or custom"},
-            "path": {"type": "string", "description": "URL path on the device, e.g. /led/on"},
+            "command": {"type": "string", "description": "Command name: forward, stop, or custom"},
+            "path": {"type": "string", "description": "URL path on the device, e.g. /go"},
         },
         required=["device", "command", "path"],
     )
     examples = [
         ToolExample(
-            utterance="map kitchen light on command to /led/on",
-            arguments={"device": "kitchen light", "command": "on", "path": "/led/on"},
+            utterance="map robot forward command to /go",
+            arguments={"device": "robot", "command": "forward", "path": "/go"},
         ),
         ToolExample(
-            utterance="set fan off to /relay1/off",
-            arguments={"device": "fan", "command": "off", "path": "/relay1/off"},
+            utterance="set robot stop to /halt",
+            arguments={"device": "robot", "command": "stop", "path": "/halt"},
         ),
     ]
 
@@ -659,9 +492,7 @@ def get_tools() -> list[BaseTool]:
         MapDeviceCommandTool(),
         ListDevicesTool(),
         RemoveDeviceTool(),
-        DeviceSwitchTool(),
         DeviceMotorTool(),
-        DeviceServoTool(),
         DeviceCommandTool(),
         DeviceStatusTool(),
         DeviceSensorsTool(),

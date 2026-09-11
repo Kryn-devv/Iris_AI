@@ -197,65 +197,6 @@ def _build_open_target(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
     return {"__tool__": "open_app", "app": target}
 
 
-#: Words after "turn on/off" that are NOT smart devices — those phrasings
-#: belong to other tools or to the agent, never to device_switch.
-_NON_DEVICE_WORDS = frozenset({
-    "volume", "sound", "audio", "music", "screen", "display", "monitor",
-    "wifi", "wi-fi", "bluetooth", "mic", "microphone", "camera", "pc",
-    "computer", "laptop", "notifications", "dark mode", "it", "that",
-    "the tv show", "captions",
-})
-
-
-def _build_device_switch(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
-    """'turn on the kitchen light' -> device_switch, skipping non-device nouns."""
-    device = (m.group("dev") or "").strip().rstrip(".")
-    state = (m.group("state") or "").strip().lower()
-    if not device or len(device) < 2 or state not in ("on", "off"):
-        return None
-    lowered = device.lower()
-    if lowered in _NON_DEVICE_WORDS or any(w in _NON_DEVICE_WORDS for w in (lowered.split()[-1],)):
-        return None
-    return {"device": device, "state": state}
-
-
-def _build_device_hinglish(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
-    """'light chalu karo' / 'fan band kar do' -> device_switch."""
-    device = (m.group("dev") or "").strip()
-    verb = (m.group("verb") or "").strip().lower()
-    if not device or device.lower() in _NON_DEVICE_WORDS:
-        return None
-    state = "off" if verb in ("band", "bandh") else "on"
-    return {"device": device, "state": state}
-
-
-_SERVO_OPEN_WORDS = ("open", "kholo", "khol", "khol do", "utha do")
-
-
-def _build_servo_position(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
-    """A curtain is not an on/off appliance, so 'open' has to become an angle.
-
-    Halfway is a real request and the only one that needs a third position;
-    everything else is one end of the travel or the other.
-    """
-    verb = (m.group("verb") or "").strip().lower()
-    # "half" can land either side of the noun — "open half the curtain",
-    # "open the curtain halfway" — so read it off the cleaned text rather
-    # than carrying three optional groups through the pattern.
-    if re.search(r"\bhalf(?:way)?\b", cleaned):
-        return {"position": "half"}
-    if verb.startswith(_SERVO_OPEN_WORDS):
-        return {"position": "open"}
-    return {"position": "close"}
-
-
-def _build_servo_angle(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
-    angle = int(m.group("angle"))
-    if angle > 180:
-        return None            # let the LLM explain it rather than clamp silently
-    return {"angle": angle}
-
-
 def _build_motor(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
     action = (m.group("action") or "").strip().lower()
     aliases = {"back": "backward", "backwards": "backward", "ahead": "forward", "straight": "forward",
@@ -422,11 +363,11 @@ RULES: list[Rule] = [
         pattern=_rx(
             r"^(?:add|register|pair|connect)\s+(?:a\s+|new\s+|my\s+)?(?:device|esp32|board|node)\s+"
             r"(?P<name>.+?)\s+(?:at|@|on)\s+(?P<addr>[a-z0-9.:_-]+)"
-            # All five kinds the registry accepts, not three. Two of the
-            # missing ones — sensor and face — are the exact words the docs
-            # tell people to type, so "add device face at <ip> as face" fell
-            # through to the LLM instead of registering anything.
-            r"(?:\s+as\s+(?:a\s+)?(?P<kind>relay|motor|sensor|face|generic))?$"
+            # Every kind the registry accepts. Two of them — sensor and face —
+            # are the exact words the docs tell people to type, so the list
+            # must stay in step with DEVICE_KINDS or "add device face at <ip>
+            # as face" falls through to the LLM instead of registering anything.
+            r"(?:\s+as\s+(?:a\s+)?(?P<kind>motor|sensor|face|generic))?$"
         ),
         builder=lambda m, c: {
             "name": m.group("name").strip(),
@@ -449,97 +390,6 @@ RULES: list[Rule] = [
         pattern=_rx(r"^(?:remove|forget|delete|unpair)\s+(?:the\s+)?device\s+(?P<name>.+)$"),
         builder=lambda m, c: {"name": m.group("name").strip()},
         confidence=0.98,
-    ),
-    Rule(
-        name="servo_position",
-        intent="devices",
-        tool="device_servo",
-        pattern=_rx(
-            r"^(?P<verb>open|close|shut|draw)\s+(?:the\s+|my\s+|half\s+|halfway\s+)*"
-            r"(?:curtain|curtains|blind|blinds|shutter|shutters|parda|pardah|latch|valve)"
-            r"(?:\s+half(?:way)?)?$"
-        ),
-        builder=_build_servo_position,
-        confidence=0.95,
-    ),
-    Rule(
-        name="servo_position_hinglish",
-        intent="devices",
-        tool="device_servo",
-        pattern=_rx(
-            r"^(?:curtain|curtains|blind|blinds|shutter|parda|pardah)\s+"
-            r"(?P<verb>kholo|khol\s+do|band\s+karo|band\s+kar\s+do|bandh\s+karo)$"
-        ),
-        builder=_build_servo_position,
-        confidence=0.95,
-    ),
-    Rule(
-        name="servo_angle_set",
-        intent="devices",
-        tool="device_servo",
-        pattern=_rx(
-            r"^(?:(?:set|move|turn|put|rotate)\s+)?(?:the\s+|my\s+)?servo\s+"
-            r"(?:to\s+|at\s+)?(?P<angle>\d{1,3})(?:\s*(?:degrees?|deg))?$"
-        ),
-        builder=_build_servo_angle,
-        confidence=0.96,
-    ),
-    Rule(
-        name="device_switch_on_off",
-        intent="devices",
-        tool="device_switch",
-        pattern=_rx(r"^(?:turn|switch|power)\s+(?P<state>on|off)\s+(?:the\s+|my\s+)?(?P<dev>.+)$"),
-        builder=_build_device_switch,
-        confidence=0.95,
-    ),
-    Rule(
-        name="device_switch_suffix",
-        intent="devices",
-        tool="device_switch",
-        pattern=_rx(r"^(?:turn|switch|power)\s+(?:the\s+|my\s+)?(?P<dev>.+?)\s+(?P<state>on|off)$"),
-        builder=_build_device_switch,
-        confidence=0.94,
-    ),
-    Rule(
-        name="device_switch_bare",
-        intent="devices",
-        tool="device_switch",
-        # "lights on" is how people actually say it, and it matched nothing:
-        # both switch rules above require turn/switch/power, so the shortest and
-        # most natural form fell through to the LLM and looked like a dead app.
-        #
-        # A bare "<something> on" is greedy, so it is fenced in tightly: at most
-        # two words, and the first may not be one of the words that make an
-        # English phrase merely END in "on" — "hold on", "what's going on",
-        # "from now on". Those are the false positives that would make this rule
-        # worse than the gap it fills.
-        pattern=_rx(
-            r"^(?!(?:hold|come|carry|going|go|get|put|move|press|keep|right|"
-            r"later|now|so|and|based|early|from|what|who|why|is|its|it|that|"
-            r"this|volume|screen|dark|light\s+mode)\b)"
-            r"(?P<dev>[a-z][a-z0-9-]*(?:\s+[a-z0-9-]+)?)\s+(?P<state>on|off)$"
-        ),
-        builder=_build_device_switch,
-        confidence=0.90,
-    ),
-    Rule(
-        name="device_switch_hinglish",
-        intent="devices",
-        tool="device_switch",
-        pattern=_rx(r"^(?P<dev>.+?)\s+(?:ko\s+)?(?P<verb>chalu|shuru|on|band|bandh|off)\s+kar(?:o|do|\s+do|\s+dijiye|na)?$"),
-        builder=_build_device_hinglish,
-        confidence=0.95,
-    ),
-    Rule(
-        name="device_toggle",
-        intent="devices",
-        tool="device_switch",
-        pattern=_rx(r"^toggle\s+(?:the\s+|my\s+)?(?P<dev>.+)$"),
-        builder=lambda m, c: (
-            {"device": m.group("dev").strip(), "state": "toggle"}
-            if m.group("dev").strip().lower() not in _NON_DEVICE_WORDS else None
-        ),
-        confidence=0.93,
     ),
     Rule(
         name="robot_move",

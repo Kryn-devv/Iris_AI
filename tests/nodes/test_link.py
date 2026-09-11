@@ -81,15 +81,15 @@ class TestRequestReply:
     @pytest.mark.asyncio
     async def test_concurrent_requests_do_not_cross(self, link, socket):
         """Many commands share one socket; a mixed-up reply would show up as a
-        relay switching when a motor was asked to move."""
-        first = asyncio.create_task(link.request("/relay", {"ch": 1}))
+        face changing when a motor was asked to move."""
+        first = asyncio.create_task(link.request("/face", {"emotion": "happy"}))
         second = asyncio.create_task(link.request("/motor", {"dir": "forward"}))
         await asyncio.sleep(0)
         ids = {frame["path"]: frame["id"] for frame in socket.sent}
         # Answer out of order, exactly as a real node might.
         link.resolve(ids["/motor"], True, {"who": "motor"})
-        link.resolve(ids["/relay"], True, {"who": "relay"})
-        assert await first == {"who": "relay"}
+        link.resolve(ids["/face"], True, {"who": "face"})
+        assert await first == {"who": "face"}
         assert await second == {"who": "motor"}
 
     @pytest.mark.asyncio
@@ -186,7 +186,7 @@ class TestHubMembership:
         hub.register(NodeLink(name="robot", kind="motor", send=socket.send))
         hub.register(NodeLink(name="face", kind="face", send=socket.send))
         assert hub.first_of_kind("motor").name == "robot"
-        assert hub.first_of_kind("relay") is None
+        assert hub.first_of_kind("sensor") is None
 
     def test_stale_links_are_dropped(self, hub, link):
         hub.register(link)
@@ -487,7 +487,7 @@ class TestTransportDispatch:
 
     @pytest.mark.asyncio
     async def test_a_lan_device_with_no_address_is_a_clear_error(self, hub):
-        device = Device(name="fan", kind="relay", transport="lan")
+        device = Device(name="room", kind="sensor", transport="lan")
         device.base_url = ""
         with pytest.raises(ToolError, match="no address"):
-            await device_request(device, "/relay", hub=hub)
+            await device_request(device, "/sensors", hub=hub)

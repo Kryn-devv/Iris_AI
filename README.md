@@ -48,23 +48,24 @@ It's built **free-first**: every command works with *zero* API keys thanks to a 
 
 …and anything else becomes a conversation with a free AI model, which can chain any of the 65+ tools itself.
 
-## 🏠 ESP32, home automation & the robot
+## 🤖 The robot and its senses (ESP32)
 
-IRIS drives your WiFi hardware — relay boards for lights/fans/sockets and an
-L298N motor base for the robot — over plain HTTP on your LAN:
+IRIS drives two boards over plain HTTP on your LAN — the robot base (an ESP32
+with two BTS7960 motor drivers) and the ESP32-S3 that carries its OLED eyes
+and sensors:
 
 ```
-add device kitchen light at 192.168.1.73 as relay
-turn on the kitchen light        ·  light chalu karo
-fan band karo                    ·  toggle the socket
 add device robot at 192.168.1.74 as motor
-robot forward · move the robot left · stop the robot
+robot forward · move the robot left · stop the robot · robot ruko
+add device face at 192.168.1.70 as face
+what's the temperature · is there any motion · gas level · look happy
 ```
 
-Flash the bundled universal firmware (`firmware/esp32-iris-node/`) or keep
-your existing sketches and map their URLs per device. Full wiring and setup
-guide: **[docs/ESP32.md](docs/ESP32.md)**. Registered devices also show up in
-the settings drawer with live online state and toggle buttons.
+Flash the bundled firmware (`firmware/esp32-iris-node-bts7960/` and
+`firmware/esp32-s3-iris-sensors/`) or keep your existing sketches and map
+their URLs per device. Full wiring and setup guide:
+**[docs/ESP32.md](docs/ESP32.md)**. Registered devices also show up in the
+settings drawer with live online state and a stop button for the robot.
 
 ## 🗣 Languages & voice
 

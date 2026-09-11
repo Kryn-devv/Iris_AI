@@ -1,7 +1,7 @@
 """Device control endpoints backing the UI devices panel.
 
 Thin wrappers over the same tools the voice/chat pipeline uses, so a button
-press in the drawer and "turn on the light" run identical code.
+press in the drawer and "stop the robot" run identical code.
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ from pydantic import BaseModel
 from iris.app.tools.devices.esp32 import (
     DeviceMotorTool,
     DeviceStatusTool,
-    DeviceSwitchTool,
     RegisterDeviceTool,
     RemoveDeviceTool,
 )
@@ -27,11 +26,6 @@ class RegisterPayload(BaseModel):
     name: str
     address: str
     kind: str = "generic"
-    channel: int = 1
-
-
-class SwitchPayload(BaseModel):
-    state: str  # on | off | toggle
 
 
 class MotorPayload(BaseModel):
@@ -60,7 +54,7 @@ async def list_devices() -> Dict[str, Any]:
 @router.post("", summary="Register a device")
 async def register_device(payload: RegisterPayload) -> Dict[str, Any]:
     result = await RegisterDeviceTool().execute(
-        name=payload.name, address=payload.address, kind=payload.kind, channel=payload.channel
+        name=payload.name, address=payload.address, kind=payload.kind
     )
     return _raise_on_failure(result)
 
@@ -68,12 +62,6 @@ async def register_device(payload: RegisterPayload) -> Dict[str, Any]:
 @router.delete("/{name}", summary="Remove a device")
 async def remove_device(name: str) -> Dict[str, Any]:
     result = await RemoveDeviceTool().execute(name=name)
-    return _raise_on_failure(result)
-
-
-@router.post("/{name}/switch", summary="Turn a device on/off/toggle")
-async def switch_device(name: str, payload: SwitchPayload) -> Dict[str, Any]:
-    result = await DeviceSwitchTool().execute(device=name, state=payload.state)
     return _raise_on_failure(result)
 
 

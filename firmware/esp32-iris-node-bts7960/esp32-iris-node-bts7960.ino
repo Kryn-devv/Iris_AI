@@ -131,7 +131,7 @@ const char* AP_PASSWORD = "iriscalib";  /* fallback network, min 8 chars */
  *
  * The cost is real and worth stating: a laptop joined to this AP is on the
  * robot's network and nothing else. IRIS running on that laptop can drive the
- * robot, but cannot reach the sensor or relay boards on your house WiFi, and
+ * robot, but cannot reach the sensor board on your house WiFi, and
  * has no internet — so no LLM. Use AP_ONLY to calibrate and drive by hand;
  * leave it false for voice control alongside the other boards. */
 const bool AP_ONLY = false;
