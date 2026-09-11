@@ -177,7 +177,7 @@ class ListDevicesTool(BaseTool):
         if not devices:
             return {
                 "devices": [],
-                "speech": "No devices registered yet. Say: add device light at 192.168.1.50",
+                "speech": "No devices registered yet. Say: add device robot at 192.168.1.60 as motor",
             }
         names = ", ".join(d["name"] for d in devices)
         return {"devices": devices, "count": len(devices), "speech": f"You have {len(devices)} devices: {names}."}
