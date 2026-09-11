@@ -71,6 +71,17 @@ def test_parse_duration():
         ("what's my ip", "network_info"),
         ("say good morning", "speak"),
         ("note down buy milk", "quick_note"),
+        # the README's own examples, which a full review found falling through
+        ("every weekday at 9 remind me to check email", "set_routine"),
+        ("remind me every day at 9 to journal", "set_routine"),
+        ("set an alarm for 7am", "set_reminder"),
+        ("wake me up at 7", "set_reminder"),
+        ("remind me tomorrow at 8 to call mom", "set_reminder"),
+        ("cancel the reminder", "cancel_reminder"),
+        ("what reminders do i have", "list_reminders"),
+        ("start a timer for 10 minutes", "set_timer"),
+        ("open https://github.com/anthropics", "open_website"),
+        ("play let it snow", "play_youtube"),
     ],
 )
 def test_intent_routing(engine: IntentEngine, text: str, tool: str):
@@ -93,10 +104,51 @@ def test_conversational_falls_through(engine: IntentEngine, text: str):
     assert engine.match(text) is None
 
 
+@pytest.mark.parametrize(
+    "text,not_tool",
+    [
+        # a prefix of a longer, unrelated request must not be a power action
+        ("turn off the computer screen", "shutdown_pc"),
+        ("restart the computer fan", "restart_pc"),
+    ],
+)
+def test_power_rules_do_not_match_a_prefix(engine: IntentEngine, text: str, not_tool: str):
+    match = engine.match(text)
+    assert match is None or match.tool_name != not_tool
+
+
 # ------------------------------------------------------------------- slots
 def test_slot_extraction_reminder(engine: IntentEngine):
     m = engine.match("remind me in 10 minutes to stretch")
     assert m.arguments == {"text": "stretch", "in_seconds": 600}
+
+
+def test_routine_slots(engine: IntentEngine):
+    m = engine.match("every weekday at 9 remind me to check email")
+    assert m.arguments == {"text": "check email", "at_time": "09:00", "recurrence": "weekdays"}
+    m = engine.match("every morning at 7:30 remind me to take my pills")
+    assert m.arguments == {"text": "take my pills", "at_time": "07:30", "recurrence": "daily"}
+
+
+def test_cancel_all_is_explicit(engine: IntentEngine):
+    assert engine.match("cancel the reminder").arguments == {}
+    assert engine.match("cancel my reminders").arguments == {"all": True}
+    assert engine.match("cancel all my timers").arguments == {"all": True}
+
+
+def test_weather_keeps_the_city_and_drops_the_day(engine: IntentEngine):
+    assert engine.match("what's the weather in london today").arguments == {"location": "london"}
+    assert engine.match("what's the weather like in pune").arguments == {"location": "pune"}
+    assert engine.match("aaj ka mausam kaisa hai").arguments == {}
+
+
+def test_unit_convert_passes_a_number(engine: IntentEngine):
+    assert engine.match("convert 5 kg to lbs").arguments == {"value": 5.0, "from_unit": "kg", "to_unit": "lbs"}
+
+
+def test_trailing_politeness_is_a_whole_word(engine: IntentEngine):
+    assert engine.match("play let it snow").arguments == {"query": "let it snow"}
+    assert engine.match("open youtube now").tool_name == "open_website"
 
     m = engine.match("remind me to call mom at 5 pm")
     assert m.arguments == {"text": "call mom", "at_time": "17:00"}

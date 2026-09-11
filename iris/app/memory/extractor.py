@@ -31,7 +31,17 @@ class MemoryExtractor:
     )
 
     # Key patterns for facts and project attributes
-    BUDGET_PATTERN = re.compile(r"(?:budget|cost)\s*(?:is|of|=)?\s*(?:₹|rs\.?|inr|\$)?\s*([\d,]+)", re.IGNORECASE)
+    BUDGET_PATTERN = re.compile(
+        r"(?:budget|cost)\s*(?:is|of|=)?\s*(?P<pre>₹|rs\.?|inr|\$|usd|€|eur|£|gbp)?\s*(?P<amount>[\d,]+)"
+        r"\s*(?P<post>rupees?|rs\.?|inr|dollars?|usd|bucks|euros?|eur|pounds?|gbp)?",
+        re.IGNORECASE,
+    )
+    _CURRENCY_SYMBOLS = {
+        "₹": "₹", "rs": "₹", "rs.": "₹", "inr": "₹", "rupee": "₹", "rupees": "₹",
+        "$": "$", "usd": "$", "dollar": "$", "dollars": "$", "bucks": "$",
+        "€": "€", "eur": "€", "euro": "€", "euros": "€",
+        "£": "£", "gbp": "£", "pound": "£", "pounds": "£",
+    }
     CONTROLLER_PATTERN = re.compile(r"(?:microcontroller|controller|board|processor|chip)\s*(?:is|uses|=)?\s*([a-zA-Z0-9_\-\s]+)", re.IGNORECASE)
 
     @classmethod
@@ -87,8 +97,14 @@ class MemoryExtractor:
         b_match = cls.BUDGET_PATTERN.search(lower)
         if b_match or "budget" in lower:
             key = "robot_budget" if "robot" in lower else "budget"
-            amount = b_match.group(1) if b_match else clean
-            value = f"₹{amount}" if b_match else clean
+            if b_match:
+                # Keep the currency the user actually said: "$500" must not
+                # be read back as ₹500. No marker at all defaults to rupees.
+                marker = (b_match.group("pre") or b_match.group("post") or "").lower()
+                symbol = cls._CURRENCY_SYMBOLS.get(marker, "₹")
+                value = symbol + b_match.group("amount")
+            else:
+                value = clean
             mem_type = MemoryType.PROJECT
             importance = 0.9
 

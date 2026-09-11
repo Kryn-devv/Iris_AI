@@ -1,14 +1,16 @@
 """Persistent registry of the user's WiFi devices (ESP32 nodes).
 
-Each device is a small HTTP server on the local network — an ESP32 driving
-relays (lights, fans, sockets) or motors (the robot base). IRIS stores the
-device's name, address and command map in ``devices.json`` under the data
-directory, so registrations survive restarts.
+Each device is a small HTTP server on the local network — the ESP32 driving
+the robot's motors, or the ESP32-S3 carrying the sensors and the face. IRIS
+stores the device's name, address and command map in ``devices.json`` under
+the data directory, so registrations survive restarts.
 
 Two firmware styles are supported:
 
-* **IRIS node firmware** (``firmware/esp32-iris-node``) — a uniform API
-  (``/status``, ``/relay``, ``/motor``); zero per-device configuration.
+* **IRIS node firmware** (``firmware/esp32-iris-node-bts7960`` for the robot,
+  ``firmware/esp32-s3-iris-sensors`` for the face) — a uniform API
+  (``/status``, ``/motor``, ``/sensors``, ``/face``); zero per-device
+  configuration.
 * **Existing custom firmware** — whatever HTTP endpoints the user already
   built; mapped through the per-device ``commands`` table, e.g.
   ``{"on": "/led/on", "off": "/led/off"}``.
@@ -17,8 +19,8 @@ And two **transports**:
 
 * ``lan`` (the default) — IRIS calls the device's IP. Requires IRIS and the
   device to be on the same network. Only private/LAN addresses are accepted:
-  these tools drive hardware relays, so requests must never be steerable to
-  arbitrary internet hosts.
+  these tools drive a robot, so requests must never be steerable to arbitrary
+  internet hosts.
 * ``link`` — the device dials out to IRIS and holds a WebSocket open;
   commands travel back down it. This is what makes a cloud-hosted IRIS able
   to reach hardware behind a home router, with no port-forwarding and no
@@ -44,7 +46,7 @@ REGISTRY_FILENAME = "devices.json"
 
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9 _-]{0,31}$")
 
-DEVICE_KINDS = ("relay", "motor", "sensor", "face", "generic")
+DEVICE_KINDS = ("motor", "sensor", "face", "generic")
 
 TRANSPORTS = ("lan", "link")
 
@@ -109,15 +111,13 @@ class Device:
 
     name: str
     base_url: str = ""
-    kind: str = "generic"          # relay | motor | sensor | face | generic
+    kind: str = "generic"          # motor | sensor | face | generic
     #: "lan" — IRIS calls base_url. "link" — the device dials in and holds a
     #: socket open, so there is no address to call and none is stored.
     transport: str = "lan"
     #: Named custom commands -> relative paths on the device
     #: (for user-built firmware), e.g. {"on": "/led/on", "off": "/led/off"}.
     commands: Dict[str, str] = field(default_factory=dict)
-    #: Relay channel the plain on/off commands target (IRIS node firmware).
-    default_channel: int = 1
     notes: str = ""
 
     @property
@@ -132,7 +132,6 @@ class Device:
             "kind": self.kind,
             "transport": self.transport,
             "commands": dict(self.commands),
-            "default_channel": self.default_channel,
             "notes": self.notes,
         }
 
@@ -153,7 +152,6 @@ class Device:
             transport=transport,
             kind=data.get("kind", "generic") if data.get("kind") in DEVICE_KINDS else "generic",
             commands={str(k).lower(): str(v) for k, v in (data.get("commands") or {}).items()},
-            default_channel=int(data.get("default_channel", 1)),
             notes=str(data.get("notes", "")),
         )
 
@@ -208,7 +206,7 @@ class DeviceRegistry:
         return device
 
     def set_command(self, name: str, command: str, path: str) -> Device:
-        """Map a named command ('on', 'off', a custom name) to a relative path
+        """Map a named command ('forward', 'stop', a custom name) to a relative path
         on an already-registered device — how existing custom firmware gets
         wired up without ever touching devices.json by hand."""
         device = self.get(name)

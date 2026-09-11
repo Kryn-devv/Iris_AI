@@ -25,10 +25,22 @@ class Base(DeclarativeBase):
     pass
 
 
+#: Set once init_db() has created the tables. Persistent stores check it
+#: before touching the database, so a unit test that never initialised one
+#: cannot scribble into the developer's real iris.db.
+_db_ready = False
+
+
+def is_ready() -> bool:
+    return _db_ready
+
+
 async def init_db() -> None:
     """Initialize database tables."""
+    global _db_ready
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    _db_ready = True
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:

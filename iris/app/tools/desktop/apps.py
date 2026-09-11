@@ -398,6 +398,23 @@ def _build_alias_index() -> dict[str, str]:
 #: Normalized alias -> canonical key, exported for the NLU layer.
 APP_ALIASES: dict[str, str] = _build_alias_index()
 
+#: Binaries the PATH fallback in open_app must never start by name. Power,
+#: privilege, disks, processes, shells and interpreters — everything whose
+#: launch is an action rather than a window. The shell tool exists for these,
+#: behind its own switch and denylist.
+_NEVER_LAUNCH_AS_APP: frozenset[str] = frozenset({
+    "shutdown", "reboot", "poweroff", "halt", "init", "telinit", "systemctl", "service",
+    "rm", "rmdir", "dd", "mkfs", "fdisk", "parted", "sfdisk", "wipefs", "shred", "mount", "umount",
+    "kill", "killall", "killall5", "pkill", "xkill", "taskkill",
+    "sudo", "su", "doas", "pkexec", "passwd", "chpasswd", "chmod", "chown", "chgrp",
+    "format", "del", "erase", "diskpart", "bcdedit", "reg", "sc", "net", "wmic", "powershell", "pwsh",
+    "cmd", "bash", "sh", "zsh", "fish", "dash", "ksh", "csh", "tcsh",
+    "python", "python3", "perl", "ruby", "node", "php", "lua", "tclsh",
+    "nc", "ncat", "netcat", "curl", "wget", "ssh", "scp", "sftp", "telnet", "ftp",
+    "crontab", "at", "nohup", "exec", "eval", "logout", "exit",
+    "osascript", "launchctl", "defaults", "diskutil", "hdiutil", "nvram", "pmset", "caffeinate",
+})
+
 
 def resolve_app(app: str) -> AppSpec | None:
     """Resolve a spoken/typed application name to its :class:`AppSpec`.
@@ -670,6 +687,18 @@ class OpenAppTool(BaseTool):
             }
 
         # Unknown alias — maybe it is a real binary on PATH ("htop", "blender").
+        # But not a system command: "run shutdown" would have powered the
+        # machine off through the app opener, with no confirmation and none of
+        # the shell tool's guards. Those go through run_command or not at all.
+        lowered = requested.lower()
+        if lowered.endswith(".exe"):
+            lowered = lowered[:-4]
+        if "/" in requested or "\\" in requested or lowered in _NEVER_LAUNCH_AS_APP:
+            raise ToolError(
+                f"'{requested}' is a system command, not an application. If you really mean "
+                "to run it, use the shell tool (ALLOW_SHELL_TOOL=true) so it is checked first.",
+                speech=f"{requested} is a system command, not an app, so I won't launch it that way.",
+            )
         binary = await self.to_thread(shutil.which, requested)
         if binary:
             await self.to_thread(_popen_detached, [binary])

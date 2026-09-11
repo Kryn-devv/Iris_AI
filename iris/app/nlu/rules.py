@@ -23,7 +23,9 @@ _FILLER_PREFIX = re.compile(
     r"(?:please\s+)?",
     re.IGNORECASE,
 )
-_TRAILING_POLITENESS = re.compile(r"\s*(?:please|for me|thanks|thank you|now)\s*[.!?]*$", re.IGNORECASE)
+# Anchored to a word boundary: with a bare `\s*` the alternation also matched
+# the TAIL of the last word, so "play let it snow" became "play let it s".
+_TRAILING_POLITENESS = re.compile(r"(?:^|\s+)(?:please|for me|thanks|thank you|now)\s*[.!?]*$", re.IGNORECASE)
 _WHITESPACE = re.compile(r"\s+")
 
 
@@ -177,11 +179,12 @@ def _build_open_target(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
         if "/" in target or "\\" in target or target.startswith("~"):
             return {"__tool__": "open_path", "path": target}
         return {"__tool__": "find_and_open", "name": Path(target).stem, "kind": "file"}
+    # A URL has slashes too, so it is recognised BEFORE the path test —
+    # otherwise "open https://github.com/x" went looking for a folder.
+    if lowered.startswith(("http://", "https://")) or lowered in KNOWN_SITES or _DOMAIN_RX.match(lowered):
+        return {"__tool__": "open_website", "site": target}
     if "/" in target or "\\" in target or target.startswith("~"):
         return {"__tool__": "open_path", "path": target}
-
-    if lowered in KNOWN_SITES or _DOMAIN_RX.match(lowered) or lowered.startswith(("http://", "https://")):
-        return {"__tool__": "open_website", "site": target}
 
     # Known folders, tolerating "my X", "X folder" and "X directory".
     for candidate in (
@@ -197,63 +200,23 @@ def _build_open_target(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
     return {"__tool__": "open_app", "app": target}
 
 
-#: Words after "turn on/off" that are NOT smart devices — those phrasings
-#: belong to other tools or to the agent, never to device_switch.
-_NON_DEVICE_WORDS = frozenset({
-    "volume", "sound", "audio", "music", "screen", "display", "monitor",
-    "wifi", "wi-fi", "bluetooth", "mic", "microphone", "camera", "pc",
-    "computer", "laptop", "notifications", "dark mode", "it", "that",
-    "the tv show", "captions",
-})
-
-
-def _build_device_switch(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
-    """'turn on the kitchen light' -> device_switch, skipping non-device nouns."""
-    device = (m.group("dev") or "").strip().rstrip(".")
-    state = (m.group("state") or "").strip().lower()
-    if not device or len(device) < 2 or state not in ("on", "off"):
+def _build_unit_convert(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
+    try:
+        value = float(m.group("value"))
+    except ValueError:
         return None
-    lowered = device.lower()
-    if lowered in _NON_DEVICE_WORDS or any(w in _NON_DEVICE_WORDS for w in (lowered.split()[-1],)):
-        return None
-    return {"device": device, "state": state}
+    return {"value": value, "from_unit": m.group("from_unit"), "to_unit": m.group("to_unit")}
 
 
-def _build_device_hinglish(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
-    """'light chalu karo' / 'fan band kar do' -> device_switch."""
-    device = (m.group("dev") or "").strip()
-    verb = (m.group("verb") or "").strip().lower()
-    if not device or device.lower() in _NON_DEVICE_WORDS:
-        return None
-    state = "off" if verb in ("band", "bandh") else "on"
-    return {"device": device, "state": state}
+_WEATHER_TIME_WORDS = frozenset({"today", "tomorrow", "now", "outside", "tonight",
+                                 "aaj", "kal", "abhi", "aj"})
 
 
-_SERVO_OPEN_WORDS = ("open", "kholo", "khol", "khol do", "utha do")
-
-
-def _build_servo_position(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
-    """A curtain is not an on/off appliance, so 'open' has to become an angle.
-
-    Halfway is a real request and the only one that needs a third position;
-    everything else is one end of the travel or the other.
-    """
-    verb = (m.group("verb") or "").strip().lower()
-    # "half" can land either side of the noun — "open half the curtain",
-    # "open the curtain halfway" — so read it off the cleaned text rather
-    # than carrying three optional groups through the pattern.
-    if re.search(r"\bhalf(?:way)?\b", cleaned):
-        return {"position": "half"}
-    if verb.startswith(_SERVO_OPEN_WORDS):
-        return {"position": "open"}
-    return {"position": "close"}
-
-
-def _build_servo_angle(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
-    angle = int(m.group("angle"))
-    if angle > 180:
-        return None            # let the LLM explain it rather than clamp silently
-    return {"angle": angle}
+def _build_weather(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
+    location = (m.group("location") or "").strip(" ,.")
+    if not location or location.lower() in _WEATHER_TIME_WORDS:
+        return {}
+    return {"location": location}
 
 
 def _build_motor(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
@@ -358,6 +321,64 @@ def _build_reminder_at(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
     return {"text": text, "at_time": f"{hour:02d}:{minute:02d}"}
 
 
+_ROUTINE_RECURRENCE = {
+    "day": "daily", "daily": "daily", "morning": "daily", "evening": "daily", "night": "daily",
+    "afternoon": "daily", "weekday": "weekdays", "weekdays": "weekdays", "working day": "weekdays",
+    "week": "weekly", "weekly": "weekly", "hour": "hourly", "hourly": "hourly",
+}
+
+
+def _clock_from_match(m: Match[str]) -> Optional[str]:
+    """HH:MM from hour/minute/meridiem groups, or None when they make no time."""
+    if not m.groupdict().get("hour"):
+        return None
+    hour = int(m.group("hour"))
+    minute = int(m.groupdict().get("minute") or 0)
+    meridiem = (m.groupdict().get("meridiem") or "").lower().replace(".", "")
+    if meridiem == "pm" and hour < 12:
+        hour += 12
+    elif meridiem == "am" and hour == 12:
+        hour = 0
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _build_routine(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
+    """'every weekday at 9 remind me to check email' -> a set_routine call."""
+    at_time = _clock_from_match(m)
+    every = (m.group("every") or "").strip().lower()
+    recurrence = _ROUTINE_RECURRENCE.get(every)
+    text = (m.groupdict().get("text") or m.groupdict().get("text2") or "").strip(" .")
+    if recurrence == "hourly" and not at_time:
+        from datetime import datetime
+        at_time = datetime.now().strftime("%H:%M")     # "every hour" starts from now
+    if not at_time or not recurrence or not text:
+        return None
+    return {"text": text, "at_time": at_time, "recurrence": recurrence}
+
+
+def _build_alarm(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
+    at_time = _clock_from_match(m)
+    if not at_time:
+        return None
+    return {"text": "wake up", "at_time": at_time}
+
+
+def _build_reminder_tomorrow(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
+    """'remind me tomorrow at 8 to call mom' pins the DATE, not just the clock —
+    at 07:00 today, plain at_time=08:00 would fire in an hour."""
+    at_time = _clock_from_match(m)
+    if not at_time:
+        return None
+    text = (m.groupdict().get("text") or m.groupdict().get("text2") or "").strip(" .") or "your reminder"
+    from datetime import datetime, timedelta
+    tomorrow = (datetime.now() + timedelta(days=1)).date()
+    hour, minute = (int(x) for x in at_time.split(":"))
+    due = datetime.combine(tomorrow, datetime.min.time()).replace(hour=hour, minute=minute)
+    return {"text": text, "at_iso": due.isoformat(timespec="minutes")}
+
+
 def _build_volume_set(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
     level = parse_number(m.group("level"))
     if level is None:
@@ -422,11 +443,11 @@ RULES: list[Rule] = [
         pattern=_rx(
             r"^(?:add|register|pair|connect)\s+(?:a\s+|new\s+|my\s+)?(?:device|esp32|board|node)\s+"
             r"(?P<name>.+?)\s+(?:at|@|on)\s+(?P<addr>[a-z0-9.:_-]+)"
-            # All five kinds the registry accepts, not three. Two of the
-            # missing ones — sensor and face — are the exact words the docs
-            # tell people to type, so "add device face at <ip> as face" fell
-            # through to the LLM instead of registering anything.
-            r"(?:\s+as\s+(?:a\s+)?(?P<kind>relay|motor|sensor|face|generic))?$"
+            # Every kind the registry accepts. Two of them — sensor and face —
+            # are the exact words the docs tell people to type, so the list
+            # must stay in step with DEVICE_KINDS or "add device face at <ip>
+            # as face" falls through to the LLM instead of registering anything.
+            r"(?:\s+as\s+(?:a\s+)?(?P<kind>motor|sensor|face|generic))?$"
         ),
         builder=lambda m, c: {
             "name": m.group("name").strip(),
@@ -449,97 +470,6 @@ RULES: list[Rule] = [
         pattern=_rx(r"^(?:remove|forget|delete|unpair)\s+(?:the\s+)?device\s+(?P<name>.+)$"),
         builder=lambda m, c: {"name": m.group("name").strip()},
         confidence=0.98,
-    ),
-    Rule(
-        name="servo_position",
-        intent="devices",
-        tool="device_servo",
-        pattern=_rx(
-            r"^(?P<verb>open|close|shut|draw)\s+(?:the\s+|my\s+|half\s+|halfway\s+)*"
-            r"(?:curtain|curtains|blind|blinds|shutter|shutters|parda|pardah|latch|valve)"
-            r"(?:\s+half(?:way)?)?$"
-        ),
-        builder=_build_servo_position,
-        confidence=0.95,
-    ),
-    Rule(
-        name="servo_position_hinglish",
-        intent="devices",
-        tool="device_servo",
-        pattern=_rx(
-            r"^(?:curtain|curtains|blind|blinds|shutter|parda|pardah)\s+"
-            r"(?P<verb>kholo|khol\s+do|band\s+karo|band\s+kar\s+do|bandh\s+karo)$"
-        ),
-        builder=_build_servo_position,
-        confidence=0.95,
-    ),
-    Rule(
-        name="servo_angle_set",
-        intent="devices",
-        tool="device_servo",
-        pattern=_rx(
-            r"^(?:(?:set|move|turn|put|rotate)\s+)?(?:the\s+|my\s+)?servo\s+"
-            r"(?:to\s+|at\s+)?(?P<angle>\d{1,3})(?:\s*(?:degrees?|deg))?$"
-        ),
-        builder=_build_servo_angle,
-        confidence=0.96,
-    ),
-    Rule(
-        name="device_switch_on_off",
-        intent="devices",
-        tool="device_switch",
-        pattern=_rx(r"^(?:turn|switch|power)\s+(?P<state>on|off)\s+(?:the\s+|my\s+)?(?P<dev>.+)$"),
-        builder=_build_device_switch,
-        confidence=0.95,
-    ),
-    Rule(
-        name="device_switch_suffix",
-        intent="devices",
-        tool="device_switch",
-        pattern=_rx(r"^(?:turn|switch|power)\s+(?:the\s+|my\s+)?(?P<dev>.+?)\s+(?P<state>on|off)$"),
-        builder=_build_device_switch,
-        confidence=0.94,
-    ),
-    Rule(
-        name="device_switch_bare",
-        intent="devices",
-        tool="device_switch",
-        # "lights on" is how people actually say it, and it matched nothing:
-        # both switch rules above require turn/switch/power, so the shortest and
-        # most natural form fell through to the LLM and looked like a dead app.
-        #
-        # A bare "<something> on" is greedy, so it is fenced in tightly: at most
-        # two words, and the first may not be one of the words that make an
-        # English phrase merely END in "on" — "hold on", "what's going on",
-        # "from now on". Those are the false positives that would make this rule
-        # worse than the gap it fills.
-        pattern=_rx(
-            r"^(?!(?:hold|come|carry|going|go|get|put|move|press|keep|right|"
-            r"later|now|so|and|based|early|from|what|who|why|is|its|it|that|"
-            r"this|volume|screen|dark|light\s+mode)\b)"
-            r"(?P<dev>[a-z][a-z0-9-]*(?:\s+[a-z0-9-]+)?)\s+(?P<state>on|off)$"
-        ),
-        builder=_build_device_switch,
-        confidence=0.90,
-    ),
-    Rule(
-        name="device_switch_hinglish",
-        intent="devices",
-        tool="device_switch",
-        pattern=_rx(r"^(?P<dev>.+?)\s+(?:ko\s+)?(?P<verb>chalu|shuru|on|band|bandh|off)\s+kar(?:o|do|\s+do|\s+dijiye|na)?$"),
-        builder=_build_device_hinglish,
-        confidence=0.95,
-    ),
-    Rule(
-        name="device_toggle",
-        intent="devices",
-        tool="device_switch",
-        pattern=_rx(r"^toggle\s+(?:the\s+|my\s+)?(?P<dev>.+)$"),
-        builder=lambda m, c: (
-            {"device": m.group("dev").strip(), "state": "toggle"}
-            if m.group("dev").strip().lower() not in _NON_DEVICE_WORDS else None
-        ),
-        confidence=0.93,
     ),
     Rule(
         name="robot_move",
@@ -687,9 +617,14 @@ RULES: list[Rule] = [
         name="hinglish_weather",
         intent="web",
         tool="weather",
-        pattern=_rx(r"^(?:(?P<q>.+?)\s+(?:ka|mein|me)\s+)?mausam(?:\s+kaisa\s+hai)?$|^weather\s+kaisa\s+hai$"),
+        pattern=_rx(
+            r"^(?:(?:aaj|kal|abhi)\s+(?:ka\s+)?)?(?:(?P<q>.+?)\s+(?:ka|mein|me)\s+)?mausam(?:\s+kaisa\s+hai)?$"
+            r"|^weather\s+kaisa\s+hai$"
+        ),
         builder=lambda m, c: (
-            {"location": m.group("q").strip()} if m.groupdict().get("q") else {}
+            {"location": m.group("q").strip()}
+            if m.groupdict().get("q") and m.group("q").strip().lower() not in _WEATHER_TIME_WORDS
+            else {}
         ),
         confidence=0.95,
     ),
@@ -815,7 +750,13 @@ RULES: list[Rule] = [
         name="open_target",
         intent="desktop",
         tool="__dynamic__",
-        pattern=_rx(r"^(?:open|launch|start|run)\s+(?:up\s+)?(?:the\s+)?(?P<target>[\w .+&/:~\\\\-]{1,80})$"),
+        pattern=_rx(
+            r"^(?:open|launch|start|run)\s+(?:up\s+)?"
+            # "start a timer for 10 minutes" is a timer, not an app called
+            # "a timer for 10 minutes" — those words belong to the rules below.
+            r"(?!(?:a\s+|the\s+|my\s+)?(?:timer|countdown|stopwatch|reminder|alarm)\b)"
+            r"(?:the\s+)?(?P<target>[\w .+&/:~\\\\-]{1,80})$"
+        ),
         builder=_build_open_target,
         confidence=0.95,
     ),
@@ -996,14 +937,16 @@ RULES: list[Rule] = [
         name="shutdown",
         intent="power",
         tool="shutdown_pc",
-        pattern=_rx(r"(?:shut\s*down|power\s+off|turn\s+off)\s+(?:my\s+|the\s+)?(?:pc|computer|laptop|machine|system)"),
+        # Anchored: without `$` this matched a prefix of "turn off the computer
+        # screen" and offered to shut the machine down.
+        pattern=_rx(r"^(?:shut\s*down|power\s+off|turn\s+off)\s+(?:my\s+|the\s+)?(?:pc|computer|laptop|machine|system)$"),
         confidence=0.98,
     ),
     Rule(
         name="restart",
         intent="power",
         tool="restart_pc",
-        pattern=_rx(r"(?:restart|reboot)\s+(?:my\s+|the\s+)?(?:pc|computer|laptop|machine|system)"),
+        pattern=_rx(r"^(?:restart|reboot)\s+(?:my\s+|the\s+)?(?:pc|computer|laptop|machine|system)$"),
         confidence=0.98,
     ),
     Rule(
@@ -1015,6 +958,57 @@ RULES: list[Rule] = [
     ),
 
     # ------------------------------------------------------------ reminders
+    Rule(
+        # The README's own example — "every weekday at 9 remind me to check
+        # email" — matched nothing and fell through to the model.
+        name="routine",
+        intent="automation",
+        tool="set_routine",
+        pattern=_rx(
+            r"^(?:remind\s+me\s+(?:to\s+(?P<text>.+?)\s+)?)?every\s+(?P<every>day|daily|morning|afternoon|evening|night|"
+            r"weekday|weekdays|working day|week|weekly|hour|hourly)\s+"
+            r"(?:at\s+(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<meridiem>am|pm|a\.m\.|p\.m\.)?\s+)?"
+            r"(?:remind\s+me\s+)?(?:to\s+)?(?P<text2>.+?)?$"
+        ),
+        builder=_build_routine,
+        confidence=0.95,
+    ),
+    Rule(
+        name="reminder_tomorrow",
+        intent="automation",
+        tool="set_reminder",
+        pattern=_rx(
+            r"^remind\s+me\s+(?:to\s+(?P<text>.+?)\s+)?tomorrow\s+at\s+(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?"
+            r"\s*(?P<meridiem>am|pm|a\.m\.|p\.m\.)?(?:\s+to\s+(?P<text2>.+))?$"
+        ),
+        builder=_build_reminder_tomorrow,
+        confidence=0.96,
+    ),
+    Rule(
+        name="alarm",
+        intent="automation",
+        tool="set_reminder",
+        pattern=_rx(
+            r"^(?:set\s+(?:an?\s+)?alarm\s+(?:for|at)|wake\s+me\s+(?:up\s+)?at)\s+"
+            r"(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<meridiem>am|pm|a\.m\.|p\.m\.)?$"
+        ),
+        builder=_build_alarm,
+        confidence=0.96,
+    ),
+    Rule(
+        name="cancel_reminder",
+        intent="automation",
+        tool="cancel_reminder",
+        pattern=_rx(
+            r"^(?:cancel|delete|remove|stop|clear)\s+(?:my\s+|the\s+|that\s+)?(?P<all>all\s+(?:my\s+|the\s+)?)?"
+            r"(?:next\s+|last\s+)?(?:reminder|timer|alarm|routine)(?P<plural>s)?$"
+        ),
+        # Plural, or "all": everything scheduled goes, and the tool says how
+        # many. Cancelling one and answering "Cancelled." to "cancel my
+        # reminders" would be the wrong thing done with a straight face.
+        builder=lambda m, c: {"all": True} if (m.group("all") or m.group("plural")) else {},
+        confidence=0.95,
+    ),
     Rule(
         name="reminder_in",
         intent="automation",
@@ -1048,7 +1042,7 @@ RULES: list[Rule] = [
         intent="automation",
         tool="set_timer",
         pattern=_rx(
-            r"^(?:set\s+)?(?:a\s+)?timer\s+(?:for\s+)?(?P<amount>[\w.]+)\s+(?P<unit>seconds?|secs?|minutes?|mins?|hours?|hrs?)"
+            r"^(?:(?:set|start|run|begin)\s+)?(?:a\s+)?timer\s+(?:for\s+)?(?P<amount>[\w.]+)\s+(?P<unit>seconds?|secs?|minutes?|mins?|hours?|hrs?)"
             r"(?:\s+(?:for|called|named)\s+(?P<label>.+))?$"
         ),
         builder=_build_timer,
@@ -1058,7 +1052,12 @@ RULES: list[Rule] = [
         name="list_reminders",
         intent="automation",
         tool="list_reminders",
-        pattern=_rx(r"(?:list|show|what are)\s+(?:my\s+|the\s+)?(?:reminders|timers|alarms)"),
+        pattern=_rx(
+            r"(?:list|show|what are)\s+(?:my\s+|the\s+)?(?:reminders|timers|alarms|routines)"
+            r"|^(?:what\s+)?(?:reminders|timers|alarms)\s+do\s+i\s+have$"
+            r"|^(?:do\s+i\s+have\s+)?any\s+(?:reminders|timers|alarms)$"
+            r"|^my\s+(?:reminders|timers|alarms)$"
+        ),
         confidence=0.96,
     ),
 
@@ -1078,10 +1077,14 @@ RULES: list[Rule] = [
         tool="weather",
         pattern=_rx(
             r"(?:what(?:'s| is| will)?\s+)?(?:the\s+)?(?:weather|forecast|temperature)"
-            r"(?:\s+(?:like\s+)?(?:today|tomorrow|outside|now))?"
-            r"(?:\s+in\s+(?P<location>[\w .,-]{2,50}))?"
+            r"(?:\s+like)?"
+            r"(?:\s+(?:today|tomorrow|outside|now|tonight))?"
+            r"(?:\s+in\s+(?P<location>[\w .,-]{2,50}?))?"
+            # "in london today": the time word may follow the city too, and
+            # must not be swallowed into it — "london today" geocodes nowhere.
+            r"(?:\s+(?:today|tomorrow|outside|now|tonight))?$"
         ),
-        builder=lambda m, c: {"location": m.group("location").strip()} if m.group("location") else {},
+        builder=_build_weather,
         confidence=0.93,
     ),
     Rule(
@@ -1276,6 +1279,9 @@ RULES: list[Rule] = [
         intent="math",
         tool="unit_converter",
         pattern=_rx(r"^convert\s+(?P<value>[\d.]+)\s*(?P<from_unit>[\w°]+)\s+(?:to|into|in)\s+(?P<to_unit>[\w°]+)$"),
+        # Copied verbatim the value arrived as the string "5", and the tool
+        # multiplied it — every conversion failed with a TypeError.
+        builder=_build_unit_convert,
         confidence=0.95,
     ),
 ]

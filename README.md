@@ -46,25 +46,27 @@ It's built **free-first**: every command works with *zero* API keys thanks to a 
 | "remember my project budget is 5000" | long-term memory |
 | "start iris when my pc boots" | registers itself as a startup app |
 
-…and anything else becomes a conversation with a free AI model, which can chain any of the 65+ tools itself.
+…and anything else becomes a conversation with a free AI model, which can chain any of the 77 tools itself.
 
-## 🏠 ESP32, home automation & the robot
+## 🤖 The robot and its senses (ESP32)
 
-IRIS drives your WiFi hardware — relay boards for lights/fans/sockets and an
-L298N motor base for the robot — over plain HTTP on your LAN:
+IRIS drives two boards on your WiFi or phone hotspot — the robot base (an
+ESP32 with two BTS7960 motor drivers) and the ESP32-S3 that carries its OLED
+eyes and sensors (four ultrasonics, DHT22, PIR, gas, flame, light). Commands
+go out as single UDP datagrams, so a face or a drive lands in milliseconds:
 
 ```
-add device kitchen light at 192.168.1.73 as relay
-turn on the kitchen light        ·  light chalu karo
-fan band karo                    ·  toggle the socket
 add device robot at 192.168.1.74 as motor
-robot forward · move the robot left · stop the robot
+robot forward · move the robot left · stop the robot · robot ruko
+add device face at 192.168.1.70 as face
+what's the temperature · is there any motion · gas level · look happy
 ```
 
-Flash the bundled universal firmware (`firmware/esp32-iris-node/`) or keep
-your existing sketches and map their URLs per device. Full wiring and setup
-guide: **[docs/ESP32.md](docs/ESP32.md)**. Registered devices also show up in
-the settings drawer with live online state and toggle buttons.
+Flash the bundled firmware (`firmware/esp32-iris-node-bts7960/` and
+`firmware/esp32-s3-iris-sensors/`) or keep your existing sketches and map
+their URLs per device. Full wiring and setup guide:
+**[docs/ESP32.md](docs/ESP32.md)**. Registered devices also show up in the
+settings drawer with live online state and a stop button for the robot.
 
 ## 🗣 Languages & voice
 
@@ -163,11 +165,11 @@ iris token            # print the phone-pairing token
 │ 1 wake-word strip        "hey iris, …"                             │
 │ 2 memory commands        remember / recall / forget                │
 │ 3 small talk             greetings, identity, jokes    (offline)   │
-│ 4 deterministic NLU      50+ intent rules → direct tool dispatch   │
+│ 4 deterministic NLU      80 intent rules → direct tool dispatch    │
 │                          "open youtube" runs in milliseconds,      │
 │                          offline, no model call at all             │
 │ 5 LLM agent loop         free-provider router with fallback chain  │
-│                          + function calling over all 65+ tools     │
+│                          + function calling over all 77 tools      │
 └──────────────────┬──────────────────────────────┬──────────────────┘
                    ▼                              ▼
         ┌──────────────────┐          ┌───────────────────────┐
@@ -227,7 +229,7 @@ iris/
     ├── language/           # language detection · Hindi/Hinglish normalization
     ├── api/routes/         # chat · ws/sse events · voice · system · tasks · tools · memory · llm
     └── static/             # dark UI · 3D hologram sphere (pure canvas, zero deps)
-tests/                      # 550+ tests
+tests/                      # 1,400+ tests
 ```
 
 ## 🧪 Tests

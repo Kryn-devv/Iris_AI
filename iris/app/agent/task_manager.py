@@ -13,6 +13,11 @@ logger = get_logger("agent.task_manager")
 class TaskManager:
     """Manages active tasks, state retention, and async cancellation."""
 
+    #: Finished tasks kept for the /tasks API. Every message creates one, each
+    #: holding every tool result it produced, so without a cap a desktop left
+    #: running for weeks kept every web page it ever fetched in RAM.
+    MAX_RETAINED = 200
+
     def __init__(self):
         self._tasks: Dict[str, AgentState] = {}
         self._async_tasks: Dict[str, asyncio.Task] = {}
@@ -21,8 +26,25 @@ class TaskManager:
         """Initialize and register a new task."""
         state = AgentState(user_input=user_input, task_id=task_id, correlation_id=correlation_id)
         self._tasks[state.task_id] = state
+        self._evict()
         logger.info(f"Created task '{state.task_id}' with status PENDING")
         return state
+
+    def _evict(self) -> None:
+        """Drop the oldest finished tasks beyond MAX_RETAINED.
+
+        A task still running, or waiting on a confirmation click, is never
+        evicted — its id is what the confirmation round-trip resolves.
+        """
+        if len(self._tasks) <= self.MAX_RETAINED:
+            return
+        terminal = (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED)
+        for task_id in list(self._tasks):
+            if len(self._tasks) <= self.MAX_RETAINED:
+                break
+            if self._tasks[task_id].status in terminal:
+                self._tasks.pop(task_id, None)
+                self._async_tasks.pop(task_id, None)
 
     def get_task(self, task_id: str) -> Optional[AgentState]:
         """Retrieve active or completed task by task_id."""

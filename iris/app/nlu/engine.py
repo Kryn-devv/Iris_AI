@@ -68,6 +68,11 @@ class IntentEngine:
             except ValueError:
                 # A slot extractor rejected the surface match; keep scanning.
                 continue
+            except Exception as exc:  # noqa: BLE001
+                # One buggy builder must not take every command down with it:
+                # the message falls through to the next rule, then the model.
+                logger.warning("NLU rule %r crashed on %r: %s", rule.name, cleaned, exc)
+                continue
             if arguments is None:
                 continue
             # Rules with tool "__dynamic__" decide the target tool in their

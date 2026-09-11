@@ -817,3 +817,15 @@ def test_website_tools_metadata():
 def test_get_tools_websites():
     names = [t.name for t in web_mod.get_tools()]
     assert names == ["open_website", "play_youtube"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["shutdown", "reboot", "rm", "sudo", "bash", "python3", "/bin/sh"])
+async def test_open_app_never_launches_a_system_command_from_path(monkeypatch, fake_popen, name):
+    """'run shutdown' used to power the machine off through the app opener —
+    no confirmation, none of the shell tool's guards. It is refused by name,
+    before PATH is even consulted."""
+    monkeypatch.setattr(shutil, "which", lambda n: "/usr/bin/" + n.strip("/"))
+    res = await OpenAppTool().execute(app=name)
+    assert not res.success and "system command" in res.error
+    assert fake_popen.calls == []

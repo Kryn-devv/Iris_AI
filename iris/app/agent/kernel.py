@@ -49,6 +49,7 @@ from iris.app.core.security import (
     default_permission_manager,
 )
 from iris.app.language.localize import localize_ack
+from iris.app.language.models import LanguageContext
 from iris.app.language.service import LanguageService, default_language_service
 from iris.app.llm.cloud import extract_json_object
 from iris.app.llm.gateway import ModelGateway, default_model_gateway
@@ -87,6 +88,7 @@ class AgentKernel:
         self.memory_service = memory_service or MemoryService()
         self.language_service = language_service or default_language_service
         self.intent_engine = intent_engine or default_intent_engine
+        self._language_context = LanguageContext()
 
         self.executor = ExecutionEngine(
             tool_registry=self.tool_registry, permission_manager=self.permission_manager
@@ -133,9 +135,12 @@ class AgentKernel:
 
         try:
             # Language metadata (used by prompts and the response envelope).
+            # One context for the whole session, so "reply in hindi" keeps
+            # applying to the next messages instead of only the one that said it.
             detection, normalized_input, target_lang, target_style = self.language_service.process_input(
-                user_input_clean
+                user_input_clean, context=self._language_context
             )
+            self.language_service.update_context(self._language_context, detection, target_lang)
             state.metadata["language_detection"] = detection
             state.metadata["target_response_language"] = target_lang.value
             state.metadata["target_style"] = target_style.value
@@ -349,10 +354,14 @@ class AgentKernel:
             target_name = clean_q if clean_q else payload["key"].replace("_", " ")
 
             if val is not None:
+                # Only a robot fact is "the robot's": "remember my budget is
+                # $500" must not be read back as a robot budget.
+                whose = "Your robot" if "robot" in payload["key"] else "Your"
                 if "budget" in payload["key"]:
-                    text = f"Your robot budget is {val}."
+                    text = f"{whose} budget is {val}."
                 elif "microcontroller" in payload["key"]:
-                    text = f"Your robot uses an {val}."
+                    text = (f"{whose} uses an {val}." if whose == "Your robot"
+                            else f"Your microcontroller is {val}.")
                 else:
                     text = f"Regarding {target_name}: {val}."
             else:
@@ -469,7 +478,10 @@ class AgentKernel:
                 if res.content.strip():
                     arguments["content"] = res.content.strip()
             elif match.tool_name == "write_code":
-                task = arguments.pop("task", "")
+                # Read, not popped: the except branch below also needs it, and
+                # popping it first is how a failed model call wrote a file
+                # called the_requested_task.py.
+                task = arguments.get("task", "")
                 language = arguments.get("language", "python")
                 res = await self.model_gateway.generate(
                     CONTENT_CODE_PROMPT.format(
@@ -479,10 +491,10 @@ class AgentKernel:
                 )
                 data = extract_json_object(res.content)
                 if data and data.get("code"):
+                    arguments.pop("task", None)     # the tool takes filename + code
                     arguments["filename"] = data.get("filename") or "generated_script.py"
                     arguments["code"] = data["code"]
                 else:
-                    arguments["task"] = task
                     arguments = self._offline_code_arguments(arguments)
             elif match.tool_name == "create_spreadsheet":
                 topic = arguments.get("title", "")
@@ -578,10 +590,22 @@ class AgentKernel:
                         ],
                     }
                 )
+                budget_exhausted = False
                 for tc in llm_res.tool_calls:
                     if state.tool_call_count >= settings.MAX_TOOL_CALLS:
-                        logger.warning("Task '%s' hit MAX_TOOL_CALLS.", state.task_id)
-                        break
+                        # Every requested call still needs an answer in the
+                        # transcript: an assistant turn with unanswered
+                        # tool_calls is rejected by OpenAI-style endpoints,
+                        # and would have failed the very next request.
+                        if not budget_exhausted:
+                            logger.warning("Task '%s' hit MAX_TOOL_CALLS.", state.task_id)
+                        budget_exhausted = True
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.get("id") or f"call_{uuid.uuid4().hex[:8]}",
+                            "content": "ERROR: tool call budget exhausted; answer with what you have.",
+                        })
+                        continue
                     fn = tc.get("function", {})
                     tool_name = fn.get("name", "")
                     raw_args = fn.get("arguments", {})
@@ -616,6 +640,8 @@ class AgentKernel:
                             "content": observation,
                         }
                     )
+                if budget_exhausted:
+                    break      # the fallback text below sums up what did run
                 continue  # let the model observe results and continue
 
             if llm_res.content and llm_res.content.strip():

@@ -45,7 +45,7 @@ logger = get_logger("tools.devices.transport")
 #: assistant, and the person waiting on it, for six seconds before saying so.
 LAN_TIMEOUT = httpx.Timeout(4.0, connect=2.0)
 
-#: For actuator commands — /motor, /tank, /drive, /relay, /servo. A LAN ESP32
+#: For actuator commands — driving the robot, changing the face. A LAN ESP32
 #: answers these in single-digit milliseconds, and the turn is awaiting it, so
 #: the budget is what a congested 2.4 GHz link plausibly needs rather than
 #: what a wedged one might eventually use. Not tighter than this: a false
@@ -54,7 +54,8 @@ LAN_TIMEOUT = httpx.Timeout(4.0, connect=2.0)
 COMMAND_TIMEOUT = httpx.Timeout(1.5, connect=0.8)
 
 #: Paths that actuate something, and so take the tight budget above.
-_ACTUATOR_PATHS = ("/motor", "/tank", "/drive", "/relay", "/servo", "/stop", "/test")
+_ACTUATOR_PATHS = ("/motor", "/tank", "/drive", "/stop", "/test",
+                    "/face", "/look", "/blink", "/speak")
 
 #: How long to wait for the node's answering datagram before falling back to
 #: HTTP. A LAN round trip to an ESP32 is single-digit milliseconds; the slack
@@ -78,13 +79,13 @@ _FAST_PORTS: Dict[str, Optional[int]] = {}
 #: failed to answer. See FAST_PROBE_RETRY_S.
 _FAST_PROBE_HOLD: Dict[str, float] = {}
 
-#: Kinds whose bundled firmware ships a UDP listener, and therefore the only
-#: ones worth spending a round trip ASKING. Every other kind still gets the
-#: fast path the moment one of its own /status answers advertises a port — it
-#: just is not interrogated on the off chance. Which matters because command
-#: latency is a real problem for exactly one of these devices: a light that
-#: comes on 30 ms later is a light that came on.
-FAST_PROBE_KINDS = ("motor",)
+#: Kinds whose bundled firmware ships a UDP listener — the robot and the S3
+#: face/sensor board — and therefore the only ones worth spending a round trip
+#: ASKING. Every other kind still gets the fast path the moment one of its own
+#: /status answers advertises a port; it just is not interrogated on the off
+#: chance, because a board that never had a listener would pay a timeout for
+#: every command.
+FAST_PROBE_KINDS = ("motor", "face", "sensor")
 
 
 def forget_fast_paths() -> None:

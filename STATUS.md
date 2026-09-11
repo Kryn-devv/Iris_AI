@@ -65,13 +65,45 @@ piece.
   worst being that `/motor` treated a **missing or misspelled `dir` as a
   stop** — so one typo looked exactly like broken wiring.
 
-## Not working yet — and the single next step for each
-- **Relays / home automation.** Most likely `RELAY_ACTIVE_LOW` is wrong for
-  the module (flip it to `false` and reflash), or the module's VCC has no 5V.
-  Test on the board's own page first — the buttons are labelled with their
-  GPIO — and listen for the click. Click but no appliance → COM/NO screw
-  terminals. No click → power or the active-low flag.
-- **Flashing kept failing with "port busy."** Something still holds the USB
+- **Fifteen bugs from a full read of the assistant, all fixed:**
+  "hey open youtube" was answered with a greeting and never opened anything;
+  "start a timer for 10 minutes" launched an app called "a timer for 10
+  minutes"; "play let it snow" searched for "let it s"; "turn off the
+  computer screen" offered to shut the PC down; "convert 5 kg to lbs" always
+  failed; "weather in london today" looked for a town called "london today";
+  `open https://…` tried to open a folder; a remembered "$500" budget came
+  back as ₹500 — and "remember …" was never saved to disk at all, so every
+  fact died with the process. Memory now lives in the SQLite database and is
+  read back at boot.
+
+- **The S3 board flashes onto the wiring as it is.** Every default pin in
+  `firmware/esp32-s3-iris-sensors` is the robot's actual wire: four
+  ultrasonics on 4–11, DHT22 on 12, PIR 13, flame DO 14, MQ-2 DO 17, both
+  OLEDs on 20/21 showing the same eye. Nothing to move, no resistors — the
+  whole robot runs from the one 3.30 V buck, so no signal can exceed 3.3 V.
+  The three analog wires on 15/16/18 are ignored (those pins cannot read a
+  voltage while WiFi is on); gas and fire come from the modules' digital
+  outputs. One wire each to GPIO 2 / GPIO 1 buys a gas level and a light
+  percent later.
+
+## Retired
+
+- **The relay node.** The 4-channel relay board, its firmware
+  (`esp32-iris-node`), the `relay` device kind, the switch and servo
+  commands and the 12 V wiring sheet are gone. The hardware is two boards
+  now: the robot base and the S3 face/sensor board. A `devices.json` that
+  still lists a relay loads it as a plain `generic` device, so nothing
+  breaks on upgrade — it just no longer means anything.
+
+## Still to do — by hand, not by code
+
+- **Rotate the Groq key.** It was on screen during a shared session. Make a
+  new one at console.groq.com, put it in `.env`, delete the old one there.
+- **Change the two shared tokens.** `API_TOKEN` and `NODE_LINK_TOKEN` are
+  both still the short word they were set to for testing. Generate real
+  ones (`python -c "import secrets; print(secrets.token_urlsafe(32))"`),
+  put the node one in both firmwares' `CLOUD_TOKEN`, and reflash.
+- **Flashing fails with "port busy."** Something still holds the USB
   port — usually a Serial Monitor, sometimes one in a *second* VS Code window.
   `lsof /dev/cu.usbmodem*` names the holder; quitting VS Code entirely and
   reopening one window always clears it.
