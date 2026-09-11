@@ -180,10 +180,21 @@ class CancelReminderTool(BaseTool):
     aliases = ("delete_reminder", "remove_reminder", "cancel_timer")
     mutating = True
     input_schema = ToolParameterSchema(
-        properties={"reminder_id": {"type": "string", "description": "Reminder id; omit to cancel the next one."}},
+        properties={
+            "reminder_id": {"type": "string", "description": "Reminder id; omit to cancel the next one."},
+            "all": {"type": "boolean", "description": "Cancel everything scheduled instead of one."},
+        },
     )
 
-    async def _run(self, reminder_id: str | None = None, **_: Any) -> dict[str, Any]:
+    async def _run(self, reminder_id: str | None = None, all: bool = False, **_: Any) -> dict[str, Any]:
+        if all:
+            items = await default_scheduler_service.list_scheduled(limit=500)
+            if not items:
+                raise ToolError("There's nothing scheduled to cancel.")
+            cancelled = [item["id"] for item in items if await default_scheduler_service.cancel(item["id"])]
+            n = len(cancelled)
+            return {"cancelled": cancelled, "count": n,
+                    "speech": f"Cancelled {n} scheduled {'item' if n == 1 else 'items'}."}
         if not reminder_id:
             items = await default_scheduler_service.list_scheduled(limit=1)
             if not items:

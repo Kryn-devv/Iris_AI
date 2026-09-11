@@ -321,6 +321,64 @@ def _build_reminder_at(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
     return {"text": text, "at_time": f"{hour:02d}:{minute:02d}"}
 
 
+_ROUTINE_RECURRENCE = {
+    "day": "daily", "daily": "daily", "morning": "daily", "evening": "daily", "night": "daily",
+    "afternoon": "daily", "weekday": "weekdays", "weekdays": "weekdays", "working day": "weekdays",
+    "week": "weekly", "weekly": "weekly", "hour": "hourly", "hourly": "hourly",
+}
+
+
+def _clock_from_match(m: Match[str]) -> Optional[str]:
+    """HH:MM from hour/minute/meridiem groups, or None when they make no time."""
+    if not m.groupdict().get("hour"):
+        return None
+    hour = int(m.group("hour"))
+    minute = int(m.groupdict().get("minute") or 0)
+    meridiem = (m.groupdict().get("meridiem") or "").lower().replace(".", "")
+    if meridiem == "pm" and hour < 12:
+        hour += 12
+    elif meridiem == "am" and hour == 12:
+        hour = 0
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _build_routine(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
+    """'every weekday at 9 remind me to check email' -> a set_routine call."""
+    at_time = _clock_from_match(m)
+    every = (m.group("every") or "").strip().lower()
+    recurrence = _ROUTINE_RECURRENCE.get(every)
+    text = (m.groupdict().get("text") or m.groupdict().get("text2") or "").strip(" .")
+    if recurrence == "hourly" and not at_time:
+        from datetime import datetime
+        at_time = datetime.now().strftime("%H:%M")     # "every hour" starts from now
+    if not at_time or not recurrence or not text:
+        return None
+    return {"text": text, "at_time": at_time, "recurrence": recurrence}
+
+
+def _build_alarm(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
+    at_time = _clock_from_match(m)
+    if not at_time:
+        return None
+    return {"text": "wake up", "at_time": at_time}
+
+
+def _build_reminder_tomorrow(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
+    """'remind me tomorrow at 8 to call mom' pins the DATE, not just the clock —
+    at 07:00 today, plain at_time=08:00 would fire in an hour."""
+    at_time = _clock_from_match(m)
+    if not at_time:
+        return None
+    text = (m.groupdict().get("text") or m.groupdict().get("text2") or "").strip(" .") or "your reminder"
+    from datetime import datetime, timedelta
+    tomorrow = (datetime.now() + timedelta(days=1)).date()
+    hour, minute = (int(x) for x in at_time.split(":"))
+    due = datetime.combine(tomorrow, datetime.min.time()).replace(hour=hour, minute=minute)
+    return {"text": text, "at_iso": due.isoformat(timespec="minutes")}
+
+
 def _build_volume_set(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
     level = parse_number(m.group("level"))
     if level is None:
@@ -901,6 +959,57 @@ RULES: list[Rule] = [
 
     # ------------------------------------------------------------ reminders
     Rule(
+        # The README's own example — "every weekday at 9 remind me to check
+        # email" — matched nothing and fell through to the model.
+        name="routine",
+        intent="automation",
+        tool="set_routine",
+        pattern=_rx(
+            r"^(?:remind\s+me\s+(?:to\s+(?P<text>.+?)\s+)?)?every\s+(?P<every>day|daily|morning|afternoon|evening|night|"
+            r"weekday|weekdays|working day|week|weekly|hour|hourly)\s+"
+            r"(?:at\s+(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<meridiem>am|pm|a\.m\.|p\.m\.)?\s+)?"
+            r"(?:remind\s+me\s+)?(?:to\s+)?(?P<text2>.+?)?$"
+        ),
+        builder=_build_routine,
+        confidence=0.95,
+    ),
+    Rule(
+        name="reminder_tomorrow",
+        intent="automation",
+        tool="set_reminder",
+        pattern=_rx(
+            r"^remind\s+me\s+(?:to\s+(?P<text>.+?)\s+)?tomorrow\s+at\s+(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?"
+            r"\s*(?P<meridiem>am|pm|a\.m\.|p\.m\.)?(?:\s+to\s+(?P<text2>.+))?$"
+        ),
+        builder=_build_reminder_tomorrow,
+        confidence=0.96,
+    ),
+    Rule(
+        name="alarm",
+        intent="automation",
+        tool="set_reminder",
+        pattern=_rx(
+            r"^(?:set\s+(?:an?\s+)?alarm\s+(?:for|at)|wake\s+me\s+(?:up\s+)?at)\s+"
+            r"(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<meridiem>am|pm|a\.m\.|p\.m\.)?$"
+        ),
+        builder=_build_alarm,
+        confidence=0.96,
+    ),
+    Rule(
+        name="cancel_reminder",
+        intent="automation",
+        tool="cancel_reminder",
+        pattern=_rx(
+            r"^(?:cancel|delete|remove|stop|clear)\s+(?:my\s+|the\s+|that\s+)?(?P<all>all\s+(?:my\s+|the\s+)?)?"
+            r"(?:next\s+|last\s+)?(?:reminder|timer|alarm|routine)(?P<plural>s)?$"
+        ),
+        # Plural, or "all": everything scheduled goes, and the tool says how
+        # many. Cancelling one and answering "Cancelled." to "cancel my
+        # reminders" would be the wrong thing done with a straight face.
+        builder=lambda m, c: {"all": True} if (m.group("all") or m.group("plural")) else {},
+        confidence=0.95,
+    ),
+    Rule(
         name="reminder_in",
         intent="automation",
         tool="set_reminder",
@@ -943,7 +1052,12 @@ RULES: list[Rule] = [
         name="list_reminders",
         intent="automation",
         tool="list_reminders",
-        pattern=_rx(r"(?:list|show|what are)\s+(?:my\s+|the\s+)?(?:reminders|timers|alarms)"),
+        pattern=_rx(
+            r"(?:list|show|what are)\s+(?:my\s+|the\s+)?(?:reminders|timers|alarms|routines)"
+            r"|^(?:what\s+)?(?:reminders|timers|alarms)\s+do\s+i\s+have$"
+            r"|^(?:do\s+i\s+have\s+)?any\s+(?:reminders|timers|alarms)$"
+            r"|^my\s+(?:reminders|timers|alarms)$"
+        ),
         confidence=0.96,
     ),
 

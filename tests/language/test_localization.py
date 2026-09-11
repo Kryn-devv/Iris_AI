@@ -167,3 +167,16 @@ def test_localize_ack_unknown_phrase_passes_through():
 def test_localize_ack_english_style_untouched():
     assert localize_ack("Opened YouTube.", LanguageStyle.ENGLISH) == "Opened YouTube."
     assert localize_ack("Opened YouTube.", None) == "Opened YouTube."
+
+
+def test_a_greeting_does_not_swallow_the_command_after_it():
+    """Smalltalk runs before the command engine, so 'hey open youtube' answered
+    with a greeting meant nothing ever opened. Only filler may follow now."""
+    from iris.app.agent.smalltalk import match_smalltalk
+    for text in ("hey open youtube", "hi, volume up", "hello lock my pc", "thanks, now open youtube"):
+        assert match_smalltalk(text) is None, text
+    # ...while plain pleasantries, with or without filler, still get answered
+    for text in ("hello", "hi there", "thanks a lot", "thank you so much iris", "bye for now"):
+        assert match_smalltalk(text), text
+    # and a greeting followed by MORE small talk is answered for the small talk
+    assert "capacity" in (match_smalltalk("hello iris, how are you") or "")
