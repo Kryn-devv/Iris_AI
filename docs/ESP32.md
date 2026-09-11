@@ -370,83 +370,91 @@ One board does both jobs: two OLED eyes and all the sensors. Flash
 > *(Running IRIS on a VPS instead is possible but optional — see
 > [CLOUD.md](CLOUD.md). Nothing here needs it.)*
 
-### Sensor pins — this is the wiring the firmware ships with
+### Sensor pins — the firmware ships wired the way the robot is
 
 Four HC-SR04 distance sensors (two looking ahead, two behind), DHT22, PIR,
-flame, MQ-2 gas, LDR. Every pin below is the firmware's default, so with this
-wiring you change only the WiFi lines.
+flame, MQ-2 gas, LDR, two OLED eyes. **Nothing to move, nothing to add:**
+every pin below is the firmware's default, so you change only the two WiFi
+lines.
 
-| Sensor | Pin | Note |
+| Sensor | Pin | What you get |
 |---|---|---|
-| HC-SR04 **front-left** TRIG / ECHO | GPIO 4 / **5** | ECHO ⚠ through a 1k/2k divider (ECHO is 5 V) |
-| HC-SR04 **front-right** TRIG / ECHO | GPIO 6 / **7** | ECHO ⚠ divider |
-| HC-SR04 **rear-left** TRIG / ECHO | GPIO 8 / **9** | ECHO ⚠ divider |
-| HC-SR04 **rear-right** TRIG / ECHO | GPIO 10 / **11** | ECHO ⚠ divider |
-| DHT22 DATA | GPIO 12 | direct; VCC on **3.3 V**. A bare 4-pin sensor needs one 10k from DATA to 3.3 V (module boards have it) |
-| PIR HC-SR501 OUT | GPIO 13 | 3.3 V output, direct |
-| Flame module DO | GPIO 14 | direct. Most modules are active-LOW — the default matches |
-| Flame module AO *(optional)* | GPIO 3 | ⚠ through a 1k/2k divider, or leave unwired and set `PIN_FLAME_ADC = -1` |
-| MQ-2 gas AO | GPIO 2 | ⚠ through a 1k/2k divider (AO can reach ~4 V) |
-| MQ-2 gas DO *(optional)* | — | not needed; set `PIN_GAS_DO` (e.g. 42) if you want the module's own threshold too |
-| LDR divider midpoint | GPIO 1 | LDR + 10k resistor from 3.3 V |
+| HC-SR04 **front-left** TRIG / ECHO | GPIO 4 / 5 | distance |
+| HC-SR04 **front-right** TRIG / ECHO | GPIO 6 / 7 | distance |
+| HC-SR04 **rear-left** TRIG / ECHO | GPIO 8 / 9 | distance |
+| HC-SR04 **rear-right** TRIG / ECHO | GPIO 10 / 11 | distance |
+| DHT22 DATA | GPIO 12 | temperature, humidity |
+| PIR HC-SR501 OUT | GPIO 13 | motion |
+| Flame module **DO** | GPIO 14 | fire yes / no |
+| Flame module AO | GPIO 15 | *ignored* (see below) |
+| MQ-2 gas AO | GPIO 16 | *ignored* (see below) |
+| MQ-2 gas **DO** | GPIO 17 | gas yes / no, from the knob on the module |
+| LDR | GPIO 18 | *ignored* (see below) |
+| Both OLEDs, SDA / SCL | GPIO 20 / 21 | eyes — both panels show the same eye |
 
-**Why these and not others.** Analog readings only work on **GPIO 1–10**
-(ADC1); GPIO 11–20 are ADC2, which stops working the moment WiFi comes up and
-silently returns garbage. That is why the gas, light and flame AO wires are on
-1, 2 and 3, and the boot log warns if you move one onto 11–20. **GPIO 19 and
-20 are the S3's USB pins** — nothing goes on them.
+**Power: one buck converter at 3.30 V, everything on it — and no resistors.**
+Dividers are only ever needed when a sensor is fed 5 V and its output would
+be 5 V too. At 3.3 V nothing on this robot can make more than 3.3 V, so there
+is nothing to divide. Keep the buck at 3.30 V. The one thing to watch: some
+HC-SR04 clones insist on 5 V and will read *no echo* at 3.3 V — the board's
+page shows that within a minute. If yours do, the fix is 5 V for the
+ultrasonics plus a 1k/2k pair on each ECHO (or 3.3 V-rated modules); until
+then everything else works.
 
-**The S3's pins are NOT 5 V tolerant** — skipping the ECHO dividers can kill
-inputs. Power the PIR, MQ-2 and HC-SR04s from the 5 V rail, the LDR, DHT and
-OLEDs from 3.3 V. Set any unused sensor's pin to `-1`.
+**Why three wires are "ignored".** GPIO 11–20 share their analog converter
+with the WiFi radio, so they cannot read a voltage while WiFi is on — a fact
+of the chip, not of this firmware. Your flame AO (15), MQ-2 AO (16) and LDR
+(18) sit on such pins. The firmware leaves them alone and uses the modules'
+**digital** outputs instead: fire yes/no and gas yes/no still work, you just
+do not get a *level*. Want the numbers later? Move **one** wire and change
+**one** line:
+
+| For | Move | Then set |
+|---|---|---|
+| gas level (0–4095) | MQ-2 **AO** from 16 → **GPIO 2** | `PIN_GAS_ADC = 2` |
+| light percent | LDR from 18 → **GPIO 1** | `PIN_LDR_ADC = 1` |
 
 **Four ultrasonics fire one at a time and never block.** Firing two together
 means each hears the other's ping, and the false echo looks exactly like a
 broken sensor. The firmware fires one every 60 ms and times the echo with an
 interrupt, so the eyes keep animating and a face command never waits behind a
-distance measurement. Each sensor refreshes about four times a second.
-`/sensors` reports them as `distances: {front_left, front_right, rear_left,
-rear_right}` (`null` = no echo) plus `distance_cm` (nearest ahead) and
-`distance_rear_cm` (nearest behind).
+distance measurement. `/sensors` reports `distances: {front_left, front_right,
+rear_left, rear_right}` (`null` = no echo) plus `distance_cm` (nearest ahead)
+and `distance_rear_cm` (nearest behind).
 
 **The DHT is slow on purpose.** A DHT22 needs about two seconds between reads,
 so climate is sampled every 2.5 s and the last good value is cached in
-between. `DHT_KIND` is `DHT22` (white module); set `DHT11` for the blue one —
-the wrong one reads as `nan` and IRIS simply omits it rather than reporting a
-made-up number.
+between. `DHT_KIND` is `DHT22` (white module); set `DHT11` for the blue one.
 
-### The eyes — two 0.96" OLEDs
+### The eyes — two 0.96" OLEDs on one pair of wires
 
-Almost every SSD1306 module is hard-wired to I2C address **0x3C**, and two
-devices cannot share an address on one bus. Rather than make you solder the
-address jumper, each eye gets **its own I2C bus** — the S3 has two:
+Every SSD1306 module answers at I2C address **0x3C**. With both wired to the
+same SDA/SCL the board cannot tell them apart, so they always show the **same
+picture** — and two identical eyes are a perfectly good pair of eyes. That is
+the firmware's default (`TWIN_PANELS = true`): both modules on **SDA 20 /
+SCL 21**, nothing to move. The only expression you lose is the wink.
 
-| OLED pin | Left eye | Right eye |
-|---|---|---|
-| SDA | GPIO **15** | GPIO **17** |
-| SCL | GPIO **16** | GPIO **18** |
-| VCC | 3.3 V | 3.3 V |
-| GND | GND | GND |
+GPIO 19/20 are also the S3's native-USB data pins. They work as I2C as long as
+you **flash and monitor through the UART/COM socket** and leave the other USB
+socket empty. If the eyes stay dark there, move the two wires to **15 (SDA) /
+16 (SCL)** and set `PIN_L_SDA = 15; PIN_L_SCL = 16`.
 
-That is all. No jumpers, no soldering, no address changes. **Do not put an eye
-on GPIO 19/20** — those are the USB data lines.
+Want two *independent* eyes later (the wink, a lopsided confused face)? Move
+the right module's two wires to **SDA 17 / SCL 18** and set
+`TWIN_PANELS = false`. Or, if you have soldered one module's address jumper to
+0x3D, keep them on one bus and set `SHARED_BUS = true`.
 
-At boot the serial monitor tells you exactly what it found on each bus:
+At boot the serial monitor tells you exactly what it found:
 
 ```
-  [eyes] left OLED ok at 0x3C on SDA 15 / SCL 16 (800 kHz)
-  [eyes] right OLED did NOT answer on SDA 17 / SCL 18
-  [eyes] right bus scan: nothing answered — check VCC, GND, SDA, SCL
+  [eyes] left OLED ok at 0x3C on SDA 20 / SCL 21 (800 kHz)
+  [eyes] twin panels: both OLEDs on SDA 20 / SCL 21 show the same eye
 ```
 
-An eye that "answered but would not initialise" is usually a 1.3" **SH1106**
-module, which this firmware does not drive — 0.96" modules are SSD1306. If
-only one eye responds, the other keeps animating; the page and `/status`
-say which side is missing.
-
-*(If you have already moved one module to 0x3D, set `SHARED_BUS = true` and
-wire both to the left-eye pins instead. If left and right come out reversed,
-set `SWAP_EYES = true` — no rewiring.)*
+or, when nothing answers, it scans the bus and lists every address it heard,
+so "dark" becomes "the bus is empty — VCC/GND/SDA/SCL" or "0x3C is there but
+will not initialise — a 1.3" SH1106 module, which this firmware does not
+drive". If an eye is missing the page and `/status` say which.
 
 ### How fast it responds
 
@@ -535,8 +543,7 @@ just talk to the robot. The details are in
 
 Open the board's address in a browser: a button for every expression, a
 talking test, a gaze pad, and live sensor readings. If an OLED did not
-respond it says which side — the usual cause is VCC/GND, both modules wired
-to the same bus, or an eye on the USB pins 19/20.
+respond it says which side — the usual cause is VCC/GND, or a loose SDA/SCL.
 
 No router, or a wrong WiFi password? After 25 seconds the board serves its own
 network: join **`iris-face`** with password **`iriscalib`** and open

@@ -371,6 +371,24 @@ class TestSensorNode:
         assert match.arguments.get("sensor") == sensor
 
 
+# ----------------------------------------------------- gas from the module's DO
+class TestGasWithoutALevel:
+    """The MQ-2's analog pin may sit on an ADC2 GPIO the S3 cannot read under
+    WiFi, so the board can report the module's own yes/no output alone."""
+
+    def test_alarm_without_a_level(self):
+        from iris.app.tools.devices.esp32 import DeviceSensorsTool
+        assert DeviceSensorsTool._summarize({"gas_do": True, "gas_alarm": True}, "gas") == "GAS ALARM."
+
+    def test_quiet_without_a_level(self):
+        from iris.app.tools.devices.esp32 import DeviceSensorsTool
+        assert DeviceSensorsTool._summarize({"gas_do": False, "gas_alarm": False}, "gas") == "no gas detected."
+
+    def test_a_level_still_reads_as_before(self):
+        from iris.app.tools.devices.esp32 import DeviceSensorsTool
+        assert DeviceSensorsTool._summarize({"gas_raw": 900, "gas_alarm": False}, "gas") == "gas level 900 (normal)."
+
+
 # ------------------------------------------------------ four distance sensors
 class TestFourDistances:
     def test_two_pairs_read_as_one_sentence(self):

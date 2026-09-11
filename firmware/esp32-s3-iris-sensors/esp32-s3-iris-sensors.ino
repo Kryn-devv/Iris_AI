@@ -43,13 +43,11 @@
  *    the moment it moves motion appearing, distance changing a lot
  *    immediately         flame or gas — IRIS says it out loud without asking
  *
- *  ── WIRING WARNINGS ────────────────────────────────────────────────────────
- *  ESP32-S3 pins are 3.3V and NOT 5V tolerant.
- *    HC-SR04 ECHO outputs 5V  -> divider: ECHO --[1k]--+--[2k]-- GND, tap +
- *                                (ALL FOUR of them — one divider each)
- *    MQ-2 AO can reach ~4V    -> same 1k/2k divider on AO
- *    PIR HC-SR501 out is 3.3V — direct. Flame module DO is 3.3V — direct.
- *    DHT11/DHT22 DATA is 3.3V — direct, and its VCC goes to 3.3V not 5V.
+ *  ── WIRING ─────────────────────────────────────────────────────────────────
+ *  ESP32-S3 pins are 3.3V and NOT 5V tolerant. This build runs EVERYTHING
+ *  from one 3.30 V buck converter, so no signal can exceed 3.3 V and no
+ *  divider is needed. Only if you ever feed a sensor 5 V does its output need
+ *  a 1k/2k divider before the pin (HC-SR04 ECHO, MQ-2 AO).
  *  Analog sensors must be on GPIO 1..10 (ADC1). GPIO 11..20 are ADC2, which
  *  stops working once WiFi is up and silently returns garbage; setup() warns.
  *
@@ -105,37 +103,61 @@ const bool CLOUD_TLS    = true;            /* false only on your own LAN     */
 const char* CLOUD_CA_CERT = "";
 const char* CLOUD_TOKEN = "";              /* must equal NODE_LINK_TOKEN     */
 
-/* ── the eyes ── two 0.96" SSD1306 OLEDs, one per I2C bus.
- * Both modules answer at 0x3C, and two devices cannot share one address on
- * one bus — so each eye gets its own bus. GPIO 19/20 are the S3's USB pins
- * and must not carry an eye. */
-const bool SHARED_BUS   = false;  /* true only if you moved one OLED to 0x3D */
-const int  PIN_L_SDA    = 15;     /* left eye  SDA                            */
-const int  PIN_L_SCL    = 16;     /* left eye  SCL                            */
-const int  PIN_R_SDA    = 17;     /* right eye SDA (ignored when SHARED_BUS)  */
-const int  PIN_R_SCL    = 18;     /* right eye SCL                            */
+/* ── the eyes ── two 0.96" SSD1306 OLEDs.
+ *
+ * TWIN_PANELS = true  : BOTH modules on ONE pair of wires (the same SDA and
+ *                       SCL). Every SSD1306 answers at 0x3C, so the two cannot
+ *                       be told apart and always show the SAME picture — which
+ *                       is a perfectly good pair of eyes. Only the wink is lost.
+ *                       No extra wiring. This is the default.
+ * TWIN_PANELS = false : two independent eyes. Give the right module its own
+ *                       bus on PIN_R_SDA / PIN_R_SCL (two more wires).
+ * SHARED_BUS  = true  : one bus, but you moved one module to 0x3D (solder
+ *                       jumper) — independent eyes on one pair of wires.
+ *
+ * GPIO 19/20 are also the S3's native-USB data pins. They work as I2C as long
+ * as you flash through the UART/COM port and leave the other USB port empty.
+ * If an eye there stays dark, move its two wires to 15/16. */
+const bool TWIN_PANELS  = true;
+const bool SHARED_BUS   = false;
+const int  PIN_L_SDA    = 20;     /* the bus both eyes are on                 */
+const int  PIN_L_SCL    = 21;
+const int  PIN_R_SDA    = 17;     /* right eye, only when TWIN_PANELS=false   */
+const int  PIN_R_SCL    = 18;
 const uint8_t OLED_ADDR_L = 0x3C;
 const uint8_t OLED_ADDR_R = 0x3C;  /* set to 0x3D when SHARED_BUS is true    */
 const uint32_t I2C_HZ   = 800000;  /* 400000 if an eye ever glitches         */
 const bool SWAP_EYES    = false;   /* true if left/right came out reversed   */
 
 /* ── the sensors ──  set a pin to -1 to disable one you have not wired ──
- * Analog inputs MUST be on GPIO 1..10 (ADC1); 11..20 stop working under WiFi. */
-/* Four HC-SR04, in this order: front-left, front-right, rear-left, rear-right.
- * Every ECHO goes through a 1k/2k divider — the pins are not 5 V tolerant. */
+ *
+ * POWER: everything, this board included, runs from ONE buck converter set to
+ * 3.30 V. Nothing on the robot ever makes more than 3.3 V, so NO resistor or
+ * divider is needed anywhere. (Dividers are only for a 5 V supply. Some
+ * HC-SR04 clones insist on 5 V and answer "no echo" at 3.3 V — the board's
+ * page shows that within a minute; the fix is 5 V plus a 1k/2k divider on
+ * each ECHO, or 3.3 V-rated modules.)
+ *
+ * ANALOG: only GPIO 1..10 can read a voltage while WiFi is on; 11..20 share
+ * their ADC with the radio and return garbage. That is a fact of the chip,
+ * not of this code. The MQ-2 AO (16), LDR (18) and flame AO (15) are on such
+ * pins, so they are off below; the modules' DIGITAL outputs carry the alarm
+ * instead. To get a gas LEVEL or a light PERCENT later, move that one wire to
+ * GPIO 2 (gas) / GPIO 1 (light) and put the number here. */
+/* Four HC-SR04, in this order: front-left, front-right, rear-left, rear-right. */
 const int PIN_US_TRIG[US_COUNT] = { 4,  6,  8, 10};
 const int PIN_US_ECHO[US_COUNT] = { 5,  7,  9, 11};
-const int PIN_DHT       = 12;     /* DHT22 DATA (digital), VCC on 3.3 V       */
+const int PIN_DHT       = 12;     /* DHT22 DATA (digital)                     */
 const uint8_t DHT_KIND  = DHT22;  /* DHT11 (blue) or DHT22 (white)            */
 const int PIN_PIR       = 13;     /* HC-SR501 OUT (digital)                   */
-const int PIN_FLAME     = 14;     /* flame module DO (digital)                */
-const int PIN_FLAME_ADC = 3;      /* flame module AO through divider, or -1   */
+const int PIN_FLAME     = 14;     /* flame module DO: fire yes/no             */
+const int PIN_FLAME_ADC = -1;     /* flame AO is on 15 (ADC2) — ignored       */
 const bool FLAME_ACTIVE_LOW = true;  /* most IR flame modules pull DO LOW     */
-const int PIN_GAS_ADC   = 2;      /* MQ-2 AO through divider  (ADC1: 1..10)   */
-const int PIN_GAS_DO    = -1;     /* MQ-2 DO, optional (e.g. 42), or -1       */
+const int PIN_GAS_ADC   = -1;     /* MQ-2 AO is on 16 (ADC2) — ignored; 2 to use it */
+const int PIN_GAS_DO    = 17;     /* MQ-2 DO: gas yes/no, from the module's pot */
 const bool GAS_DO_ACTIVE_LOW = true; /* MQ-2 modules pull DO LOW above the pot */
-const int GAS_ALARM_RAW = 1800;   /* watch /sensors in clean air, add ~800    */
-const int PIN_LDR_ADC   = 1;      /* LDR divider midpoint     (ADC1: 1..10)   */
+const int GAS_ALARM_RAW = 1800;   /* only used with PIN_GAS_ADC               */
+const int PIN_LDR_ADC   = -1;     /* LDR is on 18 (ADC2) — ignored; 1 to use it */
 
 /* ── the voice (I2S mic + I2S amplifier) ── all -1 = not fitted (the default).
  * If you add them later: mic SCK 38, WS 39, SD 40; amp BCLK 41, LRC 42, DIN 21. */
@@ -282,9 +304,10 @@ static String faceJson() {
   j += ",\"speaking\":" + String(face.speaking(now) ? "true" : "false");
   j += ",\"dozing\":" + String(face.dozing ? "true" : "false");
   j += ",\"look_x\":" + String(face.gazeX) + ",\"look_y\":" + String(face.gazeY);
-  j += ",\"eyes_ok\":" + String((eyeLeftOk && eyeRightOk) ? "true" : "false");
+  j += ",\"eyes_ok\":" + String((eyeLeftOk && (TWIN_PANELS || eyeRightOk)) ? "true" : "false");
+  j += ",\"twin_panels\":" + String(TWIN_PANELS ? "true" : "false");
   j += ",\"left_eye_ok\":" + String(eyeLeftOk ? "true" : "false");
-  j += ",\"right_eye_ok\":" + String(eyeRightOk ? "true" : "false");
+  j += ",\"right_eye_ok\":" + String((TWIN_PANELS ? eyeLeftOk : eyeRightOk) ? "true" : "false");
   j += ",\"fps\":" + String(fps);
   j += ",\"commands\":" + String(face.commandCount);
   j += "}";
@@ -498,14 +521,32 @@ static bool startEye(Adafruit_SSD1306& d, TwoWire& bus, uint8_t addr,
 
 static void startEyes() {
   Wire.begin(PIN_L_SDA, PIN_L_SCL, I2C_HZ);
-  if (!SHARED_BUS) Wire1.begin(PIN_R_SDA, PIN_R_SCL, I2C_HZ);
+  if (!SHARED_BUS && !TWIN_PANELS) Wire1.begin(PIN_R_SDA, PIN_R_SCL, I2C_HZ);
+
+  if (PIN_L_SDA == 19 || PIN_L_SDA == 20 || PIN_L_SCL == 19 || PIN_L_SCL == 20) {
+    Serial.println("  [eyes] the eye bus uses GPIO 19/20, the native-USB pins: flash");
+    Serial.println("         and monitor through the UART/COM port, leave the other");
+    Serial.println("         USB socket empty. Dark eyes there => move them to 15/16.");
+  }
+  eyeLeftOk = startEye(eyeLeft, Wire, OLED_ADDR_L, PIN_L_SDA, PIN_L_SCL, "left");
+
+  if (TWIN_PANELS) {
+    /* Both modules hang on this one bus at 0x3C, so every frame written to
+     * the "left" display lands on both panels. Nothing to start for the right. */
+    eyeRightOk = false;
+    Serial.printf("  [eyes] twin panels: both OLEDs on SDA %d / SCL %d show the same eye\n",
+                  PIN_L_SDA, PIN_L_SCL);
+    if (!eyeLeftOk) {
+      Serial.println("  [eyes] no OLED answered. Check VCC (3.3 V), GND, SDA, SCL.");
+    }
+    return;
+  }
 
   if (!SHARED_BUS && PIN_R_SDA == PIN_L_SDA && PIN_R_SCL == PIN_L_SCL) {
-    Serial.println("  [eyes] both eyes are on the SAME pins with SHARED_BUS=false —");
-    Serial.println("         two 0x3C modules on one bus cannot both work. Give the");
-    Serial.println("         right eye its own SDA/SCL, or set SHARED_BUS=true with 0x3D.");
+    Serial.println("  [eyes] both eyes are on the SAME pins with TWIN_PANELS=false —");
+    Serial.println("         set TWIN_PANELS=true for that wiring, or give the right");
+    Serial.println("         eye its own SDA/SCL.");
   }
-  eyeLeftOk  = startEye(eyeLeft, Wire, OLED_ADDR_L, PIN_L_SDA, PIN_L_SCL, "left");
   eyeRightOk = SHARED_BUS
       ? startEye(eyeRight, Wire, OLED_ADDR_R, PIN_L_SDA, PIN_L_SCL, "right")
       : startEye(eyeRight, Wire1, OLED_ADDR_L, PIN_R_SDA, PIN_R_SCL, "right");
@@ -519,6 +560,22 @@ static void startEyes() {
 }
 
 static void drawFace(const EyePose& left, const EyePose& right) {
+  if (TWIN_PANELS) {
+    if (!eyeLeftOk) return;
+    /* One picture for two panels, so it has to look right on both: the
+     * right eye's pose (the open one during a wink), brows made symmetric
+     * so an angry slant does not read as "one angry, one sad" when the same
+     * frame appears on the other side. */
+    EyePose p = right;
+    const int16_t brow = (int16_t)((p.browIn + p.browOut) / 2);
+    p.browIn = brow;
+    p.browOut = brow;
+    eyeLeft.clearDisplay();
+    drawEye(eyeLeft, p, true);
+    eyeLeft.display();
+    fast.pump();
+    return;
+  }
   Adafruit_SSD1306& lDisp = SWAP_EYES ? eyeRight : eyeLeft;
   Adafruit_SSD1306& rDisp = SWAP_EYES ? eyeLeft  : eyeRight;
   const bool lOk = SWAP_EYES ? eyeRightOk : eyeLeftOk;

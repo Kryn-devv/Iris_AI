@@ -396,11 +396,14 @@ class DeviceSensorsTool(BaseTool):
         # after the light level.
         if sensor in ("all", "flame") and "flame" in data:
             parts.append("FIRE DETECTED" if data.get("flame") else "no flame")
-        if sensor in ("all", "gas") and "gas_raw" in data:
+        if sensor in ("all", "gas") and ("gas_raw" in data or "gas_alarm" in data):
+            level = data.get("gas_raw")
             if data.get("gas_alarm"):
-                parts.append(f"GAS ALARM — level {data['gas_raw']}")
+                parts.append(f"GAS ALARM — level {level}" if level is not None else "GAS ALARM")
+            elif level is not None:
+                parts.append(f"gas level {level} (normal)")
             else:
-                parts.append(f"gas level {data['gas_raw']} (normal)")
+                parts.append("no gas detected")     # the module's yes/no output only
         if sensor in ("all", "motion") and "motion_recent" in data:
             parts.append(
                 "Motion detected" if data.get("motion") or data.get("motion_recent")

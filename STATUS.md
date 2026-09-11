@@ -76,6 +76,16 @@ piece.
   fact died with the process. Memory now lives in the SQLite database and is
   read back at boot.
 
+- **The S3 board flashes onto the wiring as it is.** Every default pin in
+  `firmware/esp32-s3-iris-sensors` is the robot's actual wire: four
+  ultrasonics on 4–11, DHT22 on 12, PIR 13, flame DO 14, MQ-2 DO 17, both
+  OLEDs on 20/21 showing the same eye. Nothing to move, no resistors — the
+  whole robot runs from the one 3.30 V buck, so no signal can exceed 3.3 V.
+  The three analog wires on 15/16/18 are ignored (those pins cannot read a
+  voltage while WiFi is on); gas and fire come from the modules' digital
+  outputs. One wire each to GPIO 2 / GPIO 1 buys a gas level and a light
+  percent later.
+
 ## Retired
 
 - **The relay node.** The 4-channel relay board, its firmware
