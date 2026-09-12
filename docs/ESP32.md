@@ -426,9 +426,34 @@ and `distance_rear_cm` (nearest behind).
 so climate is sampled every 2.5 s and the last good value is cached in
 between. `DHT_KIND` is `DHT22` (white module); set `DHT11` for the blue one.
 
-### The eyes — two 0.96" OLEDs on one pair of wires
+### The eyes — two OLEDs on one pair of wires
 
-Every SSD1306 module answers at I2C address **0x3C**. With both wired to the
+**Which chip is inside your modules?** The firmware has one switch for it, at
+the top of the sketch:
+
+```cpp
+#define EYE_CHIP_SH1106 1   // 1 = SH1106 (the bigger 1.02" / 1.3" modules)
+                            // 0 = SSD1306 (the classic 0.96")
+```
+
+The 0.96" modules are SSD1306. The slightly bigger ones — sold as 1.02", 1.1",
+1.2" or 1.3" — are almost always **SH1106**, a different controller that the
+SSD1306 driver cannot talk to: the module answers on the bus but stays blank,
+or shows the picture shifted two pixels and wrapping at the edge. Set the
+switch to match, install the matching library in the Arduino Library Manager
+(**Adafruit SH110X** for SH1106, **Adafruit SSD1306** for the 0.96", plus
+**Adafruit GFX Library** for either) and flash. Nothing else changes: the eye
+drawing is written against the shared graphics interface, and the boot log
+tells you which chip it is driving (`driven as SH1106`). If a module answers
+but "would not initialise", the switch is set for the wrong chip.
+
+**Check the pin order before plugging the new modules in.** The bigger
+modules often have their pins in a different order from the 0.96" ones —
+commonly **GND · VCC · SCL · SDA** instead of **VCC · GND · SCL · SDA**. Read the
+labels printed next to the pins, not the position; swapping VCC and GND kills
+a module instantly.
+
+Every module answers at I2C address **0x3C**. With both wired to the
 same SDA/SCL the board cannot tell them apart, so they always show the **same
 picture** — and two identical eyes are a perfectly good pair of eyes. That is
 the firmware's default (`TWIN_PANELS = true`): both modules on **SDA 20 /

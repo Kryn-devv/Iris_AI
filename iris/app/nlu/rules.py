@@ -774,10 +774,12 @@ RULES: list[Rule] = [
         intent="devices",
         tool="camera_watch",
         pattern=_rx(
-            r"^(?:(?:start|begin|keep|resume)\s+watching(?:\s+(?:the\s+)?(?:camera|door|room|for\s+me))?"
-            r"|(?:watch|guard)\s+(?:the\s+)?(?:camera|door|room)"
-            r"|keep\s+(?:an\s+)?(?:eye|watch)\s+(?:out|on\s+(?:the\s+)?(?:door|room))"
-            r"|(?:greet|recognise|recognize)\s+(?:me|people)\s+(?:automatically|when\s+you\s+see\s+(?:me|them))"
+            r"^(?:(?:start|begin|keep|resume)\s+watching"
+            r"(?:\s+(?:the\s+)?(?:camera|door|room|house|me|for\s+(?:me|people|faces)))?"
+            r"|(?:watch|guard)\s+(?:the\s+)?(?:camera|door|room|house)"
+            r"|keep\s+(?:an\s+)?(?:eye|watch)\s+(?:out|on\s+(?:the\s+)?(?:door|room|house|camera))"
+            r"|(?:start\s+)?(?:greet|recognise|recognize)(?:ing)?\s+(?:me|people)"
+            r"(?:\s+(?:automatically|when\s+you\s+see\s+(?:me|them)))?"
             r"|camera\s+watch\s+on"
             r"|dekhte\s+raho"
             r"|nazar\s+rakho)$"

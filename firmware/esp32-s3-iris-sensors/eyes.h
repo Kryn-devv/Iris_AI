@@ -1,6 +1,6 @@
 /*
  * ============================================================================
- *  IRIS ROBOT EYES  —  two 0.96"/0.98" SSD1306 OLEDs, 128x64, one per eye
+ *  IRIS ROBOT EYES  —  two 128x64 OLEDs (SH1106 1.3" or SSD1306 0.96"), one per eye
  * ============================================================================
  *
  *  WHY IT LOOKS ALIVE
@@ -31,7 +31,8 @@
 
 #include <Arduino.h>
 
-/* The colour constants come from Adafruit_SSD1306.h. Defined here as a
+/* The colour constants come from the panel library (SSD1306_WHITE; the SH110X
+ * library's SH110X_WHITE is the same value). Defined here as a
  * fallback so this header does not silently depend on include order — and so
  * the geometry can be compiled and tested without the display driver. */
 #ifndef SSD1306_WHITE

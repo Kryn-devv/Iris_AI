@@ -11,7 +11,7 @@
  *  network. One brain, many bodies.
  *
  *  WHAT THIS BOARD DOES
- *    - two 128x64 SSD1306 OLEDs as expressive eyes (14 emotions, blinking,
+ *    - two 128x64 OLED eyes, SH1106 (1.3") or SSD1306 (0.96") — 14 emotions, blinking,
  *      idle glances, breathing, and a bounce while IRIS speaks)
  *    - FOUR HC-SR04 distance sensors (two ahead, two behind), PIR motion,
  *      MQ-2 gas, LDR light, flame, DHT22 temperature and humidity
@@ -71,7 +71,27 @@
 #include <ESPmDNS.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
+
+/* ── WHICH CHIP IS INSIDE THE EYE MODULES ──────────────────────────────────
+ * 0.96" modules are SSD1306. The slightly bigger ones — sold as 1.02", 1.1",
+ * 1.2" or 1.3" — are almost always SH1106, which speaks a different dialect:
+ * driven as an SSD1306 it answers on the bus but stays blank, or shows the
+ * picture shifted two pixels and wrapping at the edge.
+ *   1 = SH1106  (Library Manager: "Adafruit SH110X" by Adafruit)
+ *   0 = SSD1306 (Library Manager: "Adafruit SSD1306")
+ * Both also need "Adafruit GFX Library". Nothing else in this file changes:
+ * the eye drawing is written against the shared GFX interface. */
+#define EYE_CHIP_SH1106 1
+
+#if EYE_CHIP_SH1106
+#include <Adafruit_SH110X.h>
+typedef Adafruit_SH1106G EyePanel;
+#define EYE_CHIP_NAME "SH1106"
+#else
 #include <Adafruit_SSD1306.h>
+typedef Adafruit_SSD1306 EyePanel;
+#define EYE_CHIP_NAME "SSD1306"
+#endif
 #if defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32S2)
 #include "soc/usb_serial_jtag_reg.h"   /* to take GPIO 19/20 back from the USB PHY */
 #endif
@@ -106,10 +126,10 @@ const bool CLOUD_TLS    = true;            /* false only on your own LAN     */
 const char* CLOUD_CA_CERT = "";
 const char* CLOUD_TOKEN = "";              /* must equal NODE_LINK_TOKEN     */
 
-/* ── the eyes ── two 0.96" SSD1306 OLEDs.
+/* ── the eyes ── two 128x64 OLEDs (chip chosen by EYE_CHIP_SH1106 above).
  *
  * TWIN_PANELS = true  : BOTH modules on ONE pair of wires (the same SDA and
- *                       SCL). Every SSD1306 answers at 0x3C, so the two cannot
+ *                       SCL). Every module answers at 0x3C, so the two cannot
  *                       be told apart and always show the SAME picture — which
  *                       is a perfectly good pair of eyes. Only the wink is lost.
  *                       No extra wiring. This is the default.
@@ -130,7 +150,11 @@ const int  PIN_R_SDA    = 38;     /* right eye, only when TWIN_PANELS=false   */
 const int  PIN_R_SCL    = 39;     /* (17/18 are taken by the MQ-2 DO and LDR) */
 const uint8_t OLED_ADDR_L = 0x3C;
 const uint8_t OLED_ADDR_R = 0x3C;  /* set to 0x3D when SHARED_BUS is true    */
+#if EYE_CHIP_SH1106
+const uint32_t I2C_HZ   = 400000;  /* the SH1106 is rated to 400 kHz          */
+#else
 const uint32_t I2C_HZ   = 800000;  /* 400000 if an eye ever glitches         */
+#endif
 const bool SWAP_EYES    = false;   /* true if left/right came out reversed   */
 
 /* ── the sensors ──  set a pin to -1 to disable one you have not wired ──
@@ -179,8 +203,16 @@ const uint8_t MIC_GAIN  = 4;      /* raise if IRIS mishears, lower if it clips *
 /* ══════════════════════════ STATE ══════════════════════════ */
 
 WebServer server(80);
-Adafruit_SSD1306 eyeLeft(EYE_W, EYE_H, &Wire, -1);
-Adafruit_SSD1306 eyeRight(EYE_W, EYE_H, SHARED_BUS ? &Wire : &Wire1, -1);
+#if EYE_CHIP_SH1106
+/* The SH110X driver sets the bus clock itself around every frame (the last
+ * two arguments: during the transfer, and afterwards). Both at I2C_HZ so the
+ * bus never drops to the library's 100 kHz default between frames. */
+EyePanel eyeLeft(EYE_W, EYE_H, &Wire, -1, I2C_HZ, I2C_HZ);
+EyePanel eyeRight(EYE_W, EYE_H, SHARED_BUS ? &Wire : &Wire1, -1, I2C_HZ, I2C_HZ);
+#else
+EyePanel eyeLeft(EYE_W, EYE_H, &Wire, -1);
+EyePanel eyeRight(EYE_W, EYE_H, SHARED_BUS ? &Wire : &Wire1, -1);
+#endif
 FaceAnimator face;
 Sensors sensors;
 CloudLink cloud;
@@ -495,7 +527,19 @@ static void scanBus(TwoWire& bus, const char* label) {
   Serial.println(found ? "" : " nothing answered — check VCC, GND, SDA, SCL");
 }
 
-static bool startEye(Adafruit_SSD1306& d, TwoWire& bus, uint8_t addr,
+/* One place that knows the two libraries' different begin() calls. Both are
+ * told NOT to re-run Wire.begin(): the bus is already up on OUR pins. (The
+ * SH110X driver does call it, but the ESP32 core keeps the pins it was last
+ * given when begin() comes with none, so that is harmless.) */
+static bool panelBegin(EyePanel& d, uint8_t addr) {
+#if EYE_CHIP_SH1106
+  return d.begin(addr, true);
+#else
+  return d.begin(SSD1306_SWITCHCAPVCC, addr, true, false);
+#endif
+}
+
+static bool startEye(EyePanel& d, TwoWire& bus, uint8_t addr,
                      int sda, int scl, const char* label) {
   const uint8_t other = (addr == 0x3C) ? 0x3D : 0x3C;
   const uint8_t tries[2] = {addr, other};
@@ -504,18 +548,18 @@ static bool startEye(Adafruit_SSD1306& d, TwoWire& bus, uint8_t addr,
     bus.setClock(clocks[c]);
     for (uint8_t t = 0; t < 2; t++) {
       if (!busAnswers(bus, tries[t])) continue;
-      /* periphBegin=false: the bus is already up on OUR pins, and letting the
-       * library call Wire.begin() again would reset it to the default pins. */
-      if (d.begin(SSD1306_SWITCHCAPVCC, tries[t], true, false)) {
+      if (panelBegin(d, tries[t])) {
         d.clearDisplay();
         d.display();
-        Serial.printf("  [eyes] %s OLED ok at 0x%02X on SDA %d / SCL %d (%lu kHz)\n",
-                      label, tries[t], sda, scl, (unsigned long)(clocks[c] / 1000));
+        Serial.printf("  [eyes] %s OLED ok at 0x%02X on SDA %d / SCL %d (%lu kHz, driven as %s)\n",
+                      label, tries[t], sda, scl, (unsigned long)(clocks[c] / 1000),
+                      EYE_CHIP_NAME);
         return true;
       }
-      Serial.printf("  [eyes] %s: 0x%02X answered but would not initialise —\n"
-                    "         a 1.3\" SH1106 module? this firmware drives SSD1306\n",
-                    label, tries[t]);
+      Serial.printf("  [eyes] %s: 0x%02X answered but would not initialise as %s —\n"
+                    "         wrong chip? 0.96\" = SSD1306 (EYE_CHIP_SH1106 0),\n"
+                    "         1.02\"/1.3\" = SH1106 (EYE_CHIP_SH1106 1)\n",
+                    label, tries[t], EYE_CHIP_NAME);
     }
   }
   Serial.printf("  [eyes] %s OLED did NOT answer on SDA %d / SCL %d\n", label, sda, scl);
@@ -600,8 +644,8 @@ static void drawFace(const EyePose& left, const EyePose& right) {
     fast.pump();
     return;
   }
-  Adafruit_SSD1306& lDisp = SWAP_EYES ? eyeRight : eyeLeft;
-  Adafruit_SSD1306& rDisp = SWAP_EYES ? eyeLeft  : eyeRight;
+  EyePanel& lDisp = SWAP_EYES ? eyeRight : eyeLeft;
+  EyePanel& rDisp = SWAP_EYES ? eyeLeft  : eyeRight;
   const bool lOk = SWAP_EYES ? eyeRightOk : eyeLeftOk;
   const bool rOk = SWAP_EYES ? eyeLeftOk  : eyeRightOk;
 

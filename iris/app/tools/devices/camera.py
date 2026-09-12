@@ -98,6 +98,24 @@ def faces_path() -> Path:
     return paths.data_dir() / FACES_FILENAME
 
 
+_shared_store: Optional[FaceStore] = None
+
+
+def default_face_store() -> FaceStore:
+    """The one FaceStore every camera tool and the watcher share.
+
+    A FaceStore reads its file once, when it is created. If each tool and the
+    watch service built their own, "remember my face as X" would write through
+    one copy while "who am I" and the greeter kept matching against another —
+    a new person would go unrecognised until IRIS restarted. One instance per
+    process, created on first use so importing this module touches no disk.
+    """
+    global _shared_store
+    if _shared_store is None:
+        _shared_store = FaceStore(faces_path())
+    return _shared_store
+
+
 async def _lan_get_bytes(url: str, params: Optional[Dict[str, Any]] = None) -> bytes:
     """GET a binary body from a device.
 
@@ -247,7 +265,7 @@ class _CameraToolBase(BaseTool):
     @property
     def store(self) -> FaceStore:
         if self._store is None:
-            self._store = FaceStore(faces_path())
+            self._store = default_face_store()
         return self._store
 
     def _recognizer(self, need_embeddings: bool = True) -> FaceRecognizer:
@@ -779,7 +797,10 @@ class CameraWatchTool(_CameraToolBase):
                     abilities.append("mention strangers")
                 if settings.CAMERA_WATCH_OBJECTS and settings.VISION_MODEL:
                     abilities.append("name anything placed in front of me")
-                speech = f"I'm watching. I'll {', '.join(abilities[:-1])} and {abilities[-1]}."
+                if len(abilities) == 1:
+                    speech = f"I'm watching. I'll {abilities[0]}."
+                else:
+                    speech = f"I'm watching. I'll {', '.join(abilities[:-1])} and {abilities[-1]}."
                 if settings.CAMERA_WATCH_OBJECTS and not settings.VISION_MODEL:
                     speech += " I can't name objects until VISION_MODEL is set in .env."
         elif action == "off":

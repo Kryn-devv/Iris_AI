@@ -319,9 +319,11 @@ class CameraWatchService:
     @property
     def store(self) -> FaceStore:
         if self._store is None:
-            from iris.app.tools.devices.camera import faces_path
+            # The same instance the camera tools use, so a face learned with
+            # "remember my face" is greeted on the very next sighting.
+            from iris.app.tools.devices.camera import default_face_store
 
-            self._store = FaceStore(faces_path())
+            self._store = default_face_store()
         return self._store
 
     def _default_recognizer(self) -> Optional[FaceRecognizer]:

@@ -335,6 +335,14 @@ class TestWatchTool:
         res = await tool.execute(action="on")
         assert "VISION_MODEL" in res.result["speech"]
 
+    async def test_on_with_a_single_ability_reads_as_a_sentence(self, registry, world, monkeypatch):
+        monkeypatch.setattr("iris.app.core.config.settings.VISION_MODEL", None)
+        monkeypatch.setattr("iris.app.core.config.settings.CAMERA_ANNOUNCE_STRANGERS", False)
+        tool = CameraWatchTool(registry, store=world["store"], service=world["service"])
+        res = await tool.execute(action="on")
+        assert res.result["speech"].startswith("I'm watching. I'll greet the people I know.")
+        assert "  " not in res.result["speech"] and " and ." not in res.result["speech"]
+
     async def test_a_bad_action_is_refused(self, registry, world):
         tool = CameraWatchTool(registry, store=world["store"], service=world["service"])
         res = await tool.execute(action="maybe")
@@ -343,6 +351,8 @@ class TestWatchTool:
 
 WATCH_CASES = [
     ("start watching", "on"), ("stop watching", "off"), ("stop watching the camera", "off"),
+    ("start watching me", "on"), ("start watching the house", "on"), ("start watching for people", "on"),
+    ("start greeting people", "on"), ("greet me", "on"), ("keep an eye on the camera", "on"),
     ("keep an eye out", "on"), ("watch the door", "on"), ("are you watching?", "status"),
     ("pause watching", "off"), ("greet me automatically", "on"), ("dekhte raho", "on"),
     ("dekhna band karo", "off"), ("what have you seen so far", "status"),
@@ -370,3 +380,20 @@ class TestWatchRouting:
     def test_the_rules_exist_once(self):
         names = [r.name for r in RULES if r.name.startswith("camera_watch")]
         assert sorted(names) == ["camera_watch_off", "camera_watch_on", "camera_watch_status"]
+
+
+class TestSharedStore:
+    """A face learned through the tool must be greeted by the watcher without a
+    restart: both must be looking at the same FaceStore."""
+
+    def test_tools_and_watcher_share_one_store(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(camera_mod, "_shared_store", None)
+        monkeypatch.setattr(camera_mod, "faces_path", lambda: tmp_path / "faces.json")
+        from iris.app.tools.devices.camera import CameraRememberFaceTool, CameraWhoTool
+
+        remember = CameraRememberFaceTool()
+        who = CameraWhoTool()
+        watcher = CameraWatchService()
+        assert remember.store is who.store is watcher.store
+        remember.store.enroll("Prakash", (1.0, 0.0), backend="fake", metric="euclidean", now=1.0, owner=True)
+        assert watcher.store.owner().name == "Prakash"
