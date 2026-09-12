@@ -583,6 +583,43 @@ async def test_wikipedia_404_falls_back_to_opensearch():
     assert "/w/api.php" in calls
 
 
+async def test_wikipedia_403_falls_back_to_duckduckgo_copy():
+    """Wikimedia refuses some networks with a 403 robot-policy notice; the
+    answer is still there in DuckDuckGo's republished abstract."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "en.wikipedia.org":
+            return httpx.Response(403, text="Please respect our robot policy")
+        if request.url.host == "api.duckduckgo.com":
+            assert request.url.params["q"] == "Elon Musk"
+            return httpx.Response(200, json={
+                "Heading": "Elon Musk", "AbstractSource": "Wikipedia",
+                "AbstractText": "Elon Reeve Musk is a businessman. He runs Tesla and SpaceX. Third sentence.",
+                "AbstractURL": "https://en.wikipedia.org/wiki/Elon_Musk",
+            })
+        raise AssertionError(f"unexpected host {request.url.host}")
+
+    tool = WikipediaTool()
+    tool.transport = httpx.MockTransport(handler)
+    res = await tool.execute(topic="Elon Musk", sentences=2)
+    assert res.success is True, res.error
+    assert res.result["title"] == "Elon Musk"
+    assert res.result["via_duckduckgo"] is True
+    assert res.result["extract"] == "Elon Reeve Musk is a businessman. He runs Tesla and SpaceX."
+    assert res.result["url"] == "https://en.wikipedia.org/wiki/Elon_Musk"
+
+
+async def test_wikipedia_403_with_no_duckduckgo_copy_still_says_so():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "en.wikipedia.org":
+            return httpx.Response(403, text="nope")
+        return httpx.Response(200, json={"Heading": "", "AbstractText": ""})
+
+    tool = WikipediaTool()
+    tool.transport = httpx.MockTransport(handler)
+    res = await tool.execute(topic="zzz")
+    assert res.success is False and "Wikipedia lookup failed" in res.error
+
+
 async def test_wikipedia_not_found_anywhere():
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.startswith("/api/rest_v1/"):

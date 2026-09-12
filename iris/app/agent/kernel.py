@@ -585,6 +585,10 @@ class AgentKernel:
                                 "id": tc.get("id") or f"call_{uuid.uuid4().hex[:8]}",
                                 "type": "function",
                                 "function": tc.get("function", {}),
+                                # Gemini's thought signature travels in here
+                                # and must come back with the same call.
+                                **({"extra_content": tc["extra_content"]}
+                                   if isinstance(tc.get("extra_content"), dict) else {}),
                             }
                             for tc in llm_res.tool_calls
                         ],

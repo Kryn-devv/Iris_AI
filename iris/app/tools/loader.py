@@ -52,6 +52,7 @@ TOOL_MODULES: tuple[str, ...] = (
     "iris.app.tools.devices.esp32",
     "iris.app.tools.devices.face",
     "iris.app.tools.devices.camera",
+    "iris.app.tools.devices.navigate",
     # Desktop shell
     "iris.app.desktop.tools",
     # Voice

@@ -56,6 +56,71 @@ async def test_generate_extracts_tool_calls():
     await provider.close()
 
 
+SIGNED_CALL = {
+    "id": "c1", "type": "function",
+    "function": {"name": "lookup", "arguments": "{}"},
+    "extra_content": {"google": {"thought_signature": "sig-abc"}},
+}
+
+
+async def test_tool_call_extra_content_is_kept():
+    """Gemini's thought signature rides on the tool call; dropping it here is
+    what turns the very next request into an HTTP 400."""
+    provider = make_provider(lambda req: ok_completion("", tool_calls=[SIGNED_CALL]))
+    res = await provider.generate("go", tools=[{"type": "function"}])
+    assert res.tool_calls[0]["extra_content"] == {"google": {"thought_signature": "sig-abc"}}
+    await provider.close()
+
+
+async def test_gemini_replays_signatures_and_fills_missing_ones():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content.decode())
+        return ok_completion("done")
+
+    provider = CloudLLMProvider(
+        provider_name="gemini",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        api_key="k", default_model="gemini-flash-latest",
+    )
+    provider._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    history = [
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "content": None, "tool_calls": [
+            SIGNED_CALL,
+            {"id": "c2", "type": "function", "function": {"name": "other", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "c1", "content": "1"},
+        {"role": "tool", "tool_call_id": "c2", "content": "2"},
+    ]
+    await provider.generate("", messages=history)
+    calls = seen["body"]["messages"][1]["tool_calls"]
+    assert calls[0]["extra_content"] == {"google": {"thought_signature": "sig-abc"}}
+    assert calls[1]["extra_content"] == {"google": {"thought_signature": "skip_thought_signature_validator"}}
+    # the caller's history object was not rewritten
+    assert "extra_content" not in history[1]["tool_calls"][1]
+    await provider.close()
+
+
+async def test_other_providers_never_see_googles_extension():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content.decode())
+        return ok_completion("done")
+
+    provider = make_provider(handler, name="groq")
+    history = [
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "content": None, "tool_calls": [SIGNED_CALL]},
+        {"role": "tool", "tool_call_id": "c1", "content": "1"},
+    ]
+    await provider.generate("", messages=history)
+    assert "extra_content" not in seen["body"]["messages"][1]["tool_calls"][0]
+    await provider.close()
+
+
 async def test_http_429_is_retryable_error():
     provider = make_provider(lambda req: httpx.Response(429, json={"error": "rate limited"}))
     with pytest.raises(LLMProviderError) as err:

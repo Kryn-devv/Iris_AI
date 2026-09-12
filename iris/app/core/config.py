@@ -227,6 +227,20 @@ class Settings(BaseSettings):
     #: Speak a warning out loud the moment a node reports flame or gas.
     NODE_ALERTS_SPOKEN: bool = True
 
+    # ------------------------------------------------------------ robot body
+    #: How fast the robot really drives at ROBOT_CRUISE_SPEED and spins at
+    #: ROBOT_TURN_SPEED. No encoders on this robot, so "two metres" and "a
+    #: U-turn" are timed from these. Calibrate by saying "one metre takes 3
+    #: seconds" or "a U-turn takes 2 seconds" — saved, no editing needed.
+    ROBOT_CM_PER_S: float = 35.0
+    ROBOT_DEG_PER_S: float = 110.0
+    ROBOT_CRUISE_SPEED: int = 200
+    ROBOT_TURN_SPEED: int = 190
+    #: While driving, stop when the ultrasonics see something this close (cm).
+    ROBOT_OBSTACLE_STOP_CM: int = 35
+    #: No single leg runs longer than this, whatever the numbers say.
+    ROBOT_MAX_LEG_S: float = 30.0
+
     # ---------------------------------------------------------------- camera
     #: Let the camera act on its own: greet people it recognises when they
     #: appear, mention strangers, name objects set down in front of it. Cheap
@@ -263,7 +277,9 @@ class Settings(BaseSettings):
     WEB_SEARCH_PROVIDER: str = "duckduckgo"   # duckduckgo | searx | wikipedia
     SEARX_BASE_URL: str = "https://searx.be"
     WEB_FETCH_MAX_BYTES: int = 1_500_000
-    WEB_USER_AGENT: str = "Mozilla/5.0 (compatible; IrisAssistant/1.0)"
+    #: Descriptive, with a contact URL, as Wikimedia's user-agent policy requires
+    #: — a "Mozilla/5.0 (compatible; ...)" string is refused with HTTP 403 there.
+    WEB_USER_AGENT: str = "IrisAssistant/1.0 (+https://github.com/Kryn-devv/Iris_AI) python-httpx"
     WEATHER_UNITS: str = "metric"
     DEFAULT_LOCATION: str = ""
     NEWS_FEEDS: List[str] = Field(

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Optional
 
 from iris.app.core.logging import get_logger
 from iris.app.core.security import PermissionLevel
@@ -244,6 +244,66 @@ class SetRoutineTool(BaseTool):
         }
 
 
+class ScheduleCommandTool(BaseTool):
+    """Run any IRIS command later — "in 10 minutes take a U-turn and come back"."""
+
+    name = "schedule_command"
+    description = (
+        "Run an IRIS command at a later time, exactly as if it were said then: "
+        "'in 10 minutes go back to the board', 'at 3 pm turn the robot around'. "
+        "Use for delayed robot moves or any other command; use set_reminder for messages."
+    )
+    permission_level = PermissionLevel.LOW_RISK_ACTION
+    category = ToolCategory.AUTOMATION
+    aliases = ("do_later", "run_later", "delayed_command")
+    mutating = True
+    examples = (
+        ToolExample(utterance="in 10 minutes take a U-turn and go back to the board",
+                    arguments={"command": "take a U-turn and go back to the board", "in_seconds": 600}),
+        ToolExample(utterance="at 3 pm robot forward",
+                    arguments={"command": "robot forward", "at_time": "15:00"}),
+    )
+    input_schema = ToolParameterSchema(
+        properties={
+            "command": {"type": "string", "description": "The command to run, in the user's words."},
+            "in_seconds": {"type": "integer", "minimum": 1},
+            "at_time": {"type": "string", "description": "HH:MM 24h, alternative to in_seconds"},
+        },
+        required=["command"],
+    )
+
+    async def _run(
+        self, command: str, in_seconds: Optional[int] = None, at_time: Optional[str] = None, **_: Any
+    ) -> dict[str, Any]:
+        command = (command or "").strip(" .")
+        if not command:
+            raise ToolError("Tell me what to do later.", speech="What should I do then?")
+        if in_seconds:
+            due_at = datetime.now() + timedelta(seconds=int(in_seconds))
+            when = _human_seconds(int(in_seconds))
+        elif at_time:
+            try:
+                due_at = parse_at_time(at_time)
+            except ValueError as exc:
+                raise ToolError(str(exc)) from exc
+            when = f"at {due_at.strftime('%H:%M')}"
+        else:
+            raise ToolError("Say when: 'in 10 minutes' or 'at 3 pm'.", speech="When should I do it?")
+        record = await default_scheduler_service.add(text=command, due_at=due_at, kind="command")
+        speech = f"Okay — {when} I'll {command}."
+        return {"scheduled": record, "speech": speech, "display": speech}
+
+
+def _human_seconds(seconds: int) -> str:
+    if seconds % 3600 == 0:
+        n = seconds // 3600
+        return f"in {n} hour{'s' if n != 1 else ''}"
+    if seconds % 60 == 0:
+        n = seconds // 60
+        return f"in {n} minute{'s' if n != 1 else ''}"
+    return f"in {seconds} seconds"
+
+
 def get_tools() -> list[BaseTool]:
     return [
         SetReminderTool(),
@@ -251,4 +311,5 @@ def get_tools() -> list[BaseTool]:
         ListRemindersTool(),
         CancelReminderTool(),
         SetRoutineTool(),
+        ScheduleCommandTool(),
     ]

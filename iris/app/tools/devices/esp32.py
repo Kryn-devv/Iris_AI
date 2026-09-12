@@ -242,6 +242,12 @@ class DeviceMotorTool(BaseTool):
         action = str(action).strip().lower()
         if action not in _MOTOR_ACTIONS:
             raise ToolError(f"Motor action must be one of {', '.join(_MOTOR_ACTIONS)}.")
+        if action == "stop":
+            # A plan in flight ("go back to the board") must give up too, not
+            # carry on with its next leg after the wheels were told to stop.
+            from iris.app.tools.devices.navigate import request_stop
+
+            request_stop()
 
         # A name that was given but is unknown is a different problem from
         # having no robot at all, and gets the message that names the fix.

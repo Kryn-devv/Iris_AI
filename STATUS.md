@@ -86,6 +86,11 @@ piece.
   outputs. One wire each to GPIO 2 / GPIO 1 buys a gas level and a light
   percent later.
 
+- **The robot goes places on its own.** `tools/devices/navigate.py`: turn by
+  angle, drive a distance, drive until the ultrasonics see the target, plans
+  of several legs, obstacle stop while moving, "stop" aborts, calibration by
+  voice. `schedule_command` runs any command later ("in 10 minutes go back to
+  the board"). Phrases in `rules.py` (robot_uturn, robot_come_back, …).
 - **The camera watches on its own.** `services/camera_watch.py` polls the
   camera's motion detector once a second, greets recognised people by name
   when they appear (once per five minutes), mentions strangers, names an
