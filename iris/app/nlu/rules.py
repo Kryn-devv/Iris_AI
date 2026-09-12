@@ -770,6 +770,50 @@ RULES: list[Rule] = [
         confidence=0.95,
     ),
     Rule(
+        name="camera_watch_on",
+        intent="devices",
+        tool="camera_watch",
+        pattern=_rx(
+            r"^(?:(?:start|begin|keep|resume)\s+watching(?:\s+(?:the\s+)?(?:camera|door|room|for\s+me))?"
+            r"|(?:watch|guard)\s+(?:the\s+)?(?:camera|door|room)"
+            r"|keep\s+(?:an\s+)?(?:eye|watch)\s+(?:out|on\s+(?:the\s+)?(?:door|room))"
+            r"|(?:greet|recognise|recognize)\s+(?:me|people)\s+(?:automatically|when\s+you\s+see\s+(?:me|them))"
+            r"|camera\s+watch\s+on"
+            r"|dekhte\s+raho"
+            r"|nazar\s+rakho)$"
+        ),
+        static_args={"action": "on"},
+        confidence=0.96,
+    ),
+    Rule(
+        name="camera_watch_off",
+        intent="devices",
+        tool="camera_watch",
+        pattern=_rx(
+            r"^(?:(?:stop|quit|pause)\s+watching(?:\s+(?:the\s+)?(?:camera|door|room|me))?"
+            r"|(?:don'?t|do\s+not)\s+watch\s+(?:me|the\s+camera)"
+            r"|stop\s+greeting\s+(?:me|people)"
+            r"|camera\s+watch\s+off"
+            r"|dekhna\s+band\s+karo"
+            r"|nazar\s+hatao)$"
+        ),
+        static_args={"action": "off"},
+        confidence=0.96,
+    ),
+    Rule(
+        name="camera_watch_status",
+        intent="devices",
+        tool="camera_watch",
+        pattern=_rx(
+            r"^(?:are\s+you\s+watching(?:\s+(?:the\s+)?(?:camera|door|room|me))?"
+            r"|camera\s+watch\s+status"
+            r"|what\s+(?:have\s+you|did\s+you)\s+see(?:n)?\s+(?:today|so\s+far|lately)"
+            r"|kya\s+dekh\s+rahe\s+ho)\??$"
+        ),
+        static_args={"action": "status"},
+        confidence=0.95,
+    ),
+    Rule(
         name="hinglish_weather",
         intent="web",
         tool="weather",

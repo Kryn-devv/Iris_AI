@@ -86,6 +86,11 @@ piece.
   outputs. One wire each to GPIO 2 / GPIO 1 buys a gas level and a light
   percent later.
 
+- **The camera watches on its own.** `services/camera_watch.py` polls the
+  camera's motion detector once a second, greets recognised people by name
+  when they appear (once per five minutes), mentions strangers, names an
+  object set down in front of it, and turns the OLED eyes toward the person.
+  "stop watching" / "start watching" / "are you watching" (`camera_watch`).
 - **The camera is wired into the brain.** The ESP32-CAM kit from the
   `cammodule` repo now lives in `iris/app/vision/` and
   `iris/app/tools/devices/camera.py`: six tools (`camera_who`, `camera_look`,

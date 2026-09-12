@@ -227,6 +227,21 @@ class Settings(BaseSettings):
     #: Speak a warning out loud the moment a node reports flame or gas.
     NODE_ALERTS_SPOKEN: bool = True
 
+    # ---------------------------------------------------------------- camera
+    #: Let the camera act on its own: greet people it recognises when they
+    #: appear, mention strangers, name objects set down in front of it. Cheap
+    #: when idle (one small request per interval to the camera's own motion
+    #: detector). Harmless with no camera registered. "stop watching" flips it
+    #: at runtime.
+    CAMERA_WATCH_ENABLED: bool = True
+    CAMERA_WATCH_INTERVAL_S: float = 1.0
+    #: The same person is greeted at most once per this many seconds.
+    CAMERA_GREET_COOLDOWN_S: float = 300.0
+    CAMERA_ANNOUNCE_STRANGERS: bool = True
+    #: Name objects placed in front of the camera (needs VISION_MODEL).
+    CAMERA_WATCH_OBJECTS: bool = True
+    CAMERA_OBJECT_COOLDOWN_S: float = 45.0
+
     # ------------------------------------------------------------ automation
     #: Match the robot's OLED eyes to what IRIS is saying, with no extra
     #: commands. Harmless with no face node registered — it simply does nothing.

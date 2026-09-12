@@ -43,7 +43,6 @@ from iris.app.schemas.tools import ToolCategory, ToolExample, ToolParameterSchem
 from iris.app.tools.base import BaseTool, ToolError
 from iris.app.tools.devices.registry import Device, DeviceRegistry, default_device_registry
 from iris.app.tools.devices.transport import (
-    LAN_TIMEOUT,
     _client,
     _looks_unresolvable,
     device_request,
@@ -141,6 +140,65 @@ async def _lan_get_bytes(url: str, params: Optional[Dict[str, Any]] = None) -> b
     return response.content
 
 
+def token_from(device: Device) -> Optional[str]:
+    """The camera's access token, if one was put in the device's notes.
+
+    ``notes`` is the only per-device free text the registry already persists,
+    so ``token=abc`` there needs no schema change and no second place to look.
+    """
+    for part in str(device.notes or "").split():
+        if part.startswith("token="):
+            return part[len("token="):] or None
+    return None
+
+
+def camera_eye_for(device: Device) -> CameraEye:
+    """A :class:`CameraEye` wired to this device's address."""
+    token = token_from(device)
+
+    async def fetch_bytes(path: str, params: Dict[str, Any]) -> bytes:
+        return await _lan_get_bytes(f"{device.base_url}{path}", params)
+
+    async def fetch_json(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        return await lan_get(f"{device.base_url}{path}", params)
+
+    return CameraEye(fetch_bytes, fetch_json, token=token, name=device.name)
+
+
+def gaze_for(sighting: Any, face: Any = None) -> Optional[Dict[str, int]]:
+    """Where a face is, in the -100..100 the S3 node's ``/look`` takes.
+
+    Defaults to the sighting's primary face. ``None`` when there is none.
+    """
+    face = face if face is not None else getattr(sighting, "primary", None)
+    if face is None:
+        return None
+    cx, cy = face.box.center
+    return {
+        "x": max(-100, min(100, round((cx / max(1, sighting.frame_width)) * 200 - 100))),
+        "y": max(-100, min(100, round((cy / max(1, sighting.frame_height)) * 200 - 100))),
+    }
+
+
+async def turn_eyes_toward(registry: DeviceRegistry, gaze: Optional[Dict[str, int]]) -> bool:
+    """Point the S3 board's OLED eyes at what the camera found.
+
+    Best effort: the face board may not be registered or may be off, and
+    neither must turn "that's you" into an error. Returns whether it was asked.
+    """
+    if not gaze:
+        return False
+    face = registry.first_of_kind("face")
+    if face is None:
+        return False
+    try:
+        await device_request(face, "/look", {"x": int(gaze["x"]), "y": int(gaze["y"])})
+        return True
+    except ToolError as exc:
+        logger.debug("Could not turn the eyes toward the sighting: %s", exc)
+        return False
+
+
 class _CameraToolBase(BaseTool):
     """Shared plumbing: find the camera, and talk to it."""
 
@@ -183,28 +241,7 @@ class _CameraToolBase(BaseTool):
         return device
 
     def _eye(self, device: Device) -> CameraEye:
-        """A :class:`CameraEye` wired to this device's address.
-
-        The token travels in the device's ``notes`` field, which is the only
-        per-device free-text the registry already persists — so setting one
-        needs no schema change and no second place to look.
-        """
-        token = self._token_from(device)
-
-        async def fetch_bytes(path: str, params: Dict[str, Any]) -> bytes:
-            return await _lan_get_bytes(f"{device.base_url}{path}", params)
-
-        async def fetch_json(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
-            return await lan_get(f"{device.base_url}{path}", params)
-
-        return CameraEye(fetch_bytes, fetch_json, token=token, name=device.name)
-
-    @staticmethod
-    def _token_from(device: Device) -> Optional[str]:
-        for part in str(device.notes or "").split():
-            if part.startswith("token="):
-                return part[len("token="):] or None
-        return None
+        return camera_eye_for(device)
 
     # -- the faces -------------------------------------------------------
     @property
@@ -222,23 +259,7 @@ class _CameraToolBase(BaseTool):
         return FaceRecognizer(spec)
 
     async def _turn_eyes(self, gaze: Optional[Dict[str, int]]) -> bool:
-        """Point the S3 board's OLED eyes at what the camera found.
-
-        Best effort: the face board may not be registered or may be off, and
-        neither must turn "that's you" into an error. Returns whether it was
-        asked.
-        """
-        if not gaze:
-            return False
-        face = self.registry.first_of_kind("face")
-        if face is None:
-            return False
-        try:
-            await device_request(face, "/look", {"x": int(gaze["x"]), "y": int(gaze["y"])})
-            return True
-        except ToolError as exc:
-            logger.debug("Could not turn the eyes toward the sighting: %s", exc)
-            return False
+        return await turn_eyes_toward(self.registry, gaze)
 
     @staticmethod
     def _publish(event: str, payload: Dict[str, Any]) -> None:
@@ -441,13 +462,7 @@ class CameraWhoTool(_CameraToolBase):
         # Where the person is, in the -100..100 the S3 node's /look takes —
         # and the eyes are turned there, so the robot looks at who it names.
         # (Named ``gaze`` on purpose: ``look`` is the recogniser call above.)
-        gaze = None
-        if sighting.primary is not None:
-            cx, cy = sighting.primary.box.center
-            gaze = {
-                "x": max(-100, min(100, round((cx / max(1, sighting.frame_width)) * 200 - 100))),
-                "y": max(-100, min(100, round((cy / max(1, sighting.frame_height)) * 200 - 100))),
-            }
+        gaze = gaze_for(sighting)
         eyes_turned = await self._turn_eyes(gaze) if turn_eyes else False
 
         return {
@@ -705,6 +720,93 @@ class CameraPresenceTool(_CameraToolBase):
         return f" {side}"
 
 
+class CameraWatchTool(_CameraToolBase):
+    name = "camera_watch"
+    description = (
+        "Turn the camera's own attention on or off, or ask what it is doing. While "
+        "watching, IRIS greets people it recognises the moment they appear, mentions "
+        "strangers, and names objects placed in front of the camera — without being "
+        "asked. Answers 'start watching', 'stop watching', 'are you watching'."
+    )
+    permission_level = PermissionLevel.LOW_RISK_ACTION
+    network = False
+    aliases = ["start watching", "stop watching", "keep watch", "are you watching"]
+    input_schema = ToolParameterSchema(
+        properties={
+            "action": {
+                "type": "string",
+                "enum": ["on", "off", "status"],
+                "description": "'on' to start watching, 'off' to stop, 'status' to ask.",
+            },
+        },
+    )
+    examples = [
+        ToolExample(utterance="start watching", arguments={"action": "on"}),
+        ToolExample(utterance="stop watching the camera", arguments={"action": "off"}),
+        ToolExample(utterance="are you watching", arguments={"action": "status"}),
+    ]
+
+    def __init__(self, registry=None, store=None, service=None):
+        super().__init__(registry, store)
+        self._service = service
+
+    def _resolve_service(self):
+        if self._service is not None:
+            return self._service
+        from iris.app.services.camera_watch import default_camera_watch_service
+
+        return default_camera_watch_service
+
+    async def _run(self, action: str = "status") -> Dict[str, Any]:
+        from iris.app.core.config import settings
+
+        service = self._resolve_service()
+        action = (action or "status").strip().lower()
+        if action not in ("on", "off", "status"):
+            raise ToolError(f"Unknown watch action '{action}' — use on, off or status.")
+
+        camera = self.registry.first_of_kind("camera")
+        if action == "on":
+            service.set_enabled(True)
+            if camera is None:
+                speech = (
+                    "I'll watch as soon as a camera is registered — say: add device eye "
+                    "at its address as camera."
+                )
+            else:
+                abilities = ["greet the people I know"]
+                if settings.CAMERA_ANNOUNCE_STRANGERS:
+                    abilities.append("mention strangers")
+                if settings.CAMERA_WATCH_OBJECTS and settings.VISION_MODEL:
+                    abilities.append("name anything placed in front of me")
+                speech = f"I'm watching. I'll {', '.join(abilities[:-1])} and {abilities[-1]}."
+                if settings.CAMERA_WATCH_OBJECTS and not settings.VISION_MODEL:
+                    speech += " I can't name objects until VISION_MODEL is set in .env."
+        elif action == "off":
+            service.set_enabled(False)
+            speech = "Okay, I've stopped watching. Ask me 'who am I' whenever you like."
+        else:
+            status = service.status()
+            if not status["enabled"]:
+                speech = "I'm not watching right now. Say 'start watching' and I will."
+            elif camera is None:
+                speech = "I'm ready to watch, but no camera is registered yet."
+            elif status["paused_for_s"]:
+                speech = (
+                    f"I'm watching, but the camera at {camera.name} isn't answering — "
+                    f"I'll try again in {status['paused_for_s']} seconds."
+                )
+            else:
+                seen = status.get("last_seen") or []
+                tail = f" The last person I saw was {seen[-1]}." if seen else ""
+                speech = (
+                    f"I'm watching through {camera.name}: {status['greetings']} greetings, "
+                    f"{status['strangers']} strangers and {status['objects']} objects so far.{tail}"
+                )
+
+        return {"speech": speech, "display": speech, **service.status()}
+
+
 def get_tools() -> list[BaseTool]:
     return [
         CameraLookTool(),
@@ -713,4 +815,5 @@ def get_tools() -> list[BaseTool]:
         CameraForgetFaceTool(),
         CameraKnownFacesTool(),
         CameraPresenceTool(),
+        CameraWatchTool(),
     ]

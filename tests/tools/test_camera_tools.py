@@ -30,6 +30,9 @@ JPEG = b"\xff\xd8" + b"x" * 64 + b"\xff\xd9"
 
 # ------------------------------------------------------------------ routing
 CAMERA_CASES = [
+    ("start watching", "camera_watch", {"action": "on"}),
+    ("stop watching the camera", "camera_watch", {"action": "off"}),
+    ("are you watching", "camera_watch", {"action": "status"}),
     ("who am I", "camera_who", {}),
     ("Who is that?", "camera_who", {}),
     ("who is in front of you", "camera_who", {}),

@@ -71,6 +71,58 @@ VISION_MODEL=meta-llama/llama-4-scout:free   # with OPENROUTER_API_KEY
 Nothing else changes — the gateway already carries images. If a slow free model
 times out, raise `PER_TOOL_TIMEOUT_SECONDS`.
 
+## It watches on its own
+
+You do not have to ask. From the moment IRIS starts, the eye is *attentive*:
+
+- **You walk in** → *"Good evening, Prakash. Good to see you."* Once, and then
+  not again for five minutes however long you stand there. Anyone else it has
+  been introduced to gets *"Good evening, Aditi."*
+- **A stranger walks in** → *"Someone I don't recognise is here."*
+- **You set something down in front of it** and it stops moving → the vision
+  model names it: *"I see a red apple."* Once per thing; it stays quiet for an
+  empty room or a hand passing through.
+- The **OLED eyes turn toward** whoever it found, and light up happy for a
+  friend, wary for a stranger.
+
+How it stays cheap: once a second it asks the camera's own motion detector
+(`/motion`, a few bytes of JSON). Only when something moved does it fetch a
+frame, and only when there is no face in that frame does it spend a
+vision-model call. Nothing happens for an empty room. If the camera is
+unplugged it stops trying for a minute and logs one line.
+
+| Say | Effect |
+|---|---|
+| stop watching · pause watching · dekhna band karo | pauses it until asked again |
+| start watching · keep an eye out · dekhte raho | resumes, and greets you again straight away |
+| are you watching · what have you seen so far | status: camera, counts, last person seen |
+
+Settings in `.env` (all optional): `CAMERA_WATCH_ENABLED`, `CAMERA_WATCH_INTERVAL_S`,
+`CAMERA_GREET_COOLDOWN_S`, `CAMERA_ANNOUNCE_STRANGERS`, `CAMERA_WATCH_OBJECTS`,
+`CAMERA_OBJECT_COOLDOWN_S`. Object naming needs `VISION_MODEL`; greetings need a
+face recogniser (above). With neither installed it still runs and does nothing,
+and `are you watching` tells you exactly what it can and cannot do.
+
+## Powering the camera through its motherboard
+
+The ESP32-CAM-MB programmer board is a fine permanent home for the camera, not
+just a flashing tool. Leave the camera plugged into it and run one USB cable
+from a **power bank** into the MB's USB port: the MB feeds 5 V to the camera's
+5V pin and nothing else on it interferes with WiFi. The camera then needs **no
+wire at all** to the rest of the robot — it talks over the hotspot.
+
+Two things to get right:
+
+1. **A short, thick cable and a decent power bank.** The camera pulls about
+   180 mA and spikes past 300 mA when the radio transmits. A thin 1 m cable drops
+   enough voltage to cause *brownout* resets (`/status` shows
+   `reset_reason: brownout`, and the camera page says *camera init failed*).
+   Use the shortest cable you have.
+2. **A power bank that stays on at low current.** Some banks switch off below
+   ~100 mA. The camera's draw is normally enough to keep them awake; if yours
+   sleeps, a bank with an *always-on / low-current mode* fixes it, or share the
+   bank's second port with the robot's ESP32 so the total draw is higher.
+
 ## What to say
 
 | Say | Tool | Needs |
