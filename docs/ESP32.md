@@ -428,24 +428,30 @@ between. `DHT_KIND` is `DHT22` (white module); set `DHT11` for the blue one.
 
 ### The eyes — two OLEDs on one pair of wires
 
-**Which chip is inside your modules?** The firmware has one switch for it, at
+**Which chip is inside each module?** The firmware has one switch per eye, at
 the top of the sketch:
 
 ```cpp
-#define EYE_CHIP_SH1106 1   // 1 = SH1106 (the bigger 1.02" / 1.3" modules)
-                            // 0 = SSD1306 (the classic 0.96")
+#define EYE_L_CHIP_SH1106 0   // left eye:  0 = SSD1306 (the classic 0.96")
+#define EYE_R_CHIP_SH1106 1   // right eye: 1 = SH1106  (the bigger 1.02" / 1.3")
 ```
 
 The 0.96" modules are SSD1306. The slightly bigger ones — sold as 1.02", 1.1",
 1.2" or 1.3" — are almost always **SH1106**, a different controller that the
-SSD1306 driver cannot talk to: the module answers on the bus but stays blank,
-or shows the picture shifted two pixels and wrapping at the edge. Set the
-switch to match, install the matching library in the Arduino Library Manager
-(**Adafruit SH110X** for SH1106, **Adafruit SSD1306** for the 0.96", plus
-**Adafruit GFX Library** for either) and flash. Nothing else changes: the eye
-drawing is written against the shared graphics interface, and the boot log
-tells you which chip it is driving (`driven as SH1106`). If a module answers
-but "would not initialise", the switch is set for the wrong chip.
+SSD1306 driver cannot talk to: the module lights up **solid and flickers**, or
+shows the picture shifted two pixels and wrapping at the edge. Set each eye's
+switch to match its module, install the matching libraries in the Arduino
+Library Manager (**Adafruit SH110X** for SH1106, **Adafruit SSD1306** for the
+0.96", plus **Adafruit GFX Library**) and flash. Nothing else changes: the eye
+drawing is written against the shared graphics interface (`panels.h` hides the
+two libraries), and the boot log names what each eye is driven as
+(`left is SSD1306, right is SH1106`). If a module answers but "would not
+initialise", that eye's switch is set for the wrong chip.
+
+**A mixed pair — one 0.96" and one 1.3" — works,** but needs the two-bus wiring
+(`TWIN_PANELS = false`, right eye on **SDA 38 / SCL 39**). Two different chips
+on one pair of wires at the same address would both hear every command, and
+one of them would be the wrong one. That is the firmware's default now.
 
 **Check the pin order before plugging the new modules in.** The bigger
 modules often have their pins in a different order from the 0.96" ones —
@@ -455,9 +461,9 @@ a module instantly.
 
 Every module answers at I2C address **0x3C**. With both wired to the
 same SDA/SCL the board cannot tell them apart, so they always show the **same
-picture** — and two identical eyes are a perfectly good pair of eyes. That is
-the firmware's default (`TWIN_PANELS = true`): both modules on **SDA 20 /
-SCL 21**, nothing to move. The only expression you lose is the wink.
+picture** — and two identical eyes are a perfectly good pair of eyes. With two
+modules of the **same chip** you can set `TWIN_PANELS = true` and put both on
+**SDA 20 / SCL 21**, nothing to move. The only expression you lose is the wink.
 
 GPIO 19/20 are also the S3's native-USB data pins, and the USB port *owns*
 them at boot — a bus scan there hears nothing, exactly as if no wire were

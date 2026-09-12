@@ -72,26 +72,24 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 
-/* ── WHICH CHIP IS INSIDE THE EYE MODULES ──────────────────────────────────
+/* ── WHICH CHIP IS INSIDE EACH EYE MODULE ─────────────────────────────────
  * 0.96" modules are SSD1306. The slightly bigger ones — sold as 1.02", 1.1",
  * 1.2" or 1.3" — are almost always SH1106, which speaks a different dialect:
- * driven as an SSD1306 it answers on the bus but stays blank, or shows the
- * picture shifted two pixels and wrapping at the edge.
+ * driven as an SSD1306 it lights up solid and flickers, or shows the picture
+ * shifted two pixels and wrapping at the edge.
  *   1 = SH1106  (Library Manager: "Adafruit SH110X" by Adafruit)
  *   0 = SSD1306 (Library Manager: "Adafruit SSD1306")
- * Both also need "Adafruit GFX Library". Nothing else in this file changes:
- * the eye drawing is written against the shared GFX interface. */
-#define EYE_CHIP_SH1106 1
+ * Both also need "Adafruit GFX Library". The two eyes MAY differ — a 0.96" on
+ * the left and a 1.3" on the right is fine — but then each needs its own pair
+ * of wires (TWIN_PANELS = false below): two different chips on one bus at one
+ * address would both hear every command, and one of them would be the wrong
+ * one. Nothing else in this file changes; see panels.h. */
+#define EYE_L_CHIP_SH1106 0   /* left eye  */
+#define EYE_R_CHIP_SH1106 1   /* right eye */
 
-#if EYE_CHIP_SH1106
-#include <Adafruit_SH110X.h>
-typedef Adafruit_SH1106G EyePanel;
-#define EYE_CHIP_NAME "SH1106"
-#else
-#include <Adafruit_SSD1306.h>
-typedef Adafruit_SSD1306 EyePanel;
-#define EYE_CHIP_NAME "SSD1306"
-#endif
+#define IRIS_USE_SH1106  (EYE_L_CHIP_SH1106 || EYE_R_CHIP_SH1106)
+#define IRIS_USE_SSD1306 (!EYE_L_CHIP_SH1106 || !EYE_R_CHIP_SH1106)
+#include "panels.h"
 #if defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32S2)
 #include "soc/usb_serial_jtag_reg.h"   /* to take GPIO 19/20 back from the USB PHY */
 #endif
@@ -126,7 +124,7 @@ const bool CLOUD_TLS    = true;            /* false only on your own LAN     */
 const char* CLOUD_CA_CERT = "";
 const char* CLOUD_TOKEN = "";              /* must equal NODE_LINK_TOKEN     */
 
-/* ── the eyes ── two 128x64 OLEDs (chip chosen by EYE_CHIP_SH1106 above).
+/* ── the eyes ── two 128x64 OLEDs (chips chosen by EYE_*_CHIP_SH1106 above).
  *
  * TWIN_PANELS = true  : BOTH modules on ONE pair of wires (the same SDA and
  *                       SCL). Every module answers at 0x3C, so the two cannot
@@ -142,19 +140,17 @@ const char* CLOUD_TOKEN = "";              /* must equal NODE_LINK_TOKEN     */
  * GPIO 19/20 are also the S3's native-USB data pins. They work as I2C as long
  * as you flash through the UART/COM port and leave the other USB port empty.
  * If an eye there stays dark, move its two wires to 15/16. */
-const bool TWIN_PANELS  = true;
+const bool TWIN_PANELS  = false;  /* false: mixed chips need their own buses */
 const bool SHARED_BUS   = false;
-const int  PIN_L_SDA    = 20;     /* the bus both eyes are on                 */
+const int  PIN_L_SDA    = 20;     /* left eye (0.96")                         */
 const int  PIN_L_SCL    = 21;
-const int  PIN_R_SDA    = 38;     /* right eye, only when TWIN_PANELS=false   */
+const int  PIN_R_SDA    = 38;     /* right eye (1.3"), its own two wires      */
 const int  PIN_R_SCL    = 39;     /* (17/18 are taken by the MQ-2 DO and LDR) */
 const uint8_t OLED_ADDR_L = 0x3C;
 const uint8_t OLED_ADDR_R = 0x3C;  /* set to 0x3D when SHARED_BUS is true    */
-#if EYE_CHIP_SH1106
-const uint32_t I2C_HZ   = 400000;  /* the SH1106 is rated to 400 kHz          */
-#else
-const uint32_t I2C_HZ   = 800000;  /* 400000 if an eye ever glitches         */
-#endif
+/* 400 kHz if any eye is an SH1106 (that is its rating); the SSD1306 is happy
+ * at 800 kHz — drop to 400000 if it ever glitches. */
+const uint32_t I2C_HZ   = IRIS_USE_SH1106 ? 400000 : 800000;
 const bool SWAP_EYES    = false;   /* true if left/right came out reversed   */
 
 /* ── the sensors ──  set a pin to -1 to disable one you have not wired ──
@@ -203,16 +199,21 @@ const uint8_t MIC_GAIN  = 4;      /* raise if IRIS mishears, lower if it clips *
 /* ══════════════════════════ STATE ══════════════════════════ */
 
 WebServer server(80);
-#if EYE_CHIP_SH1106
-/* The SH110X driver sets the bus clock itself around every frame (the last
- * two arguments: during the transfer, and afterwards). Both at I2C_HZ so the
- * bus never drops to the library's 100 kHz default between frames. */
-EyePanel eyeLeft(EYE_W, EYE_H, &Wire, -1, I2C_HZ, I2C_HZ);
-EyePanel eyeRight(EYE_W, EYE_H, SHARED_BUS ? &Wire : &Wire1, -1, I2C_HZ, I2C_HZ);
+#if EYE_L_CHIP_SH1106
+Sh1106Panel  eyeLeft(EYE_W, EYE_H, &Wire, I2C_HZ);
 #else
-EyePanel eyeLeft(EYE_W, EYE_H, &Wire, -1);
-EyePanel eyeRight(EYE_W, EYE_H, SHARED_BUS ? &Wire : &Wire1, -1);
+Ssd1306Panel eyeLeft(EYE_W, EYE_H, &Wire);
 #endif
+#if EYE_R_CHIP_SH1106
+Sh1106Panel  eyeRight(EYE_W, EYE_H, SHARED_BUS ? &Wire : &Wire1, I2C_HZ);
+#else
+Ssd1306Panel eyeRight(EYE_W, EYE_H, SHARED_BUS ? &Wire : &Wire1);
+#endif
+/* Two different chips on one bus at one address cannot work: both would hear
+ * every command and one of them would be the wrong one. */
+static_assert(!(TWIN_PANELS && (EYE_L_CHIP_SH1106 != EYE_R_CHIP_SH1106)),
+              "Different OLED chips left/right: set TWIN_PANELS=false and give the "
+              "right eye its own SDA/SCL (38/39).");
 FaceAnimator face;
 Sensors sensors;
 CloudLink cloud;
@@ -527,18 +528,6 @@ static void scanBus(TwoWire& bus, const char* label) {
   Serial.println(found ? "" : " nothing answered — check VCC, GND, SDA, SCL");
 }
 
-/* One place that knows the two libraries' different begin() calls. Both are
- * told NOT to re-run Wire.begin(): the bus is already up on OUR pins. (The
- * SH110X driver does call it, but the ESP32 core keeps the pins it was last
- * given when begin() comes with none, so that is harmless.) */
-static bool panelBegin(EyePanel& d, uint8_t addr) {
-#if EYE_CHIP_SH1106
-  return d.begin(addr, true);
-#else
-  return d.begin(SSD1306_SWITCHCAPVCC, addr, true, false);
-#endif
-}
-
 static bool startEye(EyePanel& d, TwoWire& bus, uint8_t addr,
                      int sda, int scl, const char* label) {
   const uint8_t other = (addr == 0x3C) ? 0x3D : 0x3C;
@@ -548,18 +537,19 @@ static bool startEye(EyePanel& d, TwoWire& bus, uint8_t addr,
     bus.setClock(clocks[c]);
     for (uint8_t t = 0; t < 2; t++) {
       if (!busAnswers(bus, tries[t])) continue;
-      if (panelBegin(d, tries[t])) {
+      if (d.begin(tries[t])) {
         d.clearDisplay();
         d.display();
         Serial.printf("  [eyes] %s OLED ok at 0x%02X on SDA %d / SCL %d (%lu kHz, driven as %s)\n",
                       label, tries[t], sda, scl, (unsigned long)(clocks[c] / 1000),
-                      EYE_CHIP_NAME);
+                      d.chip());
         return true;
       }
       Serial.printf("  [eyes] %s: 0x%02X answered but would not initialise as %s —\n"
-                    "         wrong chip? 0.96\" = SSD1306 (EYE_CHIP_SH1106 0),\n"
-                    "         1.02\"/1.3\" = SH1106 (EYE_CHIP_SH1106 1)\n",
-                    label, tries[t], EYE_CHIP_NAME);
+                    "         wrong chip for this eye? 0.96\" = SSD1306 (EYE_%c_CHIP_SH1106 0),\n"
+                    "         1.02\"/1.3\" = SH1106 (EYE_%c_CHIP_SH1106 1)\n",
+                    label, tries[t], d.chip(), label[0] == 'l' ? 'L' : 'R',
+                    label[0] == 'l' ? 'L' : 'R');
     }
   }
   Serial.printf("  [eyes] %s OLED did NOT answer on SDA %d / SCL %d\n", label, sda, scl);
@@ -619,6 +609,8 @@ static void startEyes() {
       ? startEye(eyeRight, Wire, OLED_ADDR_R, PIN_L_SDA, PIN_L_SCL, "right")
       : startEye(eyeRight, Wire1, OLED_ADDR_L, PIN_R_SDA, PIN_R_SCL, "right");
 
+  if (eyeLeftOk && eyeRightOk)
+    Serial.printf("  [eyes] left is %s, right is %s\n", eyeLeft.chip(), eyeRight.chip());
   if (!eyeLeftOk || !eyeRightOk) {
     Serial.println("  [eyes] an eye is missing. Check VCC (3.3 V), GND, SDA, SCL on");
     Serial.println("         that side. Two modules on ONE bus both at 0x3C cannot");
@@ -639,19 +631,21 @@ static void drawFace(const EyePose& left, const EyePose& right) {
     p.browIn = brow;
     p.browOut = brow;
     eyeLeft.clearDisplay();
-    drawEye(eyeLeft, p, true);
+    drawEye(eyeLeft.gfx(), p, true);
     eyeLeft.display();
     fast.pump();
     return;
   }
-  EyePanel& lDisp = SWAP_EYES ? eyeRight : eyeLeft;
-  EyePanel& rDisp = SWAP_EYES ? eyeLeft  : eyeRight;
+  /* The two eyes may be different classes (different chips), so pick through
+   * the common base explicitly — the ?: operator will not do it for us. */
+  EyePanel& lDisp = SWAP_EYES ? static_cast<EyePanel&>(eyeRight) : static_cast<EyePanel&>(eyeLeft);
+  EyePanel& rDisp = SWAP_EYES ? static_cast<EyePanel&>(eyeLeft)  : static_cast<EyePanel&>(eyeRight);
   const bool lOk = SWAP_EYES ? eyeRightOk : eyeLeftOk;
   const bool rOk = SWAP_EYES ? eyeLeftOk  : eyeRightOk;
 
   if (lOk) {
     lDisp.clearDisplay();
-    drawEye(lDisp, left, true);
+    drawEye(lDisp.gfx(), left, true);
     lDisp.display();
   }
   /* Each panel write holds the bus ~10 ms. A command that arrives during the
@@ -659,7 +653,7 @@ static void drawFace(const EyePose& left, const EyePose& right) {
   fast.pump();
   if (rOk) {
     rDisp.clearDisplay();
-    drawEye(rDisp, right, false);
+    drawEye(rDisp.gfx(), right, false);
     rDisp.display();
   }
 }
