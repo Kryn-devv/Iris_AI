@@ -351,6 +351,34 @@ commands over UDP and a WebSocket (see *How fast it responds*).
 Timed moves auto-stop even if WiFi drops mid-command (the deadline runs on the
 board), and both boards reconnect to WiFi by themselves.
 
+### It decides for itself — turn, distance, "go back to the board"
+
+`robot forward` is a reflex. These are goals, and IRIS works out the rest on
+the laptop, watching the S3 board's ultrasonics while the wheels turn:
+
+| Say | What happens |
+|---|---|
+| take a U-turn · turn around · peeche mudo | spins 180° (timed from `ROBOT_DEG_PER_S`) |
+| turn left 90 degrees | spins by that angle |
+| go forward 2 metres · go 50 cm back · aage 1 meter jao | a timed leg from `ROBOT_CM_PER_S`, **stopped early** if the front (or rear) ultrasonics see anything within `ROBOT_OBSTACLE_STOP_CM` |
+| go back to the board · turn around and come back · return to the table | 180°, then forward **until** the ultrasonics say the target is 35 cm away — no distance given, the robot finds it |
+| drive until you reach the wall · go to the door | forward until something is ahead |
+| in 10 minutes take a U-turn and go back to the board | the whole command is stored and run at that time (`schedule_command`) |
+| stop · robot stop | aborts whatever plan is running, that instant |
+
+The reply says what actually happened, not what was asked: *"Done: turned
+around, then drove until the board was 33 centimetres ahead"* or *"drove 1.4
+metres and stopped — something was 30 centimetres ahead"*.
+
+**Calibration, no editing.** There are no wheel encoders, so distance and
+angle are time × two numbers. Measure once and tell it: `one metre takes 3
+seconds` and `a U-turn takes 2 seconds` — saved to `robot_calibration.json`
+in the data folder, and used from then on. Defaults: 35 cm/s, 110°/s.
+
+Every leg is also sent to the firmware with its own auto-stop (`ms=`), and the
+firmware's failsafe stops the wheels if IRIS goes quiet, so a dropped WiFi
+packet can never leave the robot driving.
+
 ## The S3 node — the robot's face and senses
 
 One board does both jobs: two OLED eyes and all the sensors. Flash

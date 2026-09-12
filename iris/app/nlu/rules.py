@@ -233,6 +233,90 @@ def _build_motor(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
     return args
 
 
+_LENGTH_CM = {"m": 100.0, "metre": 100.0, "metres": 100.0, "meter": 100.0, "meters": 100.0,
+              "cm": 1.0, "centimetre": 1.0, "centimetres": 1.0, "centimeter": 1.0, "centimeters": 1.0,
+              "ft": 30.48, "foot": 30.48, "feet": 30.48, "step": 60.0, "steps": 60.0}
+
+
+def _nav_direction(word: Optional[str]) -> str:
+    return "backward" if (word or "").lower().startswith(("back", "peeche", "reverse")) else "forward"
+
+
+def _build_nav_distance(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
+    g = m.groupdict()
+    try:
+        amount = float(g.get("amount") or g.get("amount2"))
+    except (TypeError, ValueError):
+        return None
+    unit = (g.get("unit") or g.get("unit2") or "m").lower().rstrip(".")
+    factor = _LENGTH_CM.get(unit)
+    if factor is None or amount <= 0:
+        return None
+    distance = amount * factor
+    if distance > 5000:          # 50 m indoors is a typo, not a plan
+        return None
+    return {"distance_cm": round(distance, 1),
+            "direction": _nav_direction(g.get("dir") or g.get("dir2") or g.get("dir3"))}
+
+
+def _build_nav_turn(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
+    g = m.groupdict()
+    try:
+        degrees = float(g.get("deg") or g.get("deg2"))
+    except (TypeError, ValueError):
+        return None
+    if not 0 < degrees <= 360:
+        return None
+    if (g.get("dir") or g.get("dir2") or "").lower() == "left":
+        degrees = -degrees
+    return {"turn_degrees": degrees}
+
+
+def _build_nav_uturn(m: Match[str], cleaned: str) -> Dict[str, Any]:
+    target = (m.groupdict().get("target") or "").strip()
+    if m.groupdict().get("back"):
+        return {"preset": "come_back", "target": f"the {target}" if target else "where I started"}
+    return {"preset": "u_turn"}
+
+
+def _build_nav_come_back(m: Match[str], cleaned: str) -> Dict[str, Any]:
+    target = (m.groupdict().get("target") or m.groupdict().get("target2") or "").strip()
+    return {"preset": "come_back", "target": f"the {target}" if target else "where I started"}
+
+
+def _build_nav_to_obstacle(m: Match[str], cleaned: str) -> Dict[str, Any]:
+    target = (m.groupdict().get("target") or m.groupdict().get("target2") or "").strip()
+    return {"preset": "to_obstacle", "direction": _nav_direction(m.groupdict().get("dir")),
+            "target": f"the {target}" if target else "something"}
+
+
+def _build_nav_calibrate(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
+    g = m.groupdict()
+    try:
+        if g.get("cm_s"):
+            return {"calibrate_cm_per_s": float(g["cm_s"])}
+        if g.get("deg_s"):
+            return {"calibrate_deg_per_s": float(g["deg_s"])}
+        if g.get("metre_s"):
+            return {"calibrate_cm_per_s": round(100.0 / float(g["metre_s"]), 2)}
+        if g.get("uturn_s"):
+            return {"calibrate_deg_per_s": round(180.0 / float(g["uturn_s"]), 2)}
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    return None
+
+
+def _build_command_later(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
+    g = m.groupdict()
+    seconds = parse_duration_seconds(g.get("amount") or g.get("amount2"), g.get("unit") or g.get("unit2"))
+    if seconds is None:
+        return None
+    command = (g.get("cmd") or g.get("cmd2") or "").strip(" ,.")
+    if not command:
+        return None
+    return {"command": command, "in_seconds": seconds}
+
+
 #: Spoken words -> the firmware's emotion names. Hindi/Hinglish included
 #: because that is how this assistant gets talked to.
 _FACE_WORDS = {
@@ -490,6 +574,96 @@ RULES: list[Rule] = [
         pattern=_rx(r"^(?:stop(?:\s+the)?\s+robot|robot\s+stop|emergency\s+stop)$"),
         static_args={"action": "stop"},
         confidence=0.98,
+    ),
+    # -- going places on its own (robot_navigate) ---------------------------
+    Rule(
+        name="command_later",
+        intent="devices",
+        tool="schedule_command",
+        pattern=_rx(
+            r"^(?:in|after)\s+(?P<amount>[\w.]+)\s+(?P<unit>seconds?|secs?|minutes?|mins?|hours?|hrs?)\s*,?\s+"
+            r"(?P<cmd>(?:robot|take|make|do|turn|go|come|drive|move|return|head)\b.+)$"
+            r"|^(?P<cmd2>(?:robot|take|make|do|turn|go|come|drive|move|return|head)\b.+?)\s+"
+            r"(?:in|after)\s+(?P<amount2>[\w.]+)\s+(?P<unit2>seconds?|secs?|minutes?|mins?|hours?|hrs?)$"
+        ),
+        builder=_build_command_later,
+        confidence=0.95,
+    ),
+    Rule(
+        name="robot_uturn",
+        intent="devices",
+        tool="robot_navigate",
+        pattern=_rx(
+            r"^(?:robot\s*,?\s*)?(?:(?:take|make|do)\s+an?\s+|(?:please\s+)?)?"
+            r"(?:u[- ]?turn|turn\s+(?:around|back|yourself\s+around)|(?:turn\s+)?180(?:\s*degrees?)?|peeche\s+mudo|wapas\s+mudo|ghoom\s+jao)"
+            r"(?P<back>\s+(?:and|then)\s+(?:go|come|drive|head|get)\s+back(?:\s+to\s+(?:the\s+|my\s+)?(?P<target>[\w ]+?))?)?$"
+        ),
+        builder=_build_nav_uturn,
+        confidence=0.96,
+    ),
+    Rule(
+        name="robot_come_back",
+        intent="devices",
+        tool="robot_navigate",
+        pattern=_rx(
+            r"^(?:robot\s*,?\s*)?(?:come\s+back(?:\s+to\s+(?:the\s+|my\s+)?(?P<target>[\w ]+?))?"
+            r"|(?:go|head|get|drive)\s+back\s+to\s+(?:the\s+|my\s+)?(?P<target2>[\w ]+?)"
+            r"|return\s+to\s+(?:the\s+|my\s+)?(?P<target3>[\w ]+?)"
+            r"|wapas\s+(?:aao|aa\s+jao))$"
+        ),
+        builder=lambda m, c: _build_nav_come_back(m, c) if not m.groupdict().get("target3")
+        else {"preset": "come_back", "target": f"the {m.group('target3').strip()}"},
+        confidence=0.95,
+    ),
+    Rule(
+        name="robot_move_distance",
+        intent="devices",
+        tool="robot_navigate",
+        pattern=_rx(
+            r"^(?:robot\s*,?\s*)?(?:go|move|drive|travel|roll)\s+"
+            r"(?:(?P<dir>forward|forwards|ahead|straight|back|backward|backwards|reverse)\s+)?"
+            r"(?:by\s+|for\s+)?(?P<amount>\d+(?:\.\d+)?)\s*(?P<unit>m|metres?|meters?|cm|centimet(?:re|er)s?|ft|feet|foot|steps?)"
+            r"(?:\s+(?P<dir2>forward|forwards|ahead|back|backwards?))?$"
+            r"|^(?P<dir3>aage|peeche)\s+(?P<amount2>\d+(?:\.\d+)?)\s*(?P<unit2>m|meter|metre|cm)\s+(?:jao|chalo)$"
+        ),
+        builder=_build_nav_distance,
+        confidence=0.96,
+    ),
+    Rule(
+        name="robot_turn_degrees",
+        intent="devices",
+        tool="robot_navigate",
+        pattern=_rx(
+            r"^(?:robot\s*,?\s*)?turn\s+(?P<dir>left|right)\s+(?:by\s+)?(?P<deg>\d{1,3})\s*(?:degrees?|deg|°)?$"
+            r"|^(?:robot\s*,?\s*)?turn\s+(?:by\s+)?(?P<deg2>\d{1,3})\s*(?:degrees?|deg|°)\s+(?:to\s+the\s+)?(?P<dir2>left|right)$"
+        ),
+        builder=_build_nav_turn,
+        confidence=0.96,
+    ),
+    Rule(
+        name="robot_to_obstacle",
+        intent="devices",
+        tool="robot_navigate",
+        pattern=_rx(
+            r"^(?:robot\s*,?\s*)?(?:go|drive|move|keep\s+going)\s+(?:(?P<dir>forward|back|backwards?)\s+)?"
+            r"(?:until|till)\s+(?:you\s+)?(?:reach|hit|see|find|touch|get\s+to)\s+(?:the\s+|a\s+|an\s+)?(?P<target>[\w ]+?)$"
+            r"|^(?:robot\s*,?\s*)?(?:go|drive)\s+(?:up\s+)?to\s+the\s+(?P<target2>wall|board|table|door|edge|box|chair|person|judge)$"
+        ),
+        builder=_build_nav_to_obstacle,
+        confidence=0.95,
+    ),
+    Rule(
+        name="robot_calibrate",
+        intent="devices",
+        tool="robot_navigate",
+        pattern=_rx(
+            r"^(?:the\s+)?(?:robot|it)\s+(?:moves|drives|goes|travels)\s+(?P<cm_s>\d+(?:\.\d+)?)\s*(?:cm|centimet(?:re|er)s?)\s+(?:per|a|every)\s+second$"
+            r"|^(?:the\s+)?(?:robot|it)\s+turns\s+(?P<deg_s>\d+(?:\.\d+)?)\s*(?:degrees?)\s+(?:per|a|every)\s+second$"
+            r"|^(?:one|1|a)\s+met(?:re|er)\s+(?:takes|took)\s+(?:it\s+)?(?P<metre_s>\d+(?:\.\d+)?)\s*(?:seconds?|secs?|s)$"
+            r"|^(?:an?\s+)?(?:u[- ]?turn|half\s+turn|180)\s+(?:takes|took)\s+(?:it\s+)?(?P<uturn_s>\d+(?:\.\d+)?)\s*(?:seconds?|secs?|s)$"
+        ),
+        builder=_build_nav_calibrate,
+        confidence=0.95,
     ),
     Rule(
         name="sensor_motion_query",

@@ -186,6 +186,9 @@ class SchedulerService:
 
     async def _announce(self, payload: dict[str, Any]) -> None:
         """Best-effort desktop notification + spoken announcement."""
+        if payload.get("kind") == "command":
+            await self._run_command(payload)
+            return
         title = "⏰ Timer" if payload.get("kind") == "timer" else "🔔 Reminder"
         text = payload.get("text") or ""
         try:
@@ -204,6 +207,30 @@ class SchedulerService:
                 await default_voice_service.speak(f"{'Timer done' if payload.get('kind') == 'timer' else 'Reminder'}: {text}")
         except Exception as exc:  # noqa: BLE001
             logger.debug("Reminder speech failed: %s", exc)
+
+    async def _run_command(self, payload: dict[str, Any]) -> None:
+        """"In ten minutes, go back to the board": the text is a command, and
+        when its time comes it goes through the kernel exactly as if it had
+        just been said — so the robot moves, not a notification."""
+        text = (payload.get("text") or "").strip()
+        if not text:
+            return
+        try:
+            from iris.app.agent.kernel import default_kernel
+
+            result = await default_kernel.process_request(text)
+            spoken = getattr(result, "speech", None) or getattr(result, "response", "") or ""
+        except Exception as exc:  # noqa: BLE001 - a failed command is reported, not fatal
+            logger.warning("Scheduled command %r failed: %s", text, exc)
+            spoken = f"I couldn't do what you scheduled: {text}."
+        default_event_bus.publish(Topics.REMINDER_DUE, {**payload, "result": spoken})
+        try:
+            from iris.app.voice.service import default_voice_service
+
+            if default_voice_service is not None and spoken:
+                await default_voice_service.speak(str(spoken))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Scheduled command speech failed: %s", exc)
 
     # ---------------------------------------------------------------- helpers
     @staticmethod
