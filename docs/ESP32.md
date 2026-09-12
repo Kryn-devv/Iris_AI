@@ -426,18 +426,52 @@ and `distance_rear_cm` (nearest behind).
 so climate is sampled every 2.5 s and the last good value is cached in
 between. `DHT_KIND` is `DHT22` (white module); set `DHT11` for the blue one.
 
-### The eyes — two 0.96" OLEDs on one pair of wires
+### The eyes — two OLEDs on one pair of wires
 
-Every SSD1306 module answers at I2C address **0x3C**. With both wired to the
+**Which chip is inside each module?** The firmware has one switch per eye, at
+the top of the sketch:
+
+```cpp
+#define EYE_L_CHIP_SH1106 0   // left eye:  0 = SSD1306 (the classic 0.96")
+#define EYE_R_CHIP_SH1106 1   // right eye: 1 = SH1106  (the bigger 1.02" / 1.3")
+```
+
+The 0.96" modules are SSD1306. The slightly bigger ones — sold as 1.02", 1.1",
+1.2" or 1.3" — are almost always **SH1106**, a different controller that the
+SSD1306 driver cannot talk to: the module lights up **solid and flickers**, or
+shows the picture shifted two pixels and wrapping at the edge. Set each eye's
+switch to match its module, install the matching libraries in the Arduino
+Library Manager (**Adafruit SH110X** for SH1106, **Adafruit SSD1306** for the
+0.96", plus **Adafruit GFX Library**) and flash. Nothing else changes: the eye
+drawing is written against the shared graphics interface (`panels.h` hides the
+two libraries), and the boot log names what each eye is driven as
+(`left is SSD1306, right is SH1106`). If a module answers but "would not
+initialise", that eye's switch is set for the wrong chip.
+
+**A mixed pair — one 0.96" and one 1.3" — works,** but needs the two-bus wiring
+(`TWIN_PANELS = false`, right eye on **SDA 38 / SCL 39**). Two different chips
+on one pair of wires at the same address would both hear every command, and
+one of them would be the wrong one. That is the firmware's default now.
+
+**Check the pin order before plugging the new modules in.** The bigger
+modules often have their pins in a different order from the 0.96" ones —
+commonly **GND · VCC · SCL · SDA** instead of **VCC · GND · SCL · SDA**. Read the
+labels printed next to the pins, not the position; swapping VCC and GND kills
+a module instantly.
+
+Every module answers at I2C address **0x3C**. With both wired to the
 same SDA/SCL the board cannot tell them apart, so they always show the **same
-picture** — and two identical eyes are a perfectly good pair of eyes. That is
-the firmware's default (`TWIN_PANELS = true`): both modules on **SDA 20 /
-SCL 21**, nothing to move. The only expression you lose is the wink.
+picture** — and two identical eyes are a perfectly good pair of eyes. With two
+modules of the **same chip** you can set `TWIN_PANELS = true` and put both on
+**SDA 20 / SCL 21**, nothing to move. The only expression you lose is the wink.
 
-GPIO 19/20 are also the S3's native-USB data pins. They work as I2C as long as
-you **flash and monitor through the UART/COM socket** and leave the other USB
-socket empty. If the eyes stay dark there, move the two wires to **15 (SDA) /
-16 (SCL)** and set `PIN_L_SDA = 15; PIN_L_SCL = 16`.
+GPIO 19/20 are also the S3's native-USB data pins, and the USB port *owns*
+them at boot — a bus scan there hears nothing, exactly as if no wire were
+fitted. The firmware takes them back at start-up (you will see `[pins] GPIO
+19/20 taken back from the USB port`); that means you **flash and monitor
+through the UART/COM socket** and leave the USB socket empty. If the eyes stay
+dark there anyway, move the two wires to **41 (SDA) / 42 (SCL)** — pins with
+nothing else on them — and set `PIN_L_SDA = 41; PIN_L_SCL = 42`.
 
 Want two *independent* eyes later (the wink, a lopsided confused face)? Move
 the right module's two wires to **SDA 38 / SCL 39** (pins with nothing else on
@@ -550,6 +584,14 @@ No router, or a wrong WiFi password? After 25 seconds the board serves its own
 network: join **`iris-face`** with password **`iriscalib`** and open
 `http://192.168.4.1`. The eyes animate while it is still trying to connect, so
 a frozen face always means a real fault rather than a slow boot.
+
+## The camera — a third body, two wires
+
+An **ESP32-CAM** on the robot's head gives IRIS eyes that recognise you and
+name what you hold up. It takes 5 V and ground from the same rail and joins the
+same hotspot; nothing is wired to the S3. Setup, phrases and what to install
+are in **[CAMERA.md](CAMERA.md)**. When it spots a person, the OLED eyes turn
+toward them.
 
 ## One brain, two bodies
 

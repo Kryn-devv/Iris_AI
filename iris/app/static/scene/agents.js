@@ -519,7 +519,7 @@
     { id: "scribe", name: "Scribe", color: "#a78bfa",
       specialty: "Reads, writes and files — docs, decks, sheets, code" },
     { id: "relay", name: "Relay", color: "#818cf8",
-      specialty: "Timers, routines, the robot, its sensors and its face" },
+      specialty: "Timers, routines, the robot, its senses, its face and its eye" },
     { id: "sentinel", name: "Sentinel", color: "#f4a259",
       specialty: "Watches the machine, holds the risky commands" },
   ];

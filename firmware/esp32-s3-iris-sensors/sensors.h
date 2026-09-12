@@ -127,9 +127,12 @@ class Sensors {
  public:
   void begin(const SensorConfig& cfg) {
     cfg_ = cfg;
-    if (cfg_.pins.pir >= 0) pinMode(cfg_.pins.pir, INPUT);
-    if (cfg_.pins.flame >= 0) pinMode(cfg_.pins.flame, INPUT);
-    if (cfg_.pins.gasDo >= 0) pinMode(cfg_.pins.gasDo, INPUT);
+    /* Alarm inputs are biased to their QUIET level, so a wire that has come
+     * loose reads "no fire" and "no gas" instead of a floating pin's random
+     * alarm at boot. A module that is present overrides the weak pull. */
+    if (cfg_.pins.pir >= 0) pinMode(cfg_.pins.pir, INPUT_PULLDOWN);
+    if (cfg_.pins.flame >= 0) pinMode(cfg_.pins.flame, cfg_.flameActiveLow ? INPUT_PULLUP : INPUT_PULLDOWN);
+    if (cfg_.pins.gasDo >= 0) pinMode(cfg_.pins.gasDo, cfg_.gasDoActiveLow ? INPUT_PULLUP : INPUT_PULLDOWN);
     for (uint8_t i = 0; i < US_COUNT; i++) {
       if (!usFitted(i)) continue;
       pinMode(cfg_.pins.usTrig[i], OUTPUT);

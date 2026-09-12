@@ -9,7 +9,7 @@
 #pragma once
 
 static const char FACE_PAGE[] PROGMEM = R"HTML(<!DOCTYPE html><html><head>
-<meta name=viewport content='width=device-width,initial-scale=1'>
+<meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>
 <title>IRIS face</title><style>
 :root{--bg:#05070f;--pa:#0d1224;--ln:rgba(94,234,212,.25);--ac:#5eead4;--tx:#e6edf7;--dm:#8b96ad}
 *{box-sizing:border-box}body{margin:0;padding:18px;font-family:system-ui,sans-serif;background:var(--bg);color:var(--tx)}

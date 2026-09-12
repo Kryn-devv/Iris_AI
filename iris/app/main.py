@@ -30,6 +30,7 @@ from iris.app.services.scheduler import default_scheduler_service
 from iris.app.services.hotkeys import default_hotkey_service
 from iris.app.services.telegram import default_telegram_bridge
 from iris.app.services.face_presence import default_face_presence_service
+from iris.app.services.camera_watch import default_camera_watch_service
 from iris.app.services.node_events import default_node_event_service
 from iris.app.tools.loader import load_all_tools
 from iris.app.tools.registry import default_tool_registry
@@ -128,6 +129,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if settings.FACE_AUTO_EXPRESSION:
         await default_face_presence_service.start()
 
+    await default_camera_watch_service.start()
+
     if settings.NODE_LINK_ENABLED:
         await default_node_event_service.start()
         if not (settings.NODE_LINK_TOKEN or "").strip():
@@ -154,6 +157,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await default_scheduler_service.stop()
     await default_telegram_bridge.stop()
     await default_face_presence_service.stop()
+    await default_camera_watch_service.stop()
     await default_node_event_service.stop()
     default_hotkey_service.stop()
     try:
