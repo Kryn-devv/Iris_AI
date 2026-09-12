@@ -28,6 +28,16 @@ T = TypeVar("T", bound=BaseModel)
 #: HTTP status codes worth retrying on another provider.
 _RETRYABLE_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 529})
 
+#: Google's OpenAI-compatible endpoint. Its thinking models (Gemini 3 and
+#: later) attach a "thought signature" to every tool call they make —
+#: ``extra_content.google.thought_signature`` — and refuse the follow-up
+#: request with HTTP 400 "Function call is missing a thought_signature" when
+#: the assistant turn is replayed without it. So it is kept on the tool call
+#: and sent back verbatim; a tool call with none (history that came from
+#: another provider) gets Google's documented placeholder instead.
+GEMINI_HOST = "generativelanguage.googleapis.com"
+GEMINI_PLACEHOLDER_SIGNATURE = "skip_thought_signature_validator"
+
 
 def _strip_code_fences(text: str) -> str:
     """Remove Markdown code fences wrapping a JSON payload."""
@@ -219,6 +229,42 @@ class CloudLLMProvider(LLMProvider):
             messages.append({"role": "user", "content": prompt})
         return messages
 
+    @property
+    def is_gemini(self) -> bool:
+        return GEMINI_HOST in self.base_url or self.provider_name.lower() == "gemini"
+
+    def _prepare_tool_calls(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Make replayed assistant tool calls acceptable to *this* provider.
+
+        Gemini needs its thought signature on every tool call it is shown
+        again; one that has none (the turn came from another provider, or
+        an older transcript) gets the documented placeholder rather than a
+        400. Everyone else gets the ``extra_content`` extension stripped —
+        it is Google's, and a strict OpenAI-style API may reject unknown
+        keys. Copies only what it changes; the caller's history is untouched.
+        """
+        prepared: List[Dict[str, Any]] = []
+        for message in messages:
+            calls = message.get("tool_calls") if isinstance(message, dict) else None
+            if not calls or message.get("role") != "assistant":
+                prepared.append(message)
+                continue
+            new_calls = []
+            for call in calls:
+                call = dict(call)
+                extra = call.get("extra_content")
+                if self.is_gemini:
+                    google = extra.get("google") if isinstance(extra, dict) else None
+                    if not (isinstance(google, dict) and google.get("thought_signature")):
+                        call["extra_content"] = {
+                            "google": {"thought_signature": GEMINI_PLACEHOLDER_SIGNATURE}
+                        }
+                else:
+                    call.pop("extra_content", None)
+                new_calls.append(call)
+            prepared.append({**message, "tool_calls": new_calls})
+        return prepared
+
     async def _post_chat(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """POST /chat/completions, walking the key pool on per-key failures.
 
@@ -356,7 +402,9 @@ class CloudLLMProvider(LLMProvider):
             raise LLMProviderError(f"{self.provider_name}: not configured (missing API key).", retryable=False)
 
         target_model = self._target_model(model)
-        messages = self._build_messages(prompt, system_prompt, kwargs.get("messages"))
+        messages = self._prepare_tool_calls(
+            self._build_messages(prompt, system_prompt, kwargs.get("messages"))
+        )
 
         payload: Dict[str, Any] = {
             "model": target_model,
@@ -420,16 +468,19 @@ class CloudLLMProvider(LLMProvider):
             tool_calls = []
             for tc in raw_tool_calls:
                 fn = tc.get("function") or {}
-                tool_calls.append(
-                    {
-                        "id": tc.get("id"),
-                        "type": tc.get("type", "function"),
-                        "function": {
-                            "name": fn.get("name", ""),
-                            "arguments": fn.get("arguments", "{}"),
-                        },
-                    }
-                )
+                call: Dict[str, Any] = {
+                    "id": tc.get("id"),
+                    "type": tc.get("type", "function"),
+                    "function": {
+                        "name": fn.get("name", ""),
+                        "arguments": fn.get("arguments", "{}"),
+                    },
+                }
+                # Gemini's thought signature rides here; it has to go back
+                # with this same call or the next request is refused.
+                if isinstance(tc.get("extra_content"), dict):
+                    call["extra_content"] = tc["extra_content"]
+                tool_calls.append(call)
 
         logger.info(
             "%s completion ok (model=%s, %.0fms, %s tool calls)",
@@ -497,7 +548,9 @@ class CloudLLMProvider(LLMProvider):
             raise LLMProviderError(f"{self.provider_name}: not configured (missing API key).", retryable=False)
 
         target_model = self._target_model(model)
-        messages = self._build_messages(prompt, system_prompt, kwargs.get("messages"))
+        messages = self._prepare_tool_calls(
+            self._build_messages(prompt, system_prompt, kwargs.get("messages"))
+        )
         payload: Dict[str, Any] = {
             "model": target_model,
             "messages": messages,

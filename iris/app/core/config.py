@@ -263,7 +263,9 @@ class Settings(BaseSettings):
     WEB_SEARCH_PROVIDER: str = "duckduckgo"   # duckduckgo | searx | wikipedia
     SEARX_BASE_URL: str = "https://searx.be"
     WEB_FETCH_MAX_BYTES: int = 1_500_000
-    WEB_USER_AGENT: str = "Mozilla/5.0 (compatible; IrisAssistant/1.0)"
+    #: Descriptive, with a contact URL, as Wikimedia's user-agent policy requires
+    #: — a "Mozilla/5.0 (compatible; ...)" string is refused with HTTP 403 there.
+    WEB_USER_AGENT: str = "IrisAssistant/1.0 (+https://github.com/Kryn-devv/Iris_AI) python-httpx"
     WEATHER_UNITS: str = "metric"
     DEFAULT_LOCATION: str = ""
     NEWS_FEEDS: List[str] = Field(

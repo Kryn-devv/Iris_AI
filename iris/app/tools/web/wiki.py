@@ -66,6 +66,10 @@ def trim_sentences(text: str, count: int) -> str:
     return " ".join(sentences[:count]).strip()
 
 
+#: DuckDuckGo's instant-answer API, which republishes Wikipedia's summaries.
+DDG_API_URL = "https://api.duckduckgo.com/"
+
+
 def summary_url(language: str, title: str) -> str:
     """Build the REST page-summary URL for a language and (raw) page title."""
     encoded = quote(title.strip().replace(" ", "_"), safe="")
@@ -157,6 +161,34 @@ class WikipediaTool(BaseTool):
         titles = payload[1] if isinstance(payload, list) and len(payload) > 1 else []
         return titles[0] if titles else None
 
+    async def _fetch_via_duckduckgo(
+        self, client: httpx.AsyncClient, topic: str
+    ) -> dict[str, Any] | None:
+        """The Wikipedia abstract as DuckDuckGo republishes it, shaped like a
+        REST summary payload — or ``None`` when it has nothing or fails."""
+        try:
+            response = await client.get(
+                DDG_API_URL,
+                params={"q": topic, "format": "json", "no_html": "1", "skip_disambig": "1"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.debug("wikipedia: DuckDuckGo fallback failed too: %s", exc)
+            return None
+        if not isinstance(payload, dict):
+            return None
+        extract = (payload.get("AbstractText") or "").strip()
+        if not extract or (payload.get("AbstractSource") or "").lower() != "wikipedia":
+            return None
+        return {
+            "title": payload.get("Heading") or topic,
+            "extract": extract,
+            "description": "",
+            "type": "standard",
+            "content_urls": {"desktop": {"page": payload.get("AbstractURL") or ""}},
+        }
+
     # ------------------------------------------------------------------ run
     async def _run(
         self,
@@ -181,6 +213,7 @@ class WikipediaTool(BaseTool):
             sentence_count = DEFAULT_SENTENCES
         sentence_count = max(1, min(sentence_count, MAX_SENTENCES))
 
+        via_duckduckgo = False
         async with self._client() as client:
             try:
                 data = await self._fetch_summary(client, language, topic)
@@ -192,10 +225,19 @@ class WikipediaTool(BaseTool):
                         data = await self._fetch_summary(client, language, closest)
                         matched_via_search = data is not None
             except (httpx.HTTPError, ValueError) as exc:
-                raise ToolError(
-                    f"Wikipedia lookup failed: {exc}",
-                    speech="I couldn't reach Wikipedia just now.",
-                ) from exc
+                # Wikimedia refuses some networks and user agents outright
+                # (HTTP 403 with its robot-policy notice). DuckDuckGo's
+                # instant-answer API republishes the same Wikipedia summary,
+                # so "who is X" still gets its answer instead of a shrug.
+                logger.info("wikipedia: %s — trying DuckDuckGo's copy", exc)
+                data = await self._fetch_via_duckduckgo(client, topic)
+                if data is None:
+                    raise ToolError(
+                        f"Wikipedia lookup failed: {exc}",
+                        speech="I couldn't reach Wikipedia just now.",
+                    ) from exc
+                matched_via_search = False
+                via_duckduckgo = True
 
         if data is None:
             raise ToolError(
@@ -232,6 +274,7 @@ class WikipediaTool(BaseTool):
             "url": page_url,
             "language": language,
             "matched_via_search": matched_via_search,
+            "via_duckduckgo": via_duckduckgo,
             "disambiguation": is_disambiguation,
             "speech": trimmed if len(trimmed) <= 400 else trim_sentences(extract, 1),
             "display": f"{title} — {description}\n{trimmed}\n{page_url}" if description
