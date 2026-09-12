@@ -17,11 +17,13 @@ GPIOs and the S3 has about six free, which is why it is not wired to the S3.
 
 ## Flash it
 
-The firmware is in the [`cammodule`](https://github.com/Kryn-devv/cammodule)
-repository, `esp32-cam/robot_eye/`. Put your hotspot name and password in
-`config.h`, flash through the ESP32-CAM-MB programmer board (upload speed
-115200), and read the address off the serial monitor. Its own page at that
-address shows a live view and a `/motion` readout.
+The firmware is in this repository:
+**[`firmware/esp32-cam-robot-eye/`](../firmware/esp32-cam-robot-eye/)** — its
+README has the step-by-step. In short: copy `config.example.h` to `config.h`
+and put your hotspot name and password in it, board "AI Thinker ESP32-CAM",
+partition "Huge APP", PSRAM enabled, upload speed 115200, flash through the
+ESP32-CAM-MB board, then read the address off the serial monitor. Its own page
+at that address shows a live view and a `/motion` readout.
 
 ## Register it
 

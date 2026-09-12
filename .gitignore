@@ -51,3 +51,6 @@ iris.db
 .venv/
 .claude/
 firmware/*/.pio/
+
+# Firmware secrets (WiFi name/password) — copy config.example.h to config.h
+firmware/*/config.h

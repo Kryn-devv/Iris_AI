@@ -20,6 +20,7 @@ Two sketches, one per board:
 |---|---|---|
 | robot base, 2× BTS7960 | `firmware/esp32-iris-node-bts7960/` | [Robot with BTS7960 drivers](#robot-with-bts7960-drivers-2-boards-4-wheel-drive) |
 | ESP32-S3 eyes + sensors | `firmware/esp32-s3-iris-sensors/` | [The S3 node](#the-s3-node--the-robots-face-and-senses) |
+| ESP32-CAM eye | `firmware/esp32-cam-robot-eye/` | [CAMERA.md](CAMERA.md) |
 
 ### 1. Prepare your uploader (once) — Arduino IDE **or** PlatformIO
 
