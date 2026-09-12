@@ -46,6 +46,7 @@ TOOL_MODULES: tuple[str, ...] = (
     "iris.app.tools.system.processes",
     "iris.app.tools.system.shell",
     "iris.app.tools.system.network",
+    "iris.app.tools.builtin.reliability",
     # Automation
     "iris.app.tools.automation.reminders",
     # Devices (ESP32 / home automation / robot)

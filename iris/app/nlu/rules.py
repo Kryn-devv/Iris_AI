@@ -666,6 +666,21 @@ RULES: list[Rule] = [
         confidence=0.95,
     ),
     Rule(
+        name="reliability_check",
+        intent="system",
+        tool="reliability_check",
+        pattern=_rx(
+            r"^(?:(?:run\s+(?:a\s+)?)?(?:reliability|consistency|determinism)\s+(?:test|check)"
+            r"(?:\s+(?:on|for|with|of)\s+(?P<phrase>.+))?"
+            r"|(?:prove|show)\s+(?:me\s+)?(?:that\s+)?(?:you(?:'re|\s+are)|it(?:'s|\s+is))\s+reliable"
+            r"|(?:are\s+you|is\s+it)\s+reliable"
+            r"|how\s+reliable\s+are\s+you"
+            r"|(?:will|do)\s+you\s+(?:give|do)\s+the\s+same\s+(?:answer|thing)\s+every\s+time)\??$"
+        ),
+        builder=lambda m, c: ({"phrase": m.group("phrase").strip()} if m.groupdict().get("phrase") else {}),
+        confidence=0.97,
+    ),
+    Rule(
         name="sensor_motion_query",
         intent="devices",
         tool="device_sensors",

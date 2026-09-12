@@ -4,7 +4,7 @@
  * whether this is pleasant to leave open all day: a performance mode, respect
  * for "reduce motion", and not burning a battery on a hidden tab.
  *
- * The tool -> agent map below is EXPLICIT rather than keyword-matched. All 86
+ * The tool -> agent map below is EXPLICIT rather than keyword-matched. All 87
  * registered tools are listed, so a tool that gets renamed shows up as an
  * unmapped name in the console rather than silently lighting the wrong
  * specialist — which is the kind of wrong that nobody notices for months.
@@ -13,7 +13,7 @@
   "use strict";
 
   /* Every tool IRIS registers, grouped by the specialist that owns it.
-   * operator 21 · scout 11 · scribe 17 · relay 23 · sentinel 14  = 86 */
+   * operator 21 · scout 11 · scribe 17 · relay 23 · sentinel 15  = 87 */
   var AGENT_TOOLS = {
     operator: [
       /* desktop */
@@ -53,7 +53,7 @@
        * warm colour in the constellation */
       "autostart", "cancel_shutdown", "environment_info", "kill_process",
       "list_processes", "lock_screen", "network_info", "ping", "restart_pc",
-      "run_command", "shutdown_pc", "sleep_pc", "system_info", "time",
+      "reliability_check", "run_command", "shutdown_pc", "sleep_pc", "system_info", "time",
     ],
   };
 
