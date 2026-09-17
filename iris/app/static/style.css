@@ -73,7 +73,11 @@ html, body {
 
 #app {
   position: relative;
-  z-index: 1;
+  /* Above the scene labels (1) and the background layers (0). #app creates a
+     stacking context, so everything inside it — modals at 50, the drawer at
+     40 — is confined to this number: at 1, an overlay could never rise above
+     the labels however high its own z-index went. */
+  z-index: 2;
   display: grid;
   grid-template-rows: 54px minmax(190px, 36vh) 1fr auto auto;
   height: 100dvh;
@@ -781,3 +785,69 @@ body.iris-scene-active .stage::after { content: none; }
 /* The aurora and grid would otherwise double up with the nebula. */
 body.iris-scene-active .bg-aurora { opacity: 0.35; }
 body.iris-scene-active .bg-grid { opacity: 0.35; }
+
+
+/* ─────────────────────────── First-run setup ───────────────────────────
+   Pasting a key should look like part of the room, not like a form bolted
+   onto it: the same card, the same accent, and inputs that inherit the
+   theme rather than the browser's defaults. */
+.setup-card { width: min(460px, 92vw); }
+.setup-card p { margin-bottom: 14px; line-height: 1.5; }
+
+.field { display: block; margin-bottom: 12px; }
+.field > span {
+  display: block;
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 5px;
+}
+.field input,
+.field select {
+  width: 100%;
+  padding: 9px 11px;
+  font: inherit;
+  font-size: 13.5px;
+  color: var(--text);
+  background: var(--panel-deep, rgba(0, 0, 0, 0.25));
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+  border-radius: 8px;
+  outline: none;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.field input::placeholder { color: var(--text-faint); }
+.field input:focus,
+.field select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.field-note {
+  font-size: 12px;
+  color: var(--text-faint);
+  margin: -6px 0 12px;
+}
+.field-note a { color: var(--accent); }
+
+.setup-msg {
+  font-size: 12.5px;
+  line-height: 1.5;
+  padding: 9px 11px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  border: 1px solid transparent;
+}
+.setup-msg.hidden { display: none; }
+.setup-msg.bad {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+}
+.setup-msg.ok {
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  border-color: color-mix(in srgb, var(--ok) 35%, transparent);
+}
+.setup-msg.busy { color: var(--text-dim); background: rgba(255, 255, 255, 0.04); }
+
+#btnSetupOpen { margin-top: 8px; }

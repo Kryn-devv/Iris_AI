@@ -17,6 +17,10 @@
     llmStatus: $("llmStatus"), voiceStatus: $("voiceStatus"), toolGrid: $("toolGrid"),
     toolCount: $("toolCount"), reminderList: $("reminderList"),
     btnPair: $("btnPair"), pairDetails: $("pairDetails"),
+    setupModal: $("setupModal"), setupTitle: $("setupTitle"), setupIntro: $("setupIntro"),
+    setupProvider: $("setupProvider"), setupNote: $("setupNote"), setupKey: $("setupKey"),
+    setupName: $("setupName"), setupMsg: $("setupMsg"), setupFoot: $("setupFoot"),
+    btnSetupSave: $("btnSetupSave"), btnSetupSkip: $("btnSetupSkip"), btnSetupOpen: $("btnSetupOpen"),
   };
 
   const urlToken = new URLSearchParams(location.search).get("token");
@@ -770,11 +774,154 @@
       els.chipProvider.textContent = llm.provider || "local";
     } catch { }
     try {
+      const state = await refreshSetupState();
+      let skipped = false;
+      try { skipped = sessionStorage.getItem("iris_setup_skipped") === "1"; } catch { }
+      if (state && !state.configured && !skipped) openSetup();
+    } catch { /* setup is an offer, never a gate */ }
+    try {
       const v = await jfetch("/api/v1/voice/status");
       voiceStatus = v;
       els.chipVoice.textContent = v.tts_engine === "browser" ? "browser voice" : v.tts_engine;
     } catch { }
   })();
+
+  /* ─────────────────────────── First-run setup ───────────────────────────
+   * Editing .env and restarting is a reasonable way to configure a server and
+   * a poor way to start talking to an assistant — especially the second time,
+   * when the only thing changing is one key. So the same configuration lives
+   * on the screen that is already open.
+   *
+   * It is never a wall: IRIS runs every command with no key at all, so the
+   * dialog offers to step aside and says so. Skipping is remembered for the
+   * session only — a browser that forgot would nag on every reload, and one
+   * that remembered forever would hide the way in. */
+  let setupState = null;
+
+  async function jpost(url, body) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify(body),
+    });
+    let data = null;
+    try { data = await res.json(); } catch { /* empty or HTML error body */ }
+    if (!res.ok) {
+      const detail = (data && (data.detail || data.message)) || `Request failed (${res.status})`;
+      throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+    }
+    return data || {};
+  }
+
+  function setupMessage(text, kind) {
+    if (!els.setupMsg) return;
+    els.setupMsg.textContent = text || "";
+    els.setupMsg.className = "setup-msg" + (text ? ` ${kind || ""}` : " hidden");
+  }
+
+  function renderSetupProviders() {
+    if (!setupState || !els.setupProvider) return;
+    els.setupProvider.innerHTML = setupState.providers
+      .map((p) => `<option value="${escapeHtml(p.name)}">${escapeHtml(p.label)}` +
+                  `${p.configured ? " — connected" : ""}</option>`)
+      .join("");
+    describeProvider();
+  }
+
+  function describeProvider() {
+    if (!setupState) return;
+    const chosen = setupState.providers.find((p) => p.name === els.setupProvider.value)
+      || setupState.providers[0];
+    if (!chosen) return;
+    const where = chosen.configured ? ` Currently set to ${escapeHtml(chosen.masked)}.` : "";
+    els.setupNote.innerHTML =
+      `${escapeHtml(chosen.note || "")} ${escapeHtml(chosen.hint || "")}. ` +
+      `<a href="${escapeHtml(chosen.signup)}" target="_blank" rel="noopener">Get a free key</a>.${where}`;
+    els.setupKey.placeholder = chosen.configured ? "paste a new key to replace it" : "paste it here";
+  }
+
+  function openSetup() {
+    if (!els.setupModal) return;
+    setupMessage("", "");
+    els.setupModal.classList.remove("hidden");
+    const configured = setupState && setupState.configured;
+    els.setupTitle.textContent = configured ? "Change the model" : "Connect a model";
+    els.setupIntro.textContent = configured
+      ? "Paste a different key, or just change what she calls you."
+      : "Commands already work offline. A free API key is what turns this into a "
+        + "conversation — and lets the camera say what it is looking at.";
+    els.setupFoot.textContent = setupState && setupState.env_writable === false
+      ? `Heads up: ${setupState.env_path} is not writable, so a key would apply now but be forgotten on restart.`
+      : setupState ? `Saved to ${setupState.env_path}` : "";
+    if (setupState && setupState.user_name && !els.setupName.value) {
+      els.setupName.value = setupState.user_name;
+    }
+    setTimeout(() => els.setupKey.focus(), 50);
+  }
+
+  function closeSetup() {
+    if (els.setupModal) els.setupModal.classList.add("hidden");
+  }
+
+  async function submitSetup() {
+    const key = (els.setupKey.value || "").trim();
+    const name = (els.setupName.value || "").trim();
+    if (!key && !name) { setupMessage("Paste a key, or type a name.", "bad"); return; }
+
+    els.btnSetupSave.disabled = true;
+    setupMessage(key ? "Checking that key with the provider…" : "Saving…", "busy");
+    try {
+      const body = { user_name: name || undefined };
+      if (key) { body.provider = els.setupProvider.value; body.api_key = key; }
+      const out = await jpost("/api/v1/setup", body);
+      els.setupKey.value = "";
+      if (out.warning) {
+        setupMessage(out.warning, "bad");
+      } else {
+        setupMessage(key ? `Connected to ${out.provider} (${out.model}).` : "Saved.", "ok");
+        setTimeout(closeSetup, 900);
+      }
+      await refreshSetupState();
+      try {
+        const llm = await jfetch("/api/v1/llm/status");
+        els.chipProvider.textContent = llm.provider || "local";
+      } catch { /* the chip is cosmetic */ }
+      tick(key ? "model connected" : "name saved", "ok");
+    } catch (err) {
+      // The provider's own reason, already turned into English by the API.
+      setupMessage(String(err.message || err), "bad");
+    } finally {
+      els.btnSetupSave.disabled = false;
+    }
+  }
+
+  async function refreshSetupState() {
+    try {
+      setupState = await jfetch("/api/v1/setup/status");
+      renderSetupProviders();
+      return setupState;
+    } catch { return null; }
+  }
+
+  if (els.btnSetupSave) {
+    els.btnSetupSave.onclick = submitSetup;
+    els.btnSetupSkip.onclick = () => {
+      try { sessionStorage.setItem("iris_setup_skipped", "1"); } catch { }
+      closeSetup();
+    };
+    els.setupProvider.onchange = describeProvider;
+    [els.setupKey, els.setupName].forEach((field) => {
+      field.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); submitSetup(); }
+      });
+    });
+    els.setupModal.addEventListener("click", (e) => {
+      if (e.target === els.setupModal) closeSetup();   // click the backdrop
+    });
+  }
+  if (els.btnSetupOpen) {
+    els.btnSetupOpen.onclick = async () => { await refreshSetupState(); openSetup(); };
+  }
 
   // ───────────────────────────── Helpers ─────────────────────────────
   function escapeHtml(s) {

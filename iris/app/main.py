@@ -38,17 +38,18 @@ from iris.app.tools.registry import default_tool_registry
 # Import routers
 from iris.app.api.routes import (
     chat,
+    devices,
     events,
     health,
     llm,
     memory,
     nodes,
     projects,
+    setup,
     system,
     tasks,
     tools,
     voice,
-    devices,
 )
 
 logger = get_logger("main")
@@ -290,6 +291,7 @@ app.include_router(tasks.router)
 app.include_router(tools.router)
 app.include_router(memory.router)
 app.include_router(llm.router)
+app.include_router(setup.router)
 app.include_router(projects.router)
 
 

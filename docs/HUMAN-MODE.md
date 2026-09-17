@@ -16,29 +16,45 @@ Plus the thing that mattered most and was nobody's mouth: you could not
 so every sentence meant summoning her again. That is not a conversation, that
 is a queue.
 
-## Set it up
+## Set it up — without opening a text editor
 
-Everything is already on by default. The only line worth adding to `.env`:
+Start IRIS. If no model is connected, it asks:
 
-```ini
-USER_NAME=Prakash
-```
+> **Connect a model.** Commands already work offline. A free API key is what
+> turns this into a conversation — and lets the camera say what it is looking at.
 
-So she can use your name the way people do — now and then, for warmth, not in
-every sentence.
+Pick the provider, paste the key, type your name, press Connect. That is the
+whole setup. Afterwards it lives under **Settings, Model, Add or change API
+key**, so a rotated key is two clicks rather than a file and a restart.
 
-### Through Gemini (what you are running)
+Three things happen that a hand-edited `.env` does not give you:
+
+- **The key is checked before it is saved.** A real request goes to the
+  provider first, so a typo or a revoked key is reported in seconds — "Google
+  Gemini refused that key. Check you copied all of it" — instead of becoming a
+  silent fallback to the offline engine you notice an hour later.
+- **It applies immediately.** No restart. The provider you just pasted goes to
+  the front of the queue and answers your next message.
+- **One key, not three.** A Gemini key also becomes the camera's vision model,
+  because nobody knows to go looking for `VISION_MODEL`.
+
+Your `.env` stays the source of truth and is edited in place: comments,
+ordering and every unrelated setting survive, the file is written atomically so
+a crash cannot truncate it, and it is left readable only by you. If it cannot
+be written, the key still applies to the running process and the dialog says so
+plainly rather than claiming a save that will be gone at the next restart.
+
+### The same thing by hand
 
 ```ini
 GEMINI_API_KEY=your-key
 GEMINI_MODEL=gemini-flash-latest
 VISION_MODEL=gemini-flash-latest
-USER_NAME=Prakash
+USER_NAME=Prajjwal
 ```
 
-Nothing else. `SMALLTALK_ENABLED` defaults to false, so "how are you" reaches
-Gemini and comes back as an answer that knows what you were doing five minutes
-ago.
+`SMALLTALK_ENABLED` defaults to false, so "how are you" reaches Gemini and
+comes back as an answer that knows what you were doing five minutes ago.
 
 ### On a local model later
 
@@ -101,7 +117,7 @@ voice coming back through the microphone is never taken as a command.
 
 | Setting | Default | What it does |
 |---|---|---|
-| `USER_NAME` | — | Your name, used sparingly |
+| `USER_NAME` | — | Your name, used sparingly. Also settable in the setup dialog |
 | `SMALLTALK_ENABLED` | `false` | Canned instant pleasantries. Auto-on when no model is configured |
 | `PERSONA_ACKS` | `true` | Her voice on tool confirmations. `false` restores flat acks |
 | `HISTORY_MAX_TURNS` | `12` | Exchanges carried on each model call |
@@ -115,10 +131,13 @@ Want the old behaviour back for a demo? `PERSONA_ACKS=false` and
 
 ## Where it lives
 
-`iris/app/agent/persona.py` is the character brief and the voice.
+`iris/app/agent/persona.py` is the character brief and the voice, and
 `iris/app/agent/rapport.py` is the clock and the long memory. Neither is
-load-bearing: if either breaks, she still answers, she just sounds flatter.
-That is deliberate and tested.
+load-bearing: if either breaks she still answers, she just sounds flatter, and
+that is deliberate and tested.
+
+`iris/app/api/routes/setup.py` is the setup dialog's API and
+`iris/app/core/envfile.py` is the careful `.env` writer behind it.
 
 ## Still on the list
 
