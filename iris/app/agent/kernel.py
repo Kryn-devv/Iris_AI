@@ -21,6 +21,7 @@ permission manager — including confirmation round-trips.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 import uuid
@@ -407,9 +408,10 @@ class AgentKernel:
         if match.needs_generation:
             arguments, generation_note = await self._enrich_content_arguments(state, match, arguments)
 
-        summary, exec_result = await self._execute_tool(
-            state, match.tool_name, arguments, user_approved
-        )
+        async with self._filler_for(match.tool_name, state):
+            summary, exec_result = await self._execute_tool(
+                state, match.tool_name, arguments, user_approved
+            )
 
         if exec_result.error == "__REQUIRES_CONFIRMATION__":
             return self._confirmation_response(state, match.tool_name, arguments, match.intent)
@@ -879,6 +881,40 @@ class AgentKernel:
                     )
         except Exception as exc:  # noqa: BLE001 - awareness never breaks a reply
             logger.debug("Rapport update skipped: %s", exc)
+
+    @contextlib.asynccontextmanager
+    async def _filler_for(self, tool_name: str, state: AgentState):
+        """Say "one sec" if a command goes quiet for too long.
+
+        Only for tools that reach the network, which are the ones that take
+        long enough for silence to be uncomfortable — a local command answers
+        before the filler's timer has finished, and speaking over it would be
+        worse than saying nothing. The agent loop is excluded on purpose: there
+        the model narrates its own work.
+        """
+        delay_ms = int(getattr(settings, "THINKING_FILLER_MS", 0) or 0)
+        tool = self.tool_registry.get(tool_name)
+        if delay_ms <= 0 or tool is None or not getattr(tool, "network", False):
+            yield
+            return
+
+        task = asyncio.create_task(self._say_filler(delay_ms / 1000.0, state))
+        try:
+            yield
+        finally:
+            task.cancel()
+
+    async def _say_filler(self, delay: float, state: AgentState) -> None:
+        try:
+            await asyncio.sleep(delay)
+            from iris.app.voice.service import default_voice_service
+
+            line = default_voice.working(state.metadata.get("target_style"))
+            await default_voice_service.speak(line, filler=True)
+        except asyncio.CancelledError:
+            raise            # the answer arrived first, which is the good case
+        except Exception as exc:  # noqa: BLE001 - a stop-gap never breaks a turn
+            logger.debug("Filler skipped: %s", exc)
 
     # --------------------------------------------------------------- persona
     def _use_smalltalk(self) -> bool:

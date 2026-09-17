@@ -228,3 +228,88 @@ class TestNothingHereCanBreakAReply:
         res = await kernel.process_request("open it", conversation_id="c1")
         assert res.status == "COMPLETED"
         assert "opened youtube" in res.response.lower(), res.response
+
+
+class TestTheFillerWhileSheWorks:
+    """Silence while something slow runs is the other way an assistant feels
+    dead. A person says "one sec"."""
+
+    @staticmethod
+    def _slow_tool(seconds: float, network: bool = True):
+        class Slow(BaseTool):
+            name = "slow_demo"
+            description = "Takes a while."
+            permission_level = PermissionLevel.READ
+            category = ToolCategory.CORE
+
+            async def _run(self, **_):
+                import asyncio as _a
+                await _a.sleep(seconds)
+                return {"speech": "Here it is."}
+
+        Slow.network = network
+        return Slow()
+
+    async def _run_with(self, monkeypatch, tool, delay_ms=20):
+        import asyncio
+
+        spoken = []
+
+        class FakeVoice:
+            async def speak(self, text, **kw):
+                spoken.append((text, kw.get("filler", False)))
+
+        monkeypatch.setattr("iris.app.voice.service.default_voice_service", FakeVoice())
+        monkeypatch.setattr("iris.app.core.config.settings.THINKING_FILLER_MS", delay_ms)
+
+        registry = ToolRegistry()
+        registry.register(tool, quiet=True)
+        kernel = AgentKernel(
+            tool_registry=registry,
+            permission_manager=PermissionManager(),
+            intent_engine=IntentEngine([
+                Rule(name="slow", intent="test", tool="slow_demo", pattern=_rx(r"^slow$")),
+            ]),
+        )
+        res = await kernel.process_request("slow", conversation_id="c1")
+        return res, spoken
+
+    async def test_a_slow_network_command_gets_a_stop_gap(self, monkeypatch):
+        res, spoken = await self._run_with(monkeypatch, self._slow_tool(0.25))
+        assert res.status == "COMPLETED" and "here it is" in res.response.lower()
+        assert spoken and spoken[0][1] is True, spoken
+        assert len(spoken[0][0]) < 40                      # short on purpose
+
+    async def test_a_fast_command_is_never_talked_over(self, monkeypatch):
+        """The answer beats the timer, so the stop-gap must not be said at all."""
+        res, spoken = await self._run_with(monkeypatch, self._slow_tool(0.0), delay_ms=400)
+        assert res.status == "COMPLETED"
+        assert spoken == []
+
+    async def test_a_local_command_never_gets_one(self, monkeypatch):
+        """Local tools answer immediately; only the network is worth waiting on."""
+        res, spoken = await self._run_with(monkeypatch, self._slow_tool(0.25, network=False))
+        assert res.status == "COMPLETED" and spoken == []
+
+    async def test_setting_it_to_zero_turns_it_off(self, monkeypatch):
+        res, spoken = await self._run_with(monkeypatch, self._slow_tool(0.2), delay_ms=0)
+        assert res.status == "COMPLETED" and spoken == []
+
+    async def test_a_broken_voice_never_breaks_the_command(self, monkeypatch):
+        class Broken:
+            async def speak(self, *a, **k):
+                raise RuntimeError("no audio device")
+
+        monkeypatch.setattr("iris.app.voice.service.default_voice_service", Broken())
+        monkeypatch.setattr("iris.app.core.config.settings.THINKING_FILLER_MS", 20)
+        registry = ToolRegistry()
+        registry.register(self._slow_tool(0.2), quiet=True)
+        kernel = AgentKernel(
+            tool_registry=registry,
+            permission_manager=PermissionManager(),
+            intent_engine=IntentEngine([
+                Rule(name="slow", intent="test", tool="slow_demo", pattern=_rx(r"^slow$")),
+            ]),
+        )
+        res = await kernel.process_request("slow", conversation_id="c1")
+        assert res.status == "COMPLETED" and "here it is" in res.response.lower()

@@ -215,7 +215,7 @@
       case "agent.failed": setState("error", "failed"); break;
       case "voice.speaking":
         if (shouldBrowserSpeak(p.engine)) {
-          speakBrowser(p.text, p.language);
+          speakBrowser(p.text, p.language, { filler: !!p.filler });
         } else if (p.engine && p.engine !== "browser") {
           // Spoken on the server (edge/piper). Nothing tells us when it ends,
           // so estimate from the word count and hand the floor back then.
@@ -223,10 +223,11 @@
           speaking = true;
           setState("speaking", "speaking");
           clearTimeout(serverSpeechTimer);
+          const wasFiller = !!p.filler;
           serverSpeechTimer = setTimeout(() => {
             speaking = false;
             lastSpeechEndedAt = Date.now();
-            openFollowUpWindow();
+            if (!wasFiller) openFollowUpWindow();
           }, estimateSpeechMs(p.text));
         }
         break;
@@ -452,10 +453,17 @@
     return els.speakToggle.checked && (engine === "browser" || !engine);
   }
 
-  function speakBrowser(text, lang) {
+  /* A filler is the "one sec" said while something slow runs. The answer that
+     follows must NOT cancel it — half of "one se—" sounds like a fault — so it
+     queues behind instead, which is also how a person finishes the words they
+     started. Everything else still cuts off whatever came before. */
+  let fillerSpeaking = false;
+
+  function speakBrowser(text, lang, opts) {
     if (!("speechSynthesis" in window) || !text) return;
+    const isFiller = !!(opts && opts.filler);
     try {
-      window.speechSynthesis.cancel();
+      if (!(fillerSpeaking && !isFiller)) window.speechSynthesis.cancel();
       const utter = new SpeechSynthesisUtterance(text);
       utter.rate = 1.02;
       utter.pitch = 1.0;
@@ -473,13 +481,17 @@
         || voices.find((v) => v.lang.startsWith("en"));
       if (preferred) utter.voice = preferred;
       speaking = true;
+      // Kept for the echo guard either way: hearing her own "one sec" come
+      // back through the microphone must not read as a command.
       lastSpokenText = text;
+      if (isFiller) fillerSpeaking = true;
       setState("speaking", "speaking");
       holo.setLevel(0.6);
       utter.onend = utter.onerror = () => {
+        if (isFiller) fillerSpeaking = false;
         speaking = false;
         lastSpeechEndedAt = Date.now();
-        openFollowUpWindow();
+        if (!isFiller) openFollowUpWindow();   // a stop-gap is not her turn ending
         holo.setLevel(0);
         if (currentState === "speaking") setState(listening || wakeMode ? "listening" : "idle", listening || wakeMode ? "listening" : "ready");
       };

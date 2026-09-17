@@ -101,8 +101,20 @@ class VoiceService:
         engine = stt_module.pick_engine()
         return engine.name if engine else "browser"
 
-    async def speak(self, text: str, *, language: str = "en", interrupt: bool = False) -> dict[str, Any]:
-        """Speak a sentence (server-side when possible) and notify all UIs."""
+    async def speak(
+        self,
+        text: str,
+        *,
+        language: str = "en",
+        interrupt: bool = False,
+        filler: bool = False,
+    ) -> dict[str, Any]:
+        """Speak a sentence (server-side when possible) and notify all UIs.
+
+        ``filler`` marks a stop-gap like "one sec" said while something slow
+        runs. The UI lets the real answer queue behind one of those instead of
+        cutting it off, because half of "one se—" sounds like a fault.
+        """
         sentence = sanitize_for_speech(text)
         if not sentence:
             return {"spoken": False, "engine": None, "text": ""}
@@ -110,7 +122,8 @@ class VoiceService:
         engine = self._get_tts() if (self.enabled and settings.SPEAK_RESPONSES) else None
         default_event_bus.publish(
             Topics.VOICE_SPEAKING,
-            {"text": sentence, "engine": engine.name if engine else "browser", "language": language},
+            {"text": sentence, "engine": engine.name if engine else "browser",
+             "language": language, "filler": filler},
         )
 
         spoken = False

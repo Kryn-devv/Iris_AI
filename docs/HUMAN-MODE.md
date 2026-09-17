@@ -107,6 +107,12 @@ words exactly, because a paraphrased sensor reading is an invented sensor
 reading. Only the packaging moves. The action stays as deterministic as it ever
 was, which is the thing the judge was shown.
 
+**She does not go silent while she works.** A command that reaches the network
+and takes more than about a second gets a "one sec" — varied like everything
+else she says — and the answer queues behind it rather than cutting it off
+mid-word. Local commands answer before the timer fires and never get one, so
+she is never talking over herself.
+
 **You can reply to her.** For nine seconds after she finishes speaking,
 anything you say is the next turn — no wake word. Each exchange extends it. Go
 quiet and she drops back to wake-word only, so the room's conversation stays
@@ -124,6 +130,7 @@ voice coming back through the microphone is never taken as a command.
 | `ROLLING_SUMMARY_ENABLED` | `true` | Fold older turns into notes she still knows |
 | `RAPPORT_RETURN_GAP_MIN` | `25` | Silence longer than this and she greets you |
 | `SPEECH_MAX_CHARS` | `1400` | Longest spoken reply before a clean cut |
+| `THINKING_FILLER_MS` | `900` | Say "one sec" when a network command goes quiet this long. 0 is off |
 | `PROMPT_SUFFIX` | — | Appended to every system prompt, for local model control tokens |
 
 Want the old behaviour back for a demo? `PERSONA_ACKS=false` and
@@ -143,7 +150,8 @@ that is deliberate and tested.
 
 - **Streaming to the voice.** The kernel waits for the whole reply before
   speaking. `cloud.py` already has `stream()`; wiring it sentence by sentence
-  into `voice.speak` is the next real latency win.
+  into `voice.speak` is the next real latency win — the filler above covers
+  the silence, but it does not make the answer arrive sooner.
 - **Barge-in for server-side TTS.** Browser speech can be cut off mid-sentence
   today; edge and piper need a `/voice/stop` that kills the playback process.
 - **Speaking first.** The camera already greets people it recognises. The same
