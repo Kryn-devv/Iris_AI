@@ -195,6 +195,41 @@ class TestItReadsAloud:
         outs = {voice.acknowledge("Yes, that's you.", style=E) for _ in range(40)}
         assert not any(o.lower().startswith("done —") for o in outs), outs
 
+    @pytest.mark.parametrize("text", [
+        "Spotify is playing.", "Excel file created.", "Word document saved.",
+        "Prakash is at the door.", "Gemini answered in 1.2 seconds.",
+        "Slide 3 updated.", "Chrome is already open.",
+    ])
+    def test_a_proper_noun_never_loses_its_capital(self, voice, text):
+        """"Right — spotify is playing" is wrong; keeping the capital never is."""
+        for _ in range(30):
+            out = voice.acknowledge(text, style=E)
+            assert text in out, out
+
+    @pytest.mark.parametrize("text,lowered", [
+        ("Opened YouTube.", "opened YouTube."),
+        ("Done: turned around.", "done: turned around."),
+        ("Saved to disk.", "saved to disk."),
+        ("You have 3 reminders.", "you have 3 reminders."),
+    ])
+    def test_an_ordinary_opening_word_still_runs_on(self, voice, text, lowered):
+        """The allowlist must not be so cautious that nothing reads naturally."""
+        outs = {voice.acknowledge(text, style=E) for _ in range(40)}
+        assert any(o.endswith(lowered) and o != text for o in outs), outs
+
+    def test_a_hindi_opener_does_not_lowercase_what_follows(self, voice):
+        """The danda ends a sentence exactly as a full stop does."""
+        for _ in range(40):
+            out = voice.acknowledge("Opened YouTube.", style=H, returning=True)
+            if "\u0964 " in out:
+                assert out.split("\u0964 ", 1)[1][0].isupper(), out
+
+    def test_not_every_sentence_gets_a_run_up(self, voice):
+        """A lead-in before every single answer is its own kind of tic."""
+        outs = [voice.acknowledge("Opened YouTube.", style=E) for _ in range(200)]
+        plain = sum(1 for o in outs if o == "Opened YouTube.")
+        assert 0.2 < plain / len(outs) < 0.7, plain / len(outs)
+
     def test_a_dash_free_failure_can_still_get_an_opener(self, voice):
         outs = {voice.acknowledge("The file is locked.", style=E, success=False)
                 for _ in range(40)}

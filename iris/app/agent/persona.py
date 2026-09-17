@@ -238,10 +238,16 @@ _DONE_TERSE: Dict[LanguageStyle, Sequence[str]] = {
 #: short so they never bury the actual answer, and often empty — a person does
 #: not preface every sentence.
 _LEAD_IN: Dict[LanguageStyle, Sequence[str]] = {
-    E: ("", "", "", "Okay — ", "Right — ", "Yep — ", "So — ", "There we go — "),
-    HG: ("", "", "", "Haan — ", "Theek hai — ", "Lo — "),
-    H: ("", "", "", "ठीक है — ", "हाँ — "),
+    E: ("Okay — ", "Right — ", "Yep — ", "So — ", "There we go — "),
+    HG: ("Haan — ", "Theek hai — ", "Lo — "),
+    H: ("ठीक है — ", "हाँ — "),
 }
+
+#: How often an informative sentence gets a lead-in at all. People do not
+#: preface every sentence, and a run-up before every single answer is its own
+#: kind of tic. (Repeating "" in the table above would not have worked: pick()
+#: dedupes by value, so three empties behave as one.)
+LEAD_IN_CHANCE = 0.6
 
 #: The first thing said after a long gap. Warmer, because a person who has not
 #: seen you in an hour says something before getting to work.
@@ -401,8 +407,9 @@ class Voice:
             opener = self._line(_RETURNING, resolved, "returning")
         elif repeated:
             opener = self._line(_AGAIN, resolved, "again")
-        elif bare:
-            opener = ""          # "Done." needs no run-up
+        elif bare or self._rng.random() >= LEAD_IN_CHANCE:
+            opener = ""          # "Done." needs no run-up, and neither does
+                                 # every other sentence
         else:
             opener = self._line(_LEAD_IN, resolved, "lead_in")
         return _join(opener, body)
@@ -426,6 +433,39 @@ def _is_bare_ack(text: str) -> bool:
 
 def _is_bare_failure(text: str) -> bool:
     return text.strip().lower() in _BARE_FAILURES
+
+
+#: Characters to ignore when looking a first word up.
+_EDGE = ".,:;!?\u2019'\"()"
+
+#: Words a tool sentence may safely begin with in lower case after an opener.
+#: An allowlist rather than a blocklist on purpose: leaving a capital alone is
+#: never wrong ("Right — Spotify is playing"), while lowercasing a proper noun
+#: always is ("Right — spotify is playing"). Drawn from what the tools in this
+#: repository actually say, plus ordinary English sentence openers. The pronoun
+#: "I" is absent deliberately — it is capital wherever it lands.
+_LOWERCASEABLE = frozenset("""
+opened open closed closing close cancelled canceled removed removing found
+showing shown sent scrolled saved saving read putting put playing played moved
+moving got fetched created creating restarting shutting noted registered locked
+unlocked done set setting started starting stopped stopping added deleted
+updated turned turning drove driving took taking copied pasted typed clicked
+launched killed paused resumed muted unmuted downloaded uploaded wrote writing
+ran running switched enabled disabled forgotten forgot learned learning
+watching listening speaking waiting sleeping searching looking checking
+you your yes no not there here the a an all it its that this those these
+what when where which whose why how who please tell told nothing nobody none
+still already now next last first second third one two three both either
+everything something anyone anybody someone my we our they them their he she
+ok okay sure right yep yeah nope maybe about from at on in into with without
+according based currently just only also then so and but or if while during
+timer timers screenshot routine routines notification notifications reminder
+reminders alarm alarms volume battery memory file files folder folders window
+windows tab tabs page pages front rear left back distance temperature humidity
+motion gas flame light lights camera robot face eyes weather news music song
+process processes network clipboard result results answer answers device
+devices sensor sensors reading readings speed level status time date
+""".split())
 
 
 def _join(opener: str, body: str) -> str:
@@ -455,13 +495,13 @@ def _decapitalize_after_lead(text: str, lead: str) -> str:
     """
     if not lead or not text:
         return text
-    if lead.rstrip().endswith((".", "!", "?")):
-        return text          # the opener was a whole sentence
+    if lead.rstrip().endswith((".", "!", "?", "\u0964")):
+        return text          # the opener was a whole sentence (\u0964 is the danda)
     first = text.split(" ", 1)[0]
-    if first == "I" or first.startswith(("I'", "I\u2019")):
-        return text          # the pronoun is always capital, mid-sentence or not
     if len(first) > 1 and any(c.isupper() for c in first[1:]):
         return text          # "YouTube", "IRIS", "S3"
+    if first.strip(_EDGE).lower() not in _LOWERCASEABLE:
+        return text          # "Spotify", "Excel", "Prakash" — and anything unknown
     return text[0].lower() + text[1:]
 
 

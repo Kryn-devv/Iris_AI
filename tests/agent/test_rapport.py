@@ -227,6 +227,30 @@ class TestRollingSummary:
         await asyncio.sleep(0.02)
         assert gw.calls == []
 
+    async def test_the_summary_rolls_instead_of_dropping_the_start(self, rapport):
+        """Without feeding the old notes back, the beginning is simply lost."""
+        gw = self.FakeGateway()
+        rapport.note_turn(CID)
+        rapport._threads[CID].summary = "They are called Prakash; building a robot."
+        rapport.maybe_summarize(CID, self._history(60), gw)
+        await asyncio.sleep(0.05)
+        prompt = gw.calls[0][0]
+        assert "Notes you already wrote" in prompt and "Prakash" in prompt
+
+    async def test_a_shrinking_history_does_not_stall_it_forever(self, rapport):
+        gw = self.FakeGateway()
+        rapport.note_turn(CID)
+        rapport._threads[CID].summarized_upto = 500      # a high-water mark
+        rapport.maybe_summarize(CID, self._history(60), gw)
+        await asyncio.sleep(0.05)
+        assert len(gw.calls) == 1
+
+    def test_a_failure_to_schedule_does_not_latch_the_gate_shut(self, rapport):
+        """No running loop must not mean "never summarize again this session"."""
+        rapport.note_turn(CID)
+        rapport.maybe_summarize(CID, self._history(60), self.FakeGateway())
+        assert rapport._threads[CID].summarizing is False
+
     async def test_no_gateway_is_a_silent_no_op(self, rapport):
         rapport.note_turn(CID)
         rapport.maybe_summarize(CID, self._history(60), None)

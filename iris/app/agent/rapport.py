@@ -218,12 +218,26 @@ class RapportTracker:
 
         window = 2 * max(1, int(getattr(settings, "HISTORY_MAX_TURNS", 12)))
         older = history[: max(0, len(history) - window)]
+        # A history that shrank (cleared, or a different conversation reusing
+        # the id) would otherwise stall summarizing forever against a high-water
+        # mark that can no longer be reached.
+        if len(older) < thread.summarized_upto:
+            thread.summarized_upto = 0
         # Only worth a call once a real chunk has aged out since last time.
         if len(older) < thread.summarized_upto + 6:
             return
 
+        # Look for the loop before building the coroutine: a synchronous caller
+        # would otherwise leave an un-awaited coroutine behind, and latching
+        # ``summarizing`` shut here would mean never remembering anything older
+        # than the window again this session.
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError as exc:
+            logger.debug("Rolling summary not scheduled: %s", exc)
+            return
         thread.summarizing = True
-        task = asyncio.create_task(self._summarize(key, older, gateway))
+        task = loop.create_task(self._summarize(key, older, gateway))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
@@ -233,9 +247,21 @@ class RapportTracker:
             transcript = _transcript(older, limit=60)
             if not transcript.strip():
                 return
+            # Feed the last notes back in so the summary genuinely rolls: only
+            # the most recent slice of the transcript is carried each time, and
+            # without this, anything older than that slice would be forgotten
+            # the moment it fell out.
+            previous = (thread.summary if thread is not None else "") or ""
+            prompt = SUMMARY_PROMPT.format(transcript=transcript)
+            if previous:
+                prompt = (
+                    f"Notes you already wrote about the start of this "
+                    f"conversation:\n{previous}\n\n{prompt}\n\n"
+                    "Merge both into one set of notes, still at most 45 words."
+                )
             response = await asyncio.wait_for(
                 gateway.generate(
-                    SUMMARY_PROMPT.format(transcript=transcript),
+                    prompt,
                     system_prompt="You write terse, factual notes. No preamble, no lists.",
                     max_tokens=120,
                     temperature=0.2,
