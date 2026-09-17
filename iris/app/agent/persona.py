@@ -238,7 +238,7 @@ _DONE_TERSE: Dict[LanguageStyle, Sequence[str]] = {
 #: short so they never bury the actual answer, and often empty — a person does
 #: not preface every sentence.
 _LEAD_IN: Dict[LanguageStyle, Sequence[str]] = {
-    E: ("", "", "", "Okay — ", "Right — ", "Yep — ", "Done — ", "There we go — "),
+    E: ("", "", "", "Okay — ", "Right — ", "Yep — ", "So — ", "There we go — "),
     HG: ("", "", "", "Haan — ", "Theek hai — ", "Lo — "),
     H: ("", "", "", "ठीक है — ", "हाँ — "),
 }
@@ -458,6 +458,8 @@ def _decapitalize_after_lead(text: str, lead: str) -> str:
     if lead.rstrip().endswith((".", "!", "?")):
         return text          # the opener was a whole sentence
     first = text.split(" ", 1)[0]
+    if first == "I" or first.startswith(("I'", "I\u2019")):
+        return text          # the pronoun is always capital, mid-sentence or not
     if len(first) > 1 and any(c.isupper() for c in first[1:]):
         return text          # "YouTube", "IRIS", "S3"
     return text[0].lower() + text[1:]

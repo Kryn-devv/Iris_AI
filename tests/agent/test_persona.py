@@ -176,6 +176,25 @@ class TestItReadsAloud:
         for out in outs:
             assert out.count(" — ") == 1 and text in out
 
+    @pytest.mark.parametrize("text", [
+        "I know 2 faces: Prakash (you), Aditi.",
+        "I'm watching. I'll greet the people I know.",
+        "I couldn't find that file.",
+        "I\u2019ve set the timer.",
+    ])
+    def test_the_pronoun_i_is_never_lower_cased(self, voice, text):
+        """"Right — i know 2 faces" is not English."""
+        for _ in range(30):
+            out = voice.acknowledge(text, style=E)
+            assert " i " not in f" {out} " and not out.startswith("i ")
+            assert "i'" not in out.lower().replace("i'", "I'").lower() or "I'" in out
+            assert text in out
+
+    def test_no_opener_claims_an_action_that_did_not_happen(self, voice):
+        """"Done — yes, that's you." Nothing was done; it was a question."""
+        outs = {voice.acknowledge("Yes, that's you.", style=E) for _ in range(40)}
+        assert not any(o.lower().startswith("done —") for o in outs), outs
+
     def test_a_dash_free_failure_can_still_get_an_opener(self, voice):
         outs = {voice.acknowledge("The file is locked.", style=E, success=False)
                 for _ in range(40)}
