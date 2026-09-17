@@ -221,6 +221,7 @@
           // so estimate from the word count and hand the floor back then.
           lastSpokenText = p.text || "";
           speaking = true;
+          speakingInBrowser = false;      // the server holds this audio
           setState("speaking", "speaking");
           clearTimeout(serverSpeechTimer);
           const wasFiller = !!p.filler;
@@ -419,10 +420,19 @@
    *   - a transcript that mostly matches what she just said is dropped — the
    *     recognizer often delivers her last sentence a beat after she stops. */
   const FOLLOW_UP_MS = 9000;
+  /* How long after she stops that a matching transcript is still her echo.
+     Without a lifetime, lastSpokenText never expires and *any* later attempt
+     to say what she once said is silently dropped — ask her to "open youtube",
+     and every future "open youtube" disappears. */
+  const ECHO_WINDOW_MS = 2500;
   let followUpUntil = 0;
   let lastSpokenText = "";
   let lastSpeechEndedAt = 0;
   let serverSpeechTimer = null;
+  let followUpSafety = null;
+  /* Browser speech can be cancelled; server-side speech cannot. Pretending we
+     stopped audio we cannot stop is what turns her own voice into a command. */
+  let speakingInBrowser = false;
 
   function estimateSpeechMs(text) {
     const words = (text || "").trim().split(/\s+/).filter(Boolean).length;
@@ -434,11 +444,28 @@
   }
   function inFollowUpWindow() { return Date.now() < followUpUntil; }
 
+  /* Browsers stop firing "end" on long utterances — Chrome gives up silently
+     somewhere past a dozen seconds — so a substantial answer would leave the
+     floor with her forever and conversation mode would quietly end after every
+     real reply. This is the backstop: hand the floor back once she has had
+     time to finish, whatever the engine did or did not tell us. */
+  function armFollowUpSafety(text) {
+    clearTimeout(followUpSafety);
+    followUpSafety = setTimeout(() => {
+      speaking = false;
+      speakingInBrowser = false;
+      lastSpeechEndedAt = Date.now();
+      openFollowUpWindow();
+    }, Math.min(90000, estimateSpeechMs(text) + 1500));
+  }
+
   /* Is this transcript just her own voice coming back? Exact containment
      catches the clean case; the overlap ratio catches the recognizer mangling
      a word or two of it, which it usually does. */
   function looksLikeOwnVoice(text) {
     if (!lastSpokenText) return false;
+    // Stale: she said this long enough ago that saying it back is a request.
+    if (!speaking && Date.now() - lastSpeechEndedAt > ECHO_WINDOW_MS) return false;
     const norm = (t) => t.toLowerCase().replace(/[^a-z0-9\u0900-\u097f ]+/g, " ").replace(/\s+/g, " ").trim();
     const heard = norm(text), said = norm(lastSpokenText);
     if (!heard) return true;
@@ -446,7 +473,19 @@
     const saidWords = new Set(said.split(" "));
     const heardWords = heard.split(" ");
     const hits = heardWords.filter((w) => saidWords.has(w)).length;
-    return heardWords.length >= 3 && hits / heardWords.length > 0.6;
+    // Two words is enough to be an echo of "one sec" or "all set".
+    return heardWords.length >= 2 && hits / heardWords.length > 0.6;
+  }
+
+  /* Is this her own voice arriving through the microphone? While she is
+     speaking, always. Just after, only if it matches what she said. Push-to-
+     talk is deliberate — the user held the button — so only the first test
+     applies there. */
+  function isEcho(text, deliberate) {
+    if (speaking) return true;
+    if (deliberate) return false;
+    if (Date.now() - lastSpeechEndedAt < 700) return true;
+    return looksLikeOwnVoice(text);
   }
 
   function shouldBrowserSpeak(engine) {
@@ -481,6 +520,8 @@
         || voices.find((v) => v.lang.startsWith("en"));
       if (preferred) utter.voice = preferred;
       speaking = true;
+      speakingInBrowser = true;
+      if (!isFiller) armFollowUpSafety(text);
       // Kept for the echo guard either way: hearing her own "one sec" come
       // back through the microphone must not read as a command.
       lastSpokenText = text;
@@ -489,7 +530,9 @@
       holo.setLevel(0.6);
       utter.onend = utter.onerror = () => {
         if (isFiller) fillerSpeaking = false;
+        clearTimeout(followUpSafety);        // the engine told us; no backstop needed
         speaking = false;
+        speakingInBrowser = false;
         lastSpeechEndedAt = Date.now();
         if (!isFiller) openFollowUpWindow();   // a stop-gap is not her turn ending
         holo.setLevel(0);
@@ -521,11 +564,16 @@
         // Barge-in. Start talking while she is mid-sentence and she stops, the
         // way a person does. Two words minimum so a cough does not cut her off,
         // and never on her own voice echoing back.
-        if (speaking && (wakeMode || listening)
-            && interim.trim().split(/\s+/).length >= 2 && !looksLikeOwnVoice(interim)) {
+        // Only when the browser is the one talking: server-side audio (edge,
+        // piper) cannot be stopped from here, and clearing `speaking` while it
+        // plays on would switch the echo guard off mid-sentence and let her
+        // own voice back in as a command.
+        if (speaking && speakingInBrowser && (wakeMode || listening)
+            && interim.trim().split(/\s+/).length >= 3 && !looksLikeOwnVoice(interim)) {
           try { window.speechSynthesis.cancel(); } catch { }
-          clearTimeout(serverSpeechTimer);
+          clearTimeout(followUpSafety);
           speaking = false;
+          speakingInBrowser = false;
           lastSpeechEndedAt = Date.now();
           openFollowUpWindow();
         }
@@ -579,9 +627,8 @@
 
   function onSpeechFinal(text) {
     if (!text) return;
-    // Her own voice through the speakers is never a command. The 700 ms covers
-    // the transcript that lands just after she stops.
-    if (speaking || Date.now() - lastSpeechEndedAt < 700 || looksLikeOwnVoice(text)) return;
+    // Her own voice through the speakers is never a command.
+    if (isEcho(text, listening)) return;
     if (wakeMode && !listening) {
       const lower = text.toLowerCase();
       const wake = (voiceStatus.wake_words || ["iris"]).find((w) => lower.includes(w));

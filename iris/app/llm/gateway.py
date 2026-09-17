@@ -99,6 +99,19 @@ class ModelGateway:
     def has_cloud(self) -> bool:
         return bool(self.provider_chain())
 
+    @property
+    def can_answer(self) -> bool:
+        """True when a *real* model would take the next request.
+
+        ``has_cloud`` only says a key is configured. It stays true while every
+        provider is rate-limited or unreachable and the chain is falling
+        through to the offline engine — which is a different question, and the
+        one callers usually mean when they ask.
+        """
+        if settings.LLM_MODE in ("off", "mock"):
+            return False
+        return bool(self._usable_chain())
+
     # -------------------------------------------------------------- selection
     async def get_provider_and_name(self) -> Tuple[LLMProvider, str]:
         """Resolve the active provider based on LLM_MODE (compatibility API)."""

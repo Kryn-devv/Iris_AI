@@ -81,7 +81,7 @@ class TestSmalltalkGate:
 
     async def test_with_a_model_available_conversation_reaches_it(self, monkeypatch):
         kernel = make_kernel()
-        monkeypatch.setattr(type(kernel.model_gateway), "has_cloud", property(lambda self: True))
+        monkeypatch.setattr(type(kernel.model_gateway), "can_answer", property(lambda self: True))
         monkeypatch.setattr("iris.app.core.config.settings.SMALLTALK_ENABLED", False)
         res = await kernel.process_request("how are you")
         assert res.handler != "smalltalk", res.response
@@ -89,14 +89,26 @@ class TestSmalltalkGate:
     async def test_with_no_model_at_all_she_still_answers(self, monkeypatch):
         """Zero keys, no network: answering 'how are you' is a promise kept."""
         kernel = make_kernel()
-        monkeypatch.setattr(type(kernel.model_gateway), "has_cloud", property(lambda self: False))
+        monkeypatch.setattr(type(kernel.model_gateway), "can_answer", property(lambda self: False))
         monkeypatch.setattr("iris.app.core.config.settings.SMALLTALK_ENABLED", False)
         res = await kernel.process_request("how are you")
         assert res.handler == "smalltalk" and res.response.strip()
 
-    async def test_the_setting_forces_it_on(self, monkeypatch):
+    async def test_a_key_that_is_rate_limited_still_gets_a_warm_reply(self, monkeypatch):
+        """The normal state of a free tier on a busy afternoon. Falling through
+        to the offline engine here answers "how are you" with the blurb telling
+        you to add an API key you already have."""
         kernel = make_kernel()
         monkeypatch.setattr(type(kernel.model_gateway), "has_cloud", property(lambda self: True))
+        monkeypatch.setattr(type(kernel.model_gateway), "can_answer", property(lambda self: False))
+        monkeypatch.setattr("iris.app.core.config.settings.SMALLTALK_ENABLED", False)
+        res = await kernel.process_request("how are you")
+        assert res.handler == "smalltalk", res.response
+        assert "API key" not in res.response
+
+    async def test_the_setting_forces_it_on(self, monkeypatch):
+        kernel = make_kernel()
+        monkeypatch.setattr(type(kernel.model_gateway), "can_answer", property(lambda self: True))
         monkeypatch.setattr("iris.app.core.config.settings.SMALLTALK_ENABLED", True)
         res = await kernel.process_request("how are you")
         assert res.handler == "smalltalk"
@@ -104,7 +116,7 @@ class TestSmalltalkGate:
     async def test_a_smalltalk_turn_is_remembered(self, monkeypatch):
         """She has to know the exchange happened, or she contradicts it next turn."""
         kernel = make_kernel()
-        monkeypatch.setattr(type(kernel.model_gateway), "has_cloud", property(lambda self: False))
+        monkeypatch.setattr(type(kernel.model_gateway), "can_answer", property(lambda self: False))
         monkeypatch.setattr("iris.app.core.config.settings.SMALLTALK_ENABLED", True)
         await kernel.process_request("how are you", conversation_id="c1")
         history = await kernel.conversation_memory.retrieve("c1")
@@ -313,3 +325,55 @@ class TestTheFillerWhileSheWorks:
         )
         res = await kernel.process_request("slow", conversation_id="c1")
         assert res.status == "COMPLETED" and "here it is" in res.response.lower()
+
+
+class TestApprovedCommands:
+    """Approving a risky action is still a thing she did."""
+
+    class RiskyTool(BaseTool):
+        name = "risky_demo"
+        description = "Needs a yes first."
+        permission_level = PermissionLevel.CONFIRM_REQUIRED
+        category = ToolCategory.CORE
+
+        async def _run(self, **_):
+            return {"speech": "Deleted the folder."}
+
+    def _kernel(self):
+        registry = ToolRegistry()
+        registry.register(self.RiskyTool(), quiet=True)
+        return AgentKernel(
+            tool_registry=registry,
+            permission_manager=PermissionManager(),
+            intent_engine=IntentEngine([
+                Rule(name="risky", intent="test", tool="risky_demo",
+                     pattern=_rx(r"^do the risky thing$")),
+            ]),
+        )
+
+    async def test_the_reply_is_in_her_voice_too(self):
+        """It used to come back flat, because the confirmation path had its own
+        exit that skipped everything the ordinary path does."""
+        said = set()
+        for _ in range(10):
+            kernel = self._kernel()
+            first = await kernel.process_request("do the risky thing", conversation_id="c1")
+            assert first.pending_action, first.response
+            done = await kernel.resume_task_confirmation(first.task_id, approved=True)
+            assert "deleted the folder" in done.response.lower(), done.response
+            said.add(done.response)
+        assert len(said) >= 3, said
+
+    async def test_and_it_is_remembered(self):
+        kernel = self._kernel()
+        first = await kernel.process_request("do the risky thing", conversation_id="c1")
+        await kernel.resume_task_confirmation(first.task_id, approved=True)
+        history = await kernel.conversation_memory.retrieve("c1")
+        assert [m["role"] for m in history] == ["user", "assistant"]
+        assert "deleted the folder" in history[1]["content"].lower()
+
+    async def test_saying_no_still_cancels_plainly(self):
+        kernel = self._kernel()
+        first = await kernel.process_request("do the risky thing", conversation_id="c1")
+        done = await kernel.resume_task_confirmation(first.task_id, approved=False)
+        assert "won't run" in done.response

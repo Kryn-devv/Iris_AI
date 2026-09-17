@@ -274,12 +274,26 @@ class AgentKernel:
 
             state.user_approved = True
             state.update_status(TaskStatus.RUNNING)
-            summary, exec_result = await self._execute_tool(state, tool_name, arguments, True)
+            async with self._filler_for(tool_name, state):
+                summary, exec_result = await self._execute_tool(state, tool_name, arguments, True)
             text = exec_result.spoken_or_display() or f"Done — '{tool_name}' completed."
             if not exec_result.success:
                 text = exec_result.error or f"'{tool_name}' failed."
             state.update_status(TaskStatus.COMPLETED if exec_result.success else TaskStatus.FAILED)
             self._dispatch_event(state, AgentEventType.AGENT_COMPLETED)
+
+            # The same voice and the same memory as any other command: an
+            # approved action was still a thing she did, and a turn the model
+            # never learns about is one it will contradict later.
+            style = state.metadata.get("target_style")
+            if exec_result.success:
+                text = localize_ack(text, style)
+            speech = localize_ack(exec_result.speech, style) if exec_result.speech else None
+            text = self._voiced(state, text, tool_name, exec_result.success)
+            if speech:
+                speech = self._voiced(state, speech, tool_name, exec_result.success, reuse=text)
+            await self._remember_turn(state, text, tool_name=tool_name, was_command=True)
+
             return self._finish(
                 state,
                 self._response(
@@ -287,7 +301,7 @@ class AgentKernel:
                     text,
                     handler="confirmation",
                     tools=[summary],
-                    speech=exec_result.speech,
+                    speech=speech,
                     artifacts=exec_result.artifacts,
                     ui=exec_result.ui,
                     status=TaskStatus.COMPLETED if exec_result.success else TaskStatus.FAILED,
@@ -918,11 +932,18 @@ class AgentKernel:
 
     # --------------------------------------------------------------- persona
     def _use_smalltalk(self) -> bool:
-        """Canned pleasantries only when there is no model to do better."""
+        """Canned pleasantries only when there is no model to do better.
+
+        "Reachable", not "configured": with a key set but the provider
+        rate-limited — the normal state of a free tier on a busy afternoon —
+        "how are you" would otherwise fall through to the offline engine and
+        come back as the blurb telling you to add an API key you already have.
+        A warm canned line is better than that.
+        """
         if getattr(settings, "SMALLTALK_ENABLED", False):
             return True
         try:
-            return not self.model_gateway.has_cloud
+            return not self.model_gateway.can_answer
         except Exception:  # noqa: BLE001
             return True
 

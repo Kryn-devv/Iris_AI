@@ -100,6 +100,26 @@ class TestSituation:
         assert rapport.repeats("nobody", "open_app") is False
         assert rapport.repeats(None, None) is False
 
+    def test_a_turn_with_no_conversation_is_not_tracked(self, rapport):
+        """Scheduled commands and the robot's own microphone arrive without an
+        id. Bucketing them together made a background timer look like the
+        person asking for the same thing twice."""
+        rapport.note_turn(None, tool_name="time", was_command=True)
+        rapport.note_turn(None, tool_name="time", was_command=True)
+        assert rapport._threads == {}
+        assert rapport.moment(None).turns == 0
+        assert rapport.repeats(None, "time") is False
+        assert rapport.context_block(None) == ""
+
+    def test_an_id_less_turn_cannot_disturb_a_real_conversation(self, rapport, clock):
+        rapport.note_turn(CID, tool_name="weather", was_command=True)
+        clock.tick(60 * 60)
+        for _ in range(4):                       # a cron job firing meanwhile
+            rapport.note_turn(None, tool_name="time", was_command=True)
+        moment = rapport.moment(CID)
+        assert moment.returning is True          # the hour away still registers
+        assert moment.terse is False             # and they did not earn a burst
+
     def test_session_length_is_tracked(self, rapport, clock):
         rapport.note_turn(CID)
         clock.tick(3 * 60 * 60)
@@ -148,19 +168,31 @@ class TestContextBlock:
 
 
 class TestRollingSummary:
+    @pytest.fixture(autouse=True)
+    def a_reachable_model(self, monkeypatch):
+        """The suite runs in mock mode; summarizing deliberately refuses there,
+        so these tests have to say a real model is answering."""
+        monkeypatch.setattr("iris.app.core.config.settings.LLM_MODE", "auto")
+
     @staticmethod
     def _history(n):
         return [{"role": "user" if i % 2 == 0 else "assistant", "content": f"line {i}"}
                 for i in range(n)]
 
     class FakeGateway:
-        def __init__(self, text="They are building a robot. Exam on Thursday."):
+        """A gateway with a real model behind it."""
+
+        can_answer = True
+
+        def __init__(self, text="They are building a robot. Exam on Thursday.",
+                     provider="gemini"):
             self.calls = []
             self.text = text
+            self.provider = provider
 
         async def generate(self, prompt, **kwargs):
             self.calls.append((prompt, kwargs))
-            return type("R", (), {"content": self.text})()
+            return type("R", (), {"content": self.text, "provider_name": self.provider})()
 
     async def test_a_short_conversation_needs_no_summary(self, rapport):
         gw = self.FakeGateway()
@@ -250,6 +282,42 @@ class TestRollingSummary:
         rapport.note_turn(CID)
         rapport.maybe_summarize(CID, self._history(60), self.FakeGateway())
         assert rapport._threads[CID].summarizing is False
+
+    async def test_the_offline_engine_is_never_mistaken_for_memory(self, rapport):
+        """A free tier that rate-limits mid-conversation makes this the common
+        case: the gateway falls through to the mock, whose canned reply would
+        then be handed to the next real model as something that happened."""
+        gw = self.FakeGateway(text="Plan created for intent 'system_info'.",
+                              provider="mock")
+        rapport.note_turn(CID)
+        rapport.maybe_summarize(CID, self._history(60), gw)
+        await asyncio.sleep(0.05)
+        assert rapport._threads[CID].summary == ""
+        assert rapport.context_block(CID) == ""
+
+    async def test_it_does_not_even_ask_when_no_model_is_reachable(self, rapport):
+        """Rate-limited or offline, the chain falls through to the mock — so
+        there is nothing worth asking in the first place."""
+        class Unreachable(self.FakeGateway):
+            can_answer = False
+
+        gw = Unreachable()
+        rapport.note_turn(CID)
+        rapport.maybe_summarize(CID, self._history(60), gw)
+        await asyncio.sleep(0.05)
+        assert gw.calls == []
+
+    async def test_a_gateway_that_cannot_say_is_treated_as_unreachable(self, rapport):
+        class Odd(self.FakeGateway):
+            @property
+            def can_answer(self):
+                raise RuntimeError("no idea")
+
+        gw = Odd()
+        rapport.note_turn(CID)
+        rapport.maybe_summarize(CID, self._history(60), gw)
+        await asyncio.sleep(0.05)
+        assert gw.calls == []
 
     async def test_no_gateway_is_a_silent_no_op(self, rapport):
         rapport.note_turn(CID)

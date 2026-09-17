@@ -217,6 +217,20 @@ class TestItReadsAloud:
         outs = {voice.acknowledge(text, style=E) for _ in range(40)}
         assert any(o.endswith(lowered) and o != text for o in outs), outs
 
+    @pytest.mark.parametrize("text,lowered", [
+        ("It's 24 degrees.", "it's 24 degrees."),
+        ("That's your file.", "that's your file."),
+        ("There's nothing there.", "there's nothing there."),
+    ])
+    def test_contractions_run_on_like_speech(self, voice, text, lowered):
+        outs = {voice.acknowledge(text, style=E) for _ in range(40)}
+        assert any(o.endswith(lowered) and o != text for o in outs), outs
+
+    def test_but_never_the_pronoun(self, voice):
+        for _ in range(40):
+            out = voice.acknowledge("I'm watching the door.", style=E)
+            assert "I'm watching" in out, out
+
     def test_a_hindi_opener_does_not_lowercase_what_follows(self, voice):
         """The danda ends a sentence exactly as a full stop does."""
         for _ in range(40):

@@ -103,7 +103,7 @@ class RapportTracker:
         """How the next reply should feel, given what has happened so far."""
         now = self._clock()
         hour = self._wall()
-        thread = self._threads.get(conversation_id or "")
+        thread = self._threads.get(conversation_id) if conversation_id else None
         if thread is None:
             # First contact, not a reunion. Greeting someone who has said
             # nothing yet with "welcome back" is a stranger claiming to know
@@ -129,7 +129,7 @@ class RapportTracker:
 
     def repeats(self, conversation_id: Optional[str], tool_name: Optional[str]) -> bool:
         """True when this tool is the same one as the previous turn."""
-        thread = self._threads.get(conversation_id or "")
+        thread = self._threads.get(conversation_id) if conversation_id else None
         if thread is None or not tool_name or not thread.tools:
             return False
         return thread.tools[-1] == tool_name
@@ -142,8 +142,18 @@ class RapportTracker:
         tool_name: Optional[str] = None,
         was_command: bool = False,
     ) -> None:
-        """Record that an exchange just happened."""
-        key = conversation_id or ""
+        """Record that an exchange just happened.
+
+        A turn with no conversation id is not tracked at all. Scheduled
+        commands and the robot's own microphone arrive without one, and
+        bucketing them together made a background timer firing look like the
+        person asking for the same thing twice — "Again —" about a tool they
+        never ran, terser answers they did not earn, and a three-hour absence
+        that never registered because a cron job kept the thread warm.
+        """
+        if not conversation_id:
+            return
+        key = conversation_id
         now = self._clock()
         thread = self._threads.get(key)
         if thread is None:
@@ -161,7 +171,8 @@ class RapportTracker:
             thread.command_stamps.append(now)
 
     def forget(self, conversation_id: Optional[str]) -> None:
-        self._threads.pop(conversation_id or "", None)
+        if conversation_id:
+            self._threads.pop(conversation_id, None)
 
     def clear(self) -> None:
         self._threads.clear()
@@ -174,7 +185,7 @@ class RapportTracker:
         awareness, not an order. The character brief already says what to do
         with it.
         """
-        thread = self._threads.get(conversation_id or "")
+        thread = self._threads.get(conversation_id) if conversation_id else None
         if thread is None:
             return ""
         lines: List[str] = []
@@ -211,8 +222,15 @@ class RapportTracker:
         """
         if not getattr(settings, "ROLLING_SUMMARY_ENABLED", True) or gateway is None:
             return
+        # The offline engine answers anything, including this. Its canned reply
+        # ("Plan created for intent 'system_info'…") stored as conversation
+        # memory would then be handed to the *next* real model as fact — the
+        # one thing the character brief forbids outright. A free tier that
+        # rate-limits mid-conversation makes this the common case, not a corner.
+        if not _cloud_is_usable(gateway):
+            return
         key = conversation_id or ""
-        thread = self._threads.get(key)
+        thread = self._threads.get(key) if conversation_id else None
         if thread is None or thread.summarizing:
             return
 
@@ -268,6 +286,11 @@ class RapportTracker:
                 ),
                 timeout=float(getattr(settings, "ROLLING_SUMMARY_TIMEOUT_S", 25)),
             )
+            # Belt and braces: the chain can fall back to the offline engine
+            # between the check above and the answer arriving.
+            if (getattr(response, "provider_name", "") or "").lower() == "mock":
+                logger.debug("Rolling summary discarded: answered by the offline engine")
+                return
             notes = (getattr(response, "content", "") or "").strip()
             if notes and thread is not None:
                 thread.summary = notes[:600]
@@ -280,6 +303,14 @@ class RapportTracker:
         finally:
             if thread is not None:
                 thread.summarizing = False
+
+
+def _cloud_is_usable(gateway: Any) -> bool:
+    """True when a real model would answer, rather than the offline stand-in."""
+    try:
+        return bool(gateway.can_answer)
+    except Exception:  # noqa: BLE001 - a gateway that cannot answer that is not usable
+        return False
 
 
 def _transcript(messages: List[dict], limit: int = 60) -> str:
