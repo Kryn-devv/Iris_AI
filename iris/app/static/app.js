@@ -203,10 +203,28 @@
       case "tool.failed": tick(`${p.tool} failed`, "fail"); break;
       // A turn that came in over voice or Telegram never produced a WS
       // "response" frame, so nothing ever moved the orb back out of thinking.
-      case "agent.completed": setState("idle", "ready"); break;
+      case "agent.completed":
+        setState("idle", "ready");
+        // Text-only (speech off) still hands you the floor to reply.
+        if (!els.speakToggle.checked) openFollowUpWindow();
+        break;
       case "agent.failed": setState("error", "failed"); break;
       case "voice.speaking":
-        if (shouldBrowserSpeak(p.engine)) speakBrowser(p.text, p.language);
+        if (shouldBrowserSpeak(p.engine)) {
+          speakBrowser(p.text, p.language);
+        } else if (p.engine && p.engine !== "browser") {
+          // Spoken on the server (edge/piper). Nothing tells us when it ends,
+          // so estimate from the word count and hand the floor back then.
+          lastSpokenText = p.text || "";
+          speaking = true;
+          setState("speaking", "speaking");
+          clearTimeout(serverSpeechTimer);
+          serverSpeechTimer = setTimeout(() => {
+            speaking = false;
+            lastSpeechEndedAt = Date.now();
+            openFollowUpWindow();
+          }, estimateSpeechMs(p.text));
+        }
         break;
       case "reminder.due":
       case "routine.fired": {
@@ -380,6 +398,52 @@
   let speaking = false;
   let voiceStatus = { wake_words: ["iris", "hey iris", "ok iris"], browser_voice: true };
 
+  /* ── Conversation mode ──────────────────────────────────────────────────
+   * Wake-word mode threw away anything not prefixed with "Iris", so you could
+   * never simply *reply* to her — every sentence meant summoning her again.
+   * That is what made talking to her feel like using a vending machine.
+   *
+   * Now, the moment she finishes speaking, a window opens: for FOLLOW_UP_MS
+   * anything you say is the next turn, no wake word. Each exchange extends it,
+   * so a real back-and-forth flows; go quiet and she drops back to wake-word
+   * only, which is what keeps the room's conversation out of her input.
+   *
+   * Two guards stop her from talking to herself:
+   *   - nothing heard WHILE she is speaking counts as a command (that is her
+   *     own voice arriving through the microphone), except to interrupt her;
+   *   - a transcript that mostly matches what she just said is dropped — the
+   *     recognizer often delivers her last sentence a beat after she stops. */
+  const FOLLOW_UP_MS = 9000;
+  let followUpUntil = 0;
+  let lastSpokenText = "";
+  let lastSpeechEndedAt = 0;
+  let serverSpeechTimer = null;
+
+  function estimateSpeechMs(text) {
+    const words = (text || "").trim().split(/\s+/).filter(Boolean).length;
+    return Math.min(60000, Math.max(700, Math.round((words / 2.6) * 1000)));  // ~155 wpm
+  }
+  function openFollowUpWindow() {
+    followUpUntil = Date.now() + FOLLOW_UP_MS;
+    if (wakeMode && !speaking) setState("listening", "your turn");
+  }
+  function inFollowUpWindow() { return Date.now() < followUpUntil; }
+
+  /* Is this transcript just her own voice coming back? Exact containment
+     catches the clean case; the overlap ratio catches the recognizer mangling
+     a word or two of it, which it usually does. */
+  function looksLikeOwnVoice(text) {
+    if (!lastSpokenText) return false;
+    const norm = (t) => t.toLowerCase().replace(/[^a-z0-9\u0900-\u097f ]+/g, " ").replace(/\s+/g, " ").trim();
+    const heard = norm(text), said = norm(lastSpokenText);
+    if (!heard) return true;
+    if (said.includes(heard)) return true;
+    const saidWords = new Set(said.split(" "));
+    const heardWords = heard.split(" ");
+    const hits = heardWords.filter((w) => saidWords.has(w)).length;
+    return heardWords.length >= 3 && hits / heardWords.length > 0.6;
+  }
+
   function shouldBrowserSpeak(engine) {
     return els.speakToggle.checked && (engine === "browser" || !engine);
   }
@@ -405,10 +469,13 @@
         || voices.find((v) => v.lang.startsWith("en"));
       if (preferred) utter.voice = preferred;
       speaking = true;
+      lastSpokenText = text;
       setState("speaking", "speaking");
       holo.setLevel(0.6);
       utter.onend = utter.onerror = () => {
         speaking = false;
+        lastSpeechEndedAt = Date.now();
+        openFollowUpWindow();
         holo.setLevel(0);
         if (currentState === "speaking") setState(listening || wakeMode ? "listening" : "idle", listening || wakeMode ? "listening" : "ready");
       };
@@ -432,7 +499,21 @@
         if (event.results[i].isFinal) finalText += alt;
         else interim += alt;
       }
-      if (interim) { els.transcript.textContent = interim; holo.setLevel(Math.min(1, interim.length / 40)); }
+      if (interim) {
+        els.transcript.textContent = interim;
+        holo.setLevel(Math.min(1, interim.length / 40));
+        // Barge-in. Start talking while she is mid-sentence and she stops, the
+        // way a person does. Two words minimum so a cough does not cut her off,
+        // and never on her own voice echoing back.
+        if (speaking && (wakeMode || listening)
+            && interim.trim().split(/\s+/).length >= 2 && !looksLikeOwnVoice(interim)) {
+          try { window.speechSynthesis.cancel(); } catch { }
+          clearTimeout(serverSpeechTimer);
+          speaking = false;
+          lastSpeechEndedAt = Date.now();
+          openFollowUpWindow();
+        }
+      }
       if (finalText) {
         els.transcript.textContent = "";
         holo.setLevel(0);
@@ -482,14 +563,24 @@
 
   function onSpeechFinal(text) {
     if (!text) return;
+    // Her own voice through the speakers is never a command. The 700 ms covers
+    // the transcript that lands just after she stops.
+    if (speaking || Date.now() - lastSpeechEndedAt < 700 || looksLikeOwnVoice(text)) return;
     if (wakeMode && !listening) {
-      // Continuous mode: only act when a wake word prefixes the utterance.
       const lower = text.toLowerCase();
       const wake = (voiceStatus.wake_words || ["iris"]).find((w) => lower.includes(w));
-      if (!wake) return;
-      const cmd = lower.slice(lower.indexOf(wake) + wake.length).replace(/^[,.!?\s]+/, "");
-      if (cmd) send(cmd);
-      else { setState("listening", "yes?"); speakBrowser("Yes?"); }
+      if (wake) {
+        // Slice the original text, not the lower-cased copy: "iris open
+        // YouTube" used to reach the tools as "open youtube".
+        const cmd = text.slice(lower.indexOf(wake) + wake.length).replace(/^[,.!?\s]+/, "");
+        if (cmd) send(cmd);
+        else { openFollowUpWindow(); setState("listening", "yes?"); speakBrowser("Yes?"); }
+        return;
+      }
+      // No wake word — but we are mid-conversation, so this is simply her turn
+      // to listen. That is the whole difference between talking to someone and
+      // filing requests with them.
+      if (inFollowUpWindow()) { send(text); return; }
       return;
     }
     // Push-to-talk: send whatever was said.

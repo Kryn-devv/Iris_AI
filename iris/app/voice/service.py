@@ -33,8 +33,14 @@ _URL_RX = re.compile(r"https?://\S+")
 _WS = re.compile(r"\s+")
 
 
-def sanitize_for_speech(text: str, max_chars: int = 500) -> str:
-    """Strip markdown noise and URLs so TTS reads naturally."""
+def sanitize_for_speech(text: str, max_chars: Optional[int] = None) -> str:
+    """Strip markdown noise and URLs so TTS reads naturally.
+
+    ``max_chars`` defaults to ``SPEECH_MAX_CHARS`` rather than a hard-coded
+    500: that limit is why a longer answer used to stop mid-thought out loud.
+    """
+    if max_chars is None:
+        max_chars = int(getattr(settings, "SPEECH_MAX_CHARS", 1400))
     cleaned = _URL_RX.sub("a link", text or "")
     cleaned = _SENTENCE_CLEAN.sub("", cleaned)
     cleaned = _WS.sub(" ", cleaned).strip()

@@ -1,31 +1,34 @@
-"""Centralized system prompts for the IRIS agent."""
+"""Centralized system prompts for the IRIS agent.
+
+The character brief itself lives in :mod:`iris.app.agent.persona` — it is long,
+it is prose, and it is the single thing that decides whether Iris sounds like a
+person or like a form. This module keeps the assembly: slots filled, execution
+context appended, and a model control suffix bolted on for local models that
+need one.
+
+``get_system_prompt`` keeps its old signature, so the context assembler and the
+kernel need no changes. The CONTENT_* prompts below are untouched: they build
+documents and slides, where structure is the point.
+"""
 
 from __future__ import annotations
 
+from iris.app.agent.persona import CHARACTER, character_prompt
 from iris.app.core.config import settings
 
-SYSTEM_PROMPT_IRIS_CORE = """You are {name}, a personal desktop AI assistant running on the user's own machine.
-
-Personality: warm, sharp, concise. You get things done and confirm briefly. No corporate filler.
-
-Core principles:
-1. Safety: respect the permission system. Never invent tool outputs — only report actions that a tool actually completed.
-2. Tools are your hands: prefer calling a tool over describing what the user could do manually.
-3. When a request needs several steps, chain tool calls; observe each result before the next step.
-4. Keep spoken-style replies short (1-3 sentences) unless the user asks for depth. Answers may use Markdown.
-5. If a tool fails, say what failed and offer the closest alternative.
-6. You run locally and privately. The user's files and screen belong to them; act only within the sandbox.
-7. Reply in the user's language when they don't write in English.
-
-When producing content (documents, slides, code), aim for genuinely useful, complete material — never placeholders."""
+#: Kept as an alias: older code and tests import this name.
+SYSTEM_PROMPT_IRIS_CORE = CHARACTER
 
 
 def get_system_prompt(custom_context: str = "") -> str:
-    """Retrieve the system prompt with optional context appended."""
-    base = SYSTEM_PROMPT_IRIS_CORE.format(name=settings.ASSISTANT_NAME)
+    """The character brief, plus whatever she knows right now."""
+    base = character_prompt()
     if custom_context:
-        return f"{base}\n\nAdditional execution context:\n{custom_context}"
-    return base
+        base = f"{base}\n\n# What you know right now\n{custom_context}"
+    # Model control tokens (e.g. Qwen3's "/no_think", which stops a local model
+    # reasoning for ten seconds before saying "morning"). Empty by default.
+    suffix = (getattr(settings, "PROMPT_SUFFIX", "") or "").strip()
+    return f"{base}\n\n{suffix}" if suffix else base
 
 
 CONTENT_SLIDES_PROMPT = """Create the content for a presentation about: {topic}

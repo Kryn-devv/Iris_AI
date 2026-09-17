@@ -50,6 +50,13 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------ general
     APP_NAME: str = "IRIS"
     ASSISTANT_NAME: str = "Iris"
+    #: The person she works for. Used in the character brief so she can say
+    #: your name the way people do — occasionally, not every sentence.
+    USER_NAME: str = ""
+    #: Appended verbatim to the end of every system prompt. For model control
+    #: tokens, e.g. "/no_think" so Qwen3 answers chat instantly instead of
+    #: reasoning for ten seconds first. Empty for cloud models.
+    PROMPT_SUFFIX: str = ""
     APP_ENV: str = "development"
     LOG_LEVEL: str = "INFO"
     LOG_JSON: bool = False
@@ -160,11 +167,35 @@ class Settings(BaseSettings):
     # call at all: "open youtube" never needs the network.
     NLU_ENABLED: bool = True
     NLU_MIN_CONFIDENCE: float = 0.62
+    #: Canned regex replies for "how are you" / "who are you" / thanks. They
+    #: exist to answer instantly with no key and no network. With a model
+    #: configured they are what makes her sound like a vending machine, because
+    #: the model never sees those turns and so cannot follow the thread. Off in
+    #: human mode; on automatically when there is no cloud provider at all.
+    SMALLTALK_ENABLED: bool = False
+    #: Dress deterministic tool confirmations in her own voice — varied wording,
+    #: never the same line twice running, warmer after a gap, terser mid-burst.
+    #: The action stays deterministic either way; only the words move.
+    PERSONA_ACKS: bool = True
+    #: Say something the moment a slow job starts, instead of going silent.
+    #: Milliseconds before "one sec" is spoken; 0 disables.
+    THINKING_FILLER_MS: int = 900
     NLU_FUZZY_THRESHOLD: int = 82
 
     # ---------------------------------------------------------- agent limits
     MAX_PLANNING_ITERATIONS: int = 6
     MAX_TOOL_CALLS: int = 16
+    #: How many recent exchanges ride along on every model call. Unbounded
+    #: history is what blew through free-tier tokens-per-minute and made long
+    #: chats fail; a dozen turns keeps the thread without the blow-up.
+    HISTORY_MAX_TURNS: int = 12
+    #: Everything older than that window is folded into one rolling line of
+    #: notes, refreshed in the background, so she remembers an hour ago and not
+    #: only the last four things said.
+    ROLLING_SUMMARY_ENABLED: bool = True
+    ROLLING_SUMMARY_TIMEOUT_S: float = 25.0
+    #: Silence longer than this and the next reply greets rather than continues.
+    RAPPORT_RETURN_GAP_MIN: float = 25.0
     PER_TOOL_TIMEOUT_SECONDS: float = 20.0
     TOTAL_TASK_TIMEOUT_SECONDS: float = 120.0
 
@@ -214,6 +245,10 @@ class Settings(BaseSettings):
     VAD_AGGRESSIVENESS: int = 2
     MIC_SAMPLE_RATE: int = 16000
     SPEAK_RESPONSES: bool = True
+    #: Longest reply spoken before it is cut at a sentence boundary. The old
+    #: hard-coded 500 characters (~30 seconds) is why she could never finish a
+    #: thought out loud — the text was there, the voice just stopped.
+    SPEECH_MAX_CHARS: int = 1400
 
     # ----------------------------------------------------------- node links
     #: Shared secret a node presents when it dials in. REQUIRED for node links

@@ -48,6 +48,8 @@ It's built **free-first**: every command works with *zero* API keys thanks to a 
 
 …and anything else becomes a conversation with a free AI model, which can chain any of the 87 tools itself.
 
+She talks like a person rather than a form: a character brief instead of a rule list, confirmations that never repeat themselves, memory of what you were doing an hour ago, and a window after she speaks where you can simply reply instead of saying her name again. See [docs/HUMAN-MODE.md](docs/HUMAN-MODE.md).
+
 ## 🤖 The robot and its senses (ESP32)
 
 IRIS drives two boards on your WiFi or phone hotspot — the robot base (an

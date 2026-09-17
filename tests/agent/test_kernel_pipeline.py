@@ -74,7 +74,10 @@ async def test_nlu_dispatch_with_speech():
     res = await kernel.process_request("echo good morning")
     assert res.handler == "nlu"
     assert res.intent_detected == "echo_demo"
-    assert res.speech == "You said good morning."
+    # Her voice may put an opener in front of it; the tool's sentence itself
+    # always arrives whole.
+    assert "you said good morning." in res.speech.lower(), res.speech
+    assert res.speech.rstrip().endswith("good morning.")
     assert res.tools_executed[0].success is True
 
 
@@ -110,11 +113,17 @@ async def test_confirmation_unknown_task():
 
 
 async def test_tool_failure_reports_cleanly():
+    """The reason a tool gave has to reach the user intact.
+
+    Her voice wraps it — a person reacts before delivering bad news — but the
+    reason itself is the tool's, never paraphrased and never dropped.
+    """
     kernel = make_kernel()
     res = await kernel.process_request("fail now")
     assert res.status == "FAILED"
     assert res.error == "It broke."
-    assert res.speech == "Broke."
+    assert "broke" in res.speech.lower(), res.speech
+    assert res.speech.rstrip(".").lower().endswith("broke")
 
 
 async def test_unmatched_falls_to_agent_loop():

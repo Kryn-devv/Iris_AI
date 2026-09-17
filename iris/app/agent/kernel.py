@@ -37,6 +37,8 @@ from iris.app.agent.prompts import (
     get_system_prompt,
     language_instruction,
 )
+from iris.app.agent.persona import default_voice
+from iris.app.agent.rapport import default_rapport
 from iris.app.agent.smalltalk import match_smalltalk
 from iris.app.agent.state import AgentState
 from iris.app.agent.task_manager import TaskManager
@@ -149,17 +151,29 @@ class AgentKernel:
             # Layer 2: natural-language memory commands.
             memory_response = await self._try_memory_commands(state, user_input_clean)
             if memory_response is not None:
+                # Saved to history like any other exchange: a turn the model
+                # never learns about is a turn it will contradict later.
+                await self._remember_turn(state, memory_response.response)
                 return self._finish(state, memory_response)
 
             # Layer 3: instant small talk, in the user's own register.
-            smalltalk = match_smalltalk(user_input_clean, style=target_style)
-            if smalltalk is not None:
-                state.update_status(TaskStatus.COMPLETED)
-                self._dispatch_event(state, AgentEventType.AGENT_COMPLETED)
-                return self._finish(
-                    state,
-                    self._response(state, smalltalk, handler="smalltalk", intent="smalltalk"),
-                )
+            #
+            # A canned "I'm great!" the model never sees is precisely what
+            # breaks a conversation: she answers, forgets it happened, and the
+            # next turn starts from nothing. So with a model available this
+            # layer steps aside and real talk reaches the model. With no cloud
+            # provider configured it stays on — answering "how are you" offline
+            # with zero keys is a promise this project keeps.
+            if self._use_smalltalk():
+                smalltalk = match_smalltalk(user_input_clean, style=target_style)
+                if smalltalk is not None:
+                    state.update_status(TaskStatus.COMPLETED)
+                    self._dispatch_event(state, AgentEventType.AGENT_COMPLETED)
+                    await self._remember_turn(state, smalltalk)
+                    return self._finish(
+                        state,
+                        self._response(state, smalltalk, handler="smalltalk", intent="smalltalk"),
+                    )
 
             # Layer 4: deterministic command NLU.
             if settings.NLU_ENABLED:
@@ -407,19 +421,26 @@ class AgentKernel:
         )
 
         text = exec_result.spoken_or_display()
-        if not text:
-            text = "Done." if exec_result.success else "That didn't work."
         speech = exec_result.speech
+        style = state.metadata.get("target_style")
         if exec_result.success:
             # Conservative localization of common acks ("Opened X." -> "X khol diya.").
-            style = state.metadata.get("target_style")
             text = localize_ack(text, style)
             if speech:
                 speech = localize_ack(speech, style)
+
+        # Then her own voice on top. The tool decided what happened and its
+        # words are never rewritten — a sensor reading paraphrased is a sensor
+        # reading invented. Only the packaging moves, and it moves with the
+        # moment: warmer after an hour away, terser in the middle of a burst,
+        # and never the same line twice running.
+        text = self._voiced(state, text, match.tool_name, exec_result.success)
+        if speech:
+            speech = self._voiced(state, speech, match.tool_name, exec_result.success, reuse=text)
         if generation_note:
             text = f"{text}\n\n{generation_note}" if exec_result.success else text
 
-        await self._remember_turn(state, text)
+        await self._remember_turn(state, text, tool_name=match.tool_name, was_command=True)
         return self._response(
             state,
             text,
@@ -823,7 +844,14 @@ class AgentKernel:
             error="REQUIRES_CONFIRMATION",
         )
 
-    async def _remember_turn(self, state: AgentState, final_text: str) -> None:
+    async def _remember_turn(
+        self,
+        state: AgentState,
+        final_text: str,
+        *,
+        tool_name: Optional[str] = None,
+        was_command: bool = False,
+    ) -> None:
         if state.conversation_id:
             try:
                 await self.conversation_memory.remember(
@@ -835,6 +863,68 @@ class AgentKernel:
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.debug("Conversation memory store failed: %s", exc)
+
+        # The shape of the conversation, for the next reply's wording — and,
+        # once enough of it has aged out of the live window, a background pass
+        # that folds the old part into one line she still remembers.
+        try:
+            default_rapport.note_turn(
+                state.conversation_id, tool_name=tool_name, was_command=was_command
+            )
+            if state.conversation_id:
+                history = await self.conversation_memory.retrieve(state.conversation_id)
+                if history:
+                    default_rapport.maybe_summarize(
+                        state.conversation_id, history, self.model_gateway
+                    )
+        except Exception as exc:  # noqa: BLE001 - awareness never breaks a reply
+            logger.debug("Rapport update skipped: %s", exc)
+
+    # --------------------------------------------------------------- persona
+    def _use_smalltalk(self) -> bool:
+        """Canned pleasantries only when there is no model to do better."""
+        if getattr(settings, "SMALLTALK_ENABLED", False):
+            return True
+        try:
+            return not self.model_gateway.has_cloud
+        except Exception:  # noqa: BLE001
+            return True
+
+    def _voiced(
+        self,
+        state: AgentState,
+        text: str,
+        tool_name: Optional[str],
+        success: bool,
+        *,
+        reuse: Optional[str] = None,
+    ) -> str:
+        """Put a tool's confirmation into her voice, situation and all."""
+        if not getattr(settings, "PERSONA_ACKS", True):
+            return text or ("Done." if success else "That didn't work.")
+        # The spoken line and the written one say the same thing; picking twice
+        # would have her say one sentence and show another.
+        if reuse is not None and (text or "").strip() == (state.metadata.get("_ack_source") or ""):
+            return reuse
+        state.metadata["_ack_source"] = (text or "").strip()
+        # Situation is decoration. If the tracker is unavailable she simply
+        # sounds flatter — she does not fail to answer.
+        returning = repeated = terse = False
+        try:
+            moment = default_rapport.moment(state.conversation_id)
+            returning = moment.returning and success
+            terse = moment.terse
+            repeated = default_rapport.repeats(state.conversation_id, tool_name) and success
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Situation unavailable, answering plainly: %s", exc)
+        return default_voice.acknowledge(
+            text,
+            style=state.metadata.get("target_style"),
+            success=success,
+            returning=returning,
+            repeated=repeated,
+            terse=terse,
+        )
 
     #: Tools attached to every agent call regardless of the message: the
     #: conversation staples a model reaches for without obvious keywords.
