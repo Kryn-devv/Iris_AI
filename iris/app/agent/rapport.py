@@ -194,7 +194,16 @@ class RapportTracker:
 
         gap_minutes = (self._clock() - thread.last_at) / 60.0
         if gap_minutes >= float(getattr(settings, "RAPPORT_RETURN_GAP_MIN", 25)):
-            lines.append(f"They have been away about {_duration(gap_minutes)}.")
+            # Stated as the situation, not an order — but stated plainly enough
+            # that the model does the obvious thing with it. "They have been
+            # away 40 minutes" on its own got answered with the same flat
+            # "Sure, opening YouTube" as always; a person who has not seen you
+            # since lunch says something about that first.
+            lines.append(
+                f"They have been away about {_duration(gap_minutes)} — this is "
+                "the first thing said since, so it is your turn to say hello "
+                "properly and ask how they are."
+            )
 
         session_minutes = (self._clock() - thread.started_at) / 60.0
         if session_minutes >= 90:

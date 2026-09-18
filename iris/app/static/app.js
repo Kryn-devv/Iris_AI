@@ -236,7 +236,10 @@
       case "routine.fired": {
         const kind = p.kind === "timer" ? "⏰ Timer" : "🔔 Reminder";
         addMessage("iris", `${kind}: ${p.text}`);
-        if (els.speakToggle.checked) speakBrowser(`${p.kind === "timer" ? "Timer done" : "Reminder"}: ${p.text}`);
+        /* Not spoken here. The scheduler hands the same sentence to the voice
+           service, which publishes "voice.speaking" — so saying it again from
+           this branch was a reminder read out twice, in two different voices
+           when a server engine was installed. */
         notifyBrowser(kind, p.text);
         break;
       }
@@ -368,9 +371,21 @@
     }
 
     if (r.provider) els.chipProvider.textContent = r.provider;
-    if (els.speakToggle.checked) {
-      const sentence = r.speech || (r.response && r.response.length < 300 ? r.response : null);
-      if (sentence) speakBrowser(sentence, r.response_language);
+    /* The server now sends a spoken line for every reply — her own opening
+       sentences, minus the code blocks — so the old "only if it is under 300
+       characters" rule is gone. That rule is why every answer worth hearing
+       used to arrive as silence.
+
+       `speakingInBrowser` is the other half: when audio is playing on the
+       machine's own speakers we cannot stop it from here, so talking over it
+       is how two voices ended up going at once. Let it finish. */
+    if (els.speakToggle.checked && !(speaking && !speakingInBrowser)) {
+      /* Only what the server marked as sayable. It sends a spoken lead with
+         every reply now, so an ABSENT one is a decision, not an omission: the
+         answer was nothing but a code block, and reading a code block out loud
+         is the thing we were trying to stop. Falling back to r.response here
+         would do exactly that. */
+      if (r.speech) speakBrowser(r.speech, r.response_language);
     }
     setState("idle", "ready");
   }

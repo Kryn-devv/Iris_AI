@@ -306,7 +306,21 @@ class TestCharacterBrief:
 
     def test_it_tells_her_she_is_heard_not_read(self):
         prompt = character_prompt().lower()
-        assert "no bullet points" in prompt and "no markdown" in prompt
+        assert "no bullet points" in prompt
+        assert "heard, not read" in prompt
+
+    def test_code_is_the_one_thing_it_lets_her_format(self):
+        """The rule has to be coherent or the model picks one at random.
+
+        "No markdown" flat was a lie the moment she was asked for a script:
+        code belongs in a fenced block because it is copied, not heard. So the
+        brief names that exception rather than leaving her to guess which of
+        two rules wins.
+        """
+        prompt = character_prompt().lower()
+        assert "one exception" in prompt
+        assert "fenced block" in prompt
+        assert "do not narrate the code" in prompt
 
     def test_the_clock_reads_like_a_person_said_it(self):
         import datetime

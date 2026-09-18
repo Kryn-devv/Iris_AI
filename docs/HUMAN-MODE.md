@@ -146,6 +146,65 @@ that is deliberate and tested.
 `iris/app/api/routes/setup.py` is the setup dialog's API and
 `iris/app/core/envfile.py` is the careful `.env` writer behind it.
 
+## What she says vs what she shows
+
+The two were the same string, and that is three complaints in one.
+
+A reply was spoken by the web UI only when it was **under 300 characters**, so
+every answer with anything in it — an explanation, a walkthrough, the reason
+something failed — arrived as silence. The ones short enough to be spoken had
+their code fences read out symbol by symbol. And because the same text had to
+serve both, the model was pushed toward writing for the eye, which is how you
+get a wall.
+
+Now every reply carries a **spoken lead**: her own opening sentences with the
+code blocks and markdown taken out, cut at a sentence boundary. It is a strict
+subset of what is on screen — never a paraphrase, never an addition, because a
+spoken summary that disagrees with the written answer is worse than silence. A
+reply that is nothing but code says nothing out loud, which is also what a
+person does when they just paste the snippet.
+
+```
+you : write me a flask hello world
+iris: (says)  "Done — it serves Hello Prajjwal on port 5000. Code's below."
+      (shows) the same sentence, then the file, then the run command
+```
+
+## One mouth at a time
+
+"Sometimes 2 voices at same time" was exact, and there were three ways to get
+it:
+
+- The **"one sec" filler** went to the machine's speakers while the browser
+  read the answer aloud — two engines, two voices, neither able to stop the
+  other. A filler for a turn that came from the web now goes to the browser,
+  which is where that turn's answer is going, so the existing queue-behind
+  works. The robot's own microphone still uses the speakers: no browser is in
+  that loop.
+- A **reminder** was spoken by the scheduler *and* again by the UI's
+  `reminder.due` handler. The UI no longer speaks it; the bus event already
+  does.
+- The browser would **talk over server-side audio** it had no way to cancel.
+  It now waits.
+
+## Questions reach the model
+
+```
+you : who is narendra modi
+old : So — Narendra Damodardas Modi is an Indian politician who has served as
+      the prime minister of India since 26 May 2014.      ← handler: nlu
+```
+
+Accurate, instant, and nothing like an answer from someone you are talking to.
+That single exchange is what *"it's just if/else"* meant: a rule matched, a
+lookup ran, the model never saw the question.
+
+A rule can now mark itself `prefer_model` — a phrasing that is a question as
+often as it is a command — and the kernel steps over it whenever a model is
+actually reachable. The model still has the same Wikipedia tool; it just gets
+to *talk about* what came back. With no model reachable the lookup runs as
+before, because offline a real fact beats a shrug.
+
 ## Still on the list
 
 - **Streaming to the voice.** The kernel waits for the whole reply before

@@ -59,6 +59,13 @@ class Rule:
     static_args: Dict[str, Any] = field(default_factory=dict)
     confidence: float = 0.95
     needs_generation: bool = False
+    #: A phrasing that is a *question* as often as it is a command. "Who is
+    #: Narendra Modi" matches this file and gets an encyclopedia's opening
+    #: sentence pasted back — accurate, and nothing like an answer from someone
+    #: you are talking to. With a model reachable the kernel steps over these
+    #: and lets it answer; with no model, the lookup is still far better than
+    #: nothing, which is why the rule stays here rather than being deleted.
+    prefer_model: bool = False
 
     def build(self, m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
         if self.builder is not None:
@@ -1508,6 +1515,7 @@ RULES: list[Rule] = [
         pattern=_rx(r"^who\s+(?:is|was|are)\s+(?P<q>[\w .,'-]{2,60})$"),
         builder=_passthrough_query("topic"),
         confidence=0.8,
+        prefer_model=True,
     ),
 
     # ------------------------------------------------------------ web search

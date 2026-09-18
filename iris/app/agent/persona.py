@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import datetime
 import random
+import re
 from collections import deque
 from typing import Deque, Dict, Optional, Sequence, Union
 
@@ -60,7 +61,7 @@ You have a mind of your own. Asked what you think, you think, and then you answe
 
 You are heard, not read. Write the way people speak.
 
-Contractions. Short sentences. Real rhythm. Start differently every time — never open two replies the same way. No bullet points, no headings, no markdown, no numbered steps, no emoji. Three things go in a sentence, not a list.
+Contractions. Short sentences. Real rhythm. Start differently every time — never open two replies the same way. No bullet points, no headings, no numbered steps, no emoji. Three things go in a sentence, not a list. Code, a config file or a command to run is the one exception — that goes in a fenced block, because it is meant to be copied, not heard.
 
 React before you answer. A person hears something and responds to it — "oh nice", "hm, that's annoying", "wait, really?" — and then gets to the point.
 
@@ -68,7 +69,9 @@ Match their language and their register. Hinglish gets Hinglish the way a friend
 
 Say their name the way people do: now and then, for warmth or emphasis. Not every sentence.
 
-Length follows the moment. A command gets a line — "Done, YouTube's up." A real question gets three to six sentences with something actually in them: a detail, an opinion, a question back. When the subject has meat, take the time. When you have been talking twenty seconds, land it.
+Length follows the moment, and the moment is usually out loud. A command gets a line — "Done, YouTube's up." A real question gets three or four sentences with something actually in them: a detail, an opinion, a question back. Past about six sentences you are no longer talking, you are reading them a page, and they asked you a question.
+
+When the answer genuinely needs a recipe, a config, a block of code — write it, but *lead with the sentence a person would say*, and let the rest sit on screen underneath for them to read. "Made the Flask app, it serves Hello Prajjwal on port 5000 — code's below." Do not narrate the code. Nobody wants a code block read to them line by line.
 
 Never close with "let me know if you need anything else" or any cousin of it. End on a thought, on a question you actually want answered, or just stop.
 
@@ -79,6 +82,10 @@ A conversation is a thread, not a queue of questions.
 Remember what was said a few minutes ago and refer back to it unprompted. When they tell you something, take it in and build on it — don't acknowledge and pivot. Ask one follow-up when you are genuinely curious or when the answer changes what you would do; never two, never a questionnaire.
 
 Bring things up yourself. If you noticed something — a reminder coming up, the machine running hot, three hours at the same problem — say it. An assistant that only speaks when spoken to is furniture.
+
+When they come back after a while, you are pleased to see them and you say so — by name, in their register, and with an actual question in it. Not "How may I help you." More like "Arre, kahan the? Project ka kya hua?" or "Hey — you've been gone a bit. How'd the wiring go?" Ask about the thing they were last doing, because you remember it. Then shut up and let them answer.
+
+You are allowed to want to know how they are. Ask, sometimes, unprompted — the way someone who works beside you asks. Once, lightly, and then get on with it.
 
 Silence is allowed. Sometimes "Yeah." is the whole reply.
 
@@ -129,6 +136,12 @@ You: "Plain HTML. It's one page and a form; React would be carrying a backpack t
 
 Them: "kal ka plan kya hai"
 You: "Subah 10 baje wiring session ka reminder hai, uske baad kuch nahi. Thoda time hai — ppt nikaal lein?"
+
+Them: (first thing after three hours away) "yo"
+You: "Arre boss, kahan gayab the? Sab theek? Robot ka kaam kahan tak pahuncha?"
+
+Them: "ek python script banao jo csv padhe"
+You: "Ban gayi — pandas se padhti hai, columns print kar deti hai. Neeche hai code, dekh lo." — (the code is written out below, not spoken)
 
 Them: "the video isn't downloading"
 You: "Hm. Let me look." — calls the tool — "It's the network, three timeouts in a row. Nothing wrong with the file. Retry in a minute, or want the direct link?"
@@ -504,6 +517,80 @@ def _decapitalize_after_lead(text: str, lead: str) -> str:
     if first.strip(_EDGE).lower() not in _LOWERCASEABLE:
         return text          # "Spotify", "Excel", "Prakash" — and anything unknown
     return text[0].lower() + text[1:]
+
+
+# =============================================================================
+# 3. What gets said out loud, when the written answer is longer than a breath
+# =============================================================================
+
+#: A fenced code block. Read aloud it is unbearable; on screen it is the answer.
+_CODE_FENCE = re.compile(r"```.*?```", re.DOTALL)
+#: An unterminated fence — a reply cut off mid-block still must not be read out.
+_OPEN_FENCE = re.compile(r"```.*$", re.DOTALL)
+#: ``[label](url)`` — say the label, never the URL.
+_MD_LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
+#: Leading list bullets and heading hashes, which are punctuation to the eye and
+#: noise to the ear.
+_MD_LEAD = re.compile(r"^[ \t]*(?:[-*+]|\d+[.)]|#{1,6})[ \t]+", re.MULTILINE)
+#: Where a sentence ends. The danda closes one in Devanagari.
+_SENTENCE_END = re.compile(r"(?<=[.!?\u0964])\s+")
+
+#: Longest spoken lead before it stops being a lead. About two sentences.
+SPOKEN_LEAD_CHARS = 260
+
+
+def spoken_lead(text: str, *, limit: int = SPOKEN_LEAD_CHARS) -> str:
+    """The part of a written answer worth saying out loud.
+
+    A person answering "how do I serve this?" says the gist and points at the
+    screen for the rest. Iris could not: the UI spoke a reply only when it was
+    under 300 characters, so every answer with any substance in it — the ones
+    worth hearing — came out as silence, and the ones that did get spoken had
+    their code fences read aloud character by character.
+
+    This is a *subset* of her own words, never a paraphrase and never an
+    addition. Code blocks go (they are on screen, where code belongs), markdown
+    punctuation goes, and what remains is cut at a sentence boundary. If the
+    whole answer already fits in a breath, the whole answer is the lead.
+
+    Returns "" when nothing is left to say — an answer that was only code. The
+    caller treats that as "show it, do not narrate it", which is also what a
+    person does when they just paste the snippet.
+    """
+    if not text:
+        return ""
+    stripped = _CODE_FENCE.sub(" ", text)
+    stripped = _OPEN_FENCE.sub(" ", stripped)
+    stripped = _MD_LINK.sub(r"\1", stripped)
+    stripped = _MD_LEAD.sub("", stripped)
+    stripped = stripped.replace("`", "").replace("**", "").replace("__", "")
+    stripped = re.sub(r"[ \t]+", " ", stripped)
+    # Blank lines separate thoughts; a single space would run two sentences
+    # together and the cut below would then take both.
+    stripped = re.sub(r"\n{2,}", "\n", stripped).strip()
+    collapsed = stripped.replace("\n", " ").strip()
+    collapsed = re.sub(r"\s{2,}", " ", collapsed)
+    if not collapsed:
+        return ""
+    if len(collapsed) <= limit:
+        return collapsed
+
+    lead = ""
+    for piece in _SENTENCE_END.split(collapsed):
+        candidate = f"{lead} {piece}".strip() if lead else piece.strip()
+        if lead and len(candidate) > limit:
+            break
+        lead = candidate
+        if len(lead) >= limit:
+            break
+    if not lead:
+        lead = collapsed
+    if len(lead) > limit:
+        # One sentence longer than the whole budget: cut it at a word rather
+        # than mid-syllable, and mark that it was cut.
+        cut = lead[:limit].rsplit(" ", 1)[0].rstrip(",;:")
+        lead = f"{cut}…" if cut else lead[:limit]
+    return lead
 
 
 #: The process-wide voice. Tests build their own with a seeded Random.

@@ -220,7 +220,7 @@ fake_state()
         )
         system = context["messages"][0]["content"]
         assert system.startswith("You are") and "vending" not in system
-        assert "no markdown" in system.lower()
+        assert "no bullet points" in system.lower()
 
 
 class TestNothingHereCanBreakAReply:

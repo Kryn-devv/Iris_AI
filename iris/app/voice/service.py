@@ -108,18 +108,32 @@ class VoiceService:
         language: str = "en",
         interrupt: bool = False,
         filler: bool = False,
+        browser_only: bool = False,
     ) -> dict[str, Any]:
         """Speak a sentence (server-side when possible) and notify all UIs.
 
         ``filler`` marks a stop-gap like "one sec" said while something slow
         runs. The UI lets the real answer queue behind one of those instead of
         cutting it off, because half of "one se—" sounds like a fault.
+
+        ``browser_only`` hands the sentence to the web UI and does **not** play
+        it on the machine's speakers. That is not a preference, it is the fix
+        for two voices talking over each other: the web UI speaks every reply
+        itself, so anything said *around* a reply — the "one sec" before it —
+        has to come out of the same mouth. Spoken server-side instead, the
+        filler played through the speakers while the browser read the answer
+        aloud at the same time, in a different voice, and neither could stop
+        the other. Ambient speech with no browser in the loop — a reminder
+        firing, the camera greeting someone, a node's microphone — still goes
+        to the speakers, which is the only mouth those have.
         """
         sentence = sanitize_for_speech(text)
         if not sentence:
             return {"spoken": False, "engine": None, "text": ""}
 
-        engine = self._get_tts() if (self.enabled and settings.SPEAK_RESPONSES) else None
+        engine = None
+        if not browser_only and self.enabled and settings.SPEAK_RESPONSES:
+            engine = self._get_tts()
         default_event_bus.publish(
             Topics.VOICE_SPEAKING,
             {"text": sentence, "engine": engine.name if engine else "browser",

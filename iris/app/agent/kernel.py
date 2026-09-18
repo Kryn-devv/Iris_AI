@@ -38,7 +38,7 @@ from iris.app.agent.prompts import (
     get_system_prompt,
     language_instruction,
 )
-from iris.app.agent.persona import default_voice
+from iris.app.agent.persona import default_voice, spoken_lead
 from iris.app.agent.rapport import default_rapport
 from iris.app.agent.smalltalk import match_smalltalk
 from iris.app.agent.state import AgentState
@@ -179,6 +179,16 @@ class AgentKernel:
             # Layer 4: deterministic command NLU.
             if settings.NLU_ENABLED:
                 match = self.intent_engine.match(user_input_clean)
+                if match is not None and self._prefers_model(match):
+                    # A question wearing a command's clothes. The model can use
+                    # the very same tool and then actually talk about what came
+                    # back, instead of handing over an encyclopedia's opening
+                    # sentence and calling it a conversation.
+                    logger.info(
+                        "NLU rule '%s' deferred to the model: this reads as a question.",
+                        match.rule_name,
+                    )
+                    match = None
                 if match is not None and match.confidence >= settings.NLU_MIN_CONFIDENCE:
                     if self.tool_registry.is_registered(match.tool_name):
                         response = await asyncio.wait_for(
@@ -918,17 +928,39 @@ class AgentKernel:
         finally:
             task.cancel()
 
+    #: Channels where a browser is doing the talking, so the filler must not
+    #: also go to the machine's speakers. See ``VoiceService.speak``.
+    _BROWSER_CHANNELS = frozenset({"web", "ws"})
+
     async def _say_filler(self, delay: float, state: AgentState) -> None:
         try:
             await asyncio.sleep(delay)
             from iris.app.voice.service import default_voice_service
 
             line = default_voice.working(state.metadata.get("target_style"))
-            await default_voice_service.speak(line, filler=True)
+            channel = str(state.metadata.get("channel") or "web")
+            await default_voice_service.speak(
+                line, filler=True, browser_only=channel in self._BROWSER_CHANNELS
+            )
         except asyncio.CancelledError:
             raise            # the answer arrived first, which is the good case
         except Exception as exc:  # noqa: BLE001 - a stop-gap never breaks a turn
             logger.debug("Filler skipped: %s", exc)
+
+    def _prefers_model(self, match) -> bool:
+        """Should this match step aside and let the model answer?
+
+        Only for rules that said so, and only when a model would actually
+        answer — "reachable", not "configured", because with the provider
+        rate-limited the alternative is not a better answer, it is the offline
+        engine, and a Wikipedia lookup beats that every time.
+        """
+        if not getattr(match, "prefer_model", False):
+            return False
+        try:
+            return bool(self.model_gateway.can_answer)
+        except Exception:  # noqa: BLE001 - a gateway that cannot say is a no
+            return False
 
     # --------------------------------------------------------------- persona
     def _use_smalltalk(self) -> bool:
@@ -1055,12 +1087,28 @@ class AgentKernel:
                 + detail
             )
 
+        # Every reply gets something sayable. Without this the UI spoke a reply
+        # only when it was under 300 characters, so the answers with any
+        # substance in them — an explanation, a walkthrough, anything worth
+        # hearing — arrived as silence, and the ones short enough to speak had
+        # their code fences read out symbol by symbol.
+        #
+        # A derived lead is only correct where a screen is carrying the rest.
+        # The robot's microphone has no screen: there, cutting the answer at two
+        # sentences does not summarise it, it loses it. So that channel is left
+        # with speech unset and speaks the whole reply, trimmed server-side at
+        # SPEECH_MAX_CHARS as it always was. A tool's own spoken sentence is
+        # authoritative everywhere and is never second-guessed.
+        spoken = (speech or "").strip()
+        if not spoken and str(state.metadata.get("channel") or "web") in self._BROWSER_CHANNELS:
+            spoken = spoken_lead(text)
+
         return ChatResponse(
             task_id=state.task_id,
             correlation_id=state.correlation_id,
             response=text,
             notice=notice,
-            speech=speech or None,
+            speech=spoken or None,
             intent_detected=intent,
             handler=handler,
             tools_executed=tools or [],
