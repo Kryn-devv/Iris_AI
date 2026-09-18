@@ -93,6 +93,18 @@ static unsigned long flashUntilMs = 0;      // 0 = no deadline (on until told)
 
 static MotionDetector motion;
 static unsigned long lastMotionSampleMs = 0;
+static unsigned long lastBeatMs = 0;
+static bool firstBeatDone = false;
+
+/* The heartbeat. A reboot loop and a healthy board produce very similar walls
+ * of text, and telling them apart by reading the text has beaten enough
+ * people that the board now just says it: an uptime that climbs is not
+ * rebooting, and an uptime that keeps starting over is. Kept under 40
+ * characters so a narrow terminal cannot wrap it and hide the number, which
+ * is the entire point of the line. The first one comes early, because a board
+ * that dies at four seconds must still get one out. */
+#define HEARTBEAT_FIRST_MS 2000UL
+#define HEARTBEAT_MS 5000UL
 
 static volatile int streamClients = 0;
 static volatile bool captureBusy = false;   // keeps the sampler out of the way
@@ -318,11 +330,11 @@ static const char* cameraProfileName(uint32_t profile) {
 }
 
 static void cameraGuardAdvice() {
-  Serial.println("Lowering the settings has not stopped it, so this is not a");
-  Serial.println("resolution problem. Check, in this order:");
-  Serial.println("  1. the 5V supply - 2A brick and a SHORT cable, not a laptop port");
-  Serial.println("  2. a 1000uF capacitor across 5V and GND (striped leg to GND)");
-  Serial.println("  3. the camera ribbon - unclip and reseat it at BOTH ends");
+  Serial.println("Lowering settings has not helped, so this");
+  Serial.println("is not resolution. Check, in this order:");
+  Serial.println("  1. 5V supply: 2A brick, SHORT cable");
+  Serial.println("  2. 1000uF cap on 5V/GND (stripe to GND)");
+  Serial.println("  3. camera ribbon: reseat BOTH ends");
 }
 
 /* Called once in setup(), before anything touches the camera.
@@ -1073,7 +1085,7 @@ static bool wifiConnect(unsigned long timeoutMs) {
 
   if (WiFi.status() != WL_CONNECTED) {
     statusLed(false);
-    Serial.printf("WiFi not connected after %lus — will keep retrying in the background.\n",
+    Serial.printf("WiFi not up after %lus. Retrying in background.\n",
                   timeoutMs / 1000);
     return false;
   }
@@ -1122,7 +1134,7 @@ static void wifiMaintain() {
 
   if (now < wifiRetryAtMs) return;
 
-  Serial.printf("Reconnecting (next attempt in %lus if this one fails)...\n",
+  Serial.printf("Reconnecting (retry in %lus if this fails)...\n",
                 wifiBackoffMs / 1000);
   WiFi.disconnect();
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -1181,8 +1193,10 @@ static void announceBadReset() {
 void setup() {
   Serial.begin(115200);
   Serial.setDebugOutput(false);
-  Serial.printf("\n== robot_eye starting (%s, reset: %s) ==\n",
-                CAMERA_BOARD_NAME, resetReasonName());
+  // Two lines, not one: the reset cause is the most important word this
+  // firmware ever prints and it must not be the half that wraps away.
+  Serial.printf("\n== robot_eye starting (%s) ==\n", CAMERA_BOARD_NAME);
+  Serial.printf("reset: %s\n", resetReasonName());
   announceBadReset();
   cameraGuardBegin();
 
@@ -1196,9 +1210,9 @@ void setup() {
   statusLed(false);
 
   if (!psramFound()) {
-    Serial.println("WARNING: no PSRAM found. Resolution is capped at VGA and");
-    Serial.println("         the stream will be slow. Enable Tools > PSRAM,");
-    Serial.println("         and check this is really a PSRAM-equipped board.");
+    Serial.println("WARNING: no PSRAM. Capped at VGA, slow.");
+    Serial.println("  Enable Tools > PSRAM, and check this");
+    Serial.println("  really is a PSRAM-equipped board.");
   }
 
   if (!initCamera()) {
@@ -1206,7 +1220,7 @@ void setup() {
     // nothing, so make the failure visible for a few seconds and then reboot:
     // the usual cause is a marginal 5V rail, and a reboot often clears it.
     Serial.println("Camera would not start. Rebooting in 5s.");
-    Serial.println("Check: 5V supply able to give ~500mA, and the ribbon seated.");
+    Serial.println("Needs 5V @ ~500mA, and a seated ribbon.");
     for (int i = 0; i < 25; i++) {
       statusLed(true);
       delay(100);
@@ -1224,16 +1238,25 @@ void setup() {
   if (WiFi.status() == WL_CONNECTED) {
     const String ip = WiFi.localIP().toString();
     Serial.printf("Live view:  http://%s:%d/\n", ip.c_str(), HTTP_PORT);
-    Serial.printf("Brain pulls frames from:  http://%s:%d/capture\n", ip.c_str(), HTTP_PORT);
-    Serial.printf("Presence check (cheap):   http://%s:%d/motion\n", ip.c_str(), HTTP_PORT);
-    Serial.printf("Register it with the brain:  add device %s at %s as camera\n",
+    Serial.printf("Capture:    http://%s:%d/capture\n", ip.c_str(), HTTP_PORT);
+    Serial.printf("Motion:     http://%s:%d/motion\n", ip.c_str(), HTTP_PORT);
+    Serial.printf("Brain: add device %s at %s as camera\n",
                   CAMERA_ID, ip.c_str());
   }
-  if (tokenRequired()) Serial.println("Access token is set: every endpoint needs ?token=...");
+  if (tokenRequired()) Serial.println("Token is set: every call needs ?token=...");
 }
 
 void loop() {
   const unsigned long now = millis();
+
+  if (now - lastBeatMs >= (firstBeatDone ? HEARTBEAT_MS : HEARTBEAT_FIRST_MS)) {
+    lastBeatMs = now;
+    firstBeatDone = true;
+    Serial.printf("up %lus  heap %uk  wifi %s\n",
+                  (unsigned long)(now / 1000),
+                  (unsigned)(ESP.getFreeHeap() / 1024),
+                  WiFi.status() == WL_CONNECTED ? "ok" : "--");
+  }
 
   wifiMaintain();
 
