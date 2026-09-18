@@ -42,7 +42,7 @@
     ],
     relay: [
       /* automation: timers, routines, and everything on the far side of WiFi */
-      "camera_forget_face", "camera_known_faces", "camera_look", "camera_presence", "camera_watch", "robot_navigate", "schedule_command",
+      "camera_forget_face", "camera_known_faces", "camera_look", "camera_presence", "camera_watch", "robot_navigate", "robot_roam", "schedule_command",
       "camera_remember_face", "camera_who", "cancel_reminder", "device_command",
       "device_motor", "device_sensors", "device_status", "face_emotion",
       "list_devices", "list_reminders", "map_device_command", "register_device",

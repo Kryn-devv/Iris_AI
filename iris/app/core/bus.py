@@ -185,6 +185,8 @@ class Topics:
     NODE_ALERT = "node.alert"
     #: The camera saw someone (payload: event, camera, faces, known names).
     VISION_SIGHTING = "vision.sighting"
+    #: One roaming decision (payload: behaviour, action, reason, distances).
+    ROBOT_ROAM = "robot.roam"
 
     SYSTEM_NOTICE = "system.notice"
     SYSTEM_METRICS = "system.metrics"

@@ -287,6 +287,32 @@ class Settings(BaseSettings):
     #: No single leg runs longer than this, whatever the numbers say.
     ROBOT_MAX_LEG_S: float = 30.0
 
+    #: Roaming: the robot driving itself around a room with nobody asking.
+    #: Off by default and deliberately so — a robot that starts moving the
+    #: moment IRIS launches is a robot that drives off a desk while you are
+    #: still reading the startup log. Turn it on by saying "go explore".
+    ROBOT_ROAM_ENABLED: bool = False
+    #: Slower than ROBOT_CRUISE_SPEED: it is deciding as it goes, and every
+    #: extra centimetre per second is less time to notice the table leg.
+    ROBOT_ROAM_SPEED: int = 150
+    #: Under this, stop going forward and get out of the way.
+    ROBOT_ROAM_CRITICAL_CM: int = 22
+    #: Under this, steer toward whichever side has more room.
+    ROBOT_ROAM_CAUTION_CM: int = 45
+    #: One forward pulse. Short on purpose — each one is a fresh decision on a
+    #: fresh reading, so the robot is never committed further than this.
+    ROBOT_ROAM_STEP_MS: int = 400
+    ROBOT_ROAM_TURN_MS: int = 320
+    #: How often it looks and decides. Just above the sense board's own cycle:
+    #: it fires the four ultrasonics in turn, 60 ms apart (distanceSlotMs in
+    #: the S3 firmware), so a full set of fresh readings takes 240 ms. Ticking
+    #: faster than that reads the same numbers twice and tells the wedge
+    #: detector the room has stopped changing when only the clock has.
+    ROBOT_ROAM_TICK_S: float = 0.25
+    #: It parks itself after this long without being asked again. 0 disables
+    #: the limit, which is not recommended on a robot with a battery.
+    ROBOT_ROAM_MAX_MINUTES: float = 10.0
+
     # ---------------------------------------------------------------- camera
     #: Let the camera act on its own: greet people it recognises when they
     #: appear, mention strangers, name objects set down in front of it. Cheap

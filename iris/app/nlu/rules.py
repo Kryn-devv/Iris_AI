@@ -279,6 +279,18 @@ def _build_nav_turn(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
     return {"turn_degrees": degrees}
 
 
+def _build_roam_start(m, cleaned: str) -> Dict[str, Any]:
+    """"go explore", optionally "for 5 minutes"."""
+    args: Dict[str, Any] = {"action": "start"}
+    raw = m.groupdict().get("mins")
+    if raw:
+        try:
+            args["minutes"] = max(0.1, min(120.0, float(raw)))
+        except ValueError:
+            pass
+    return args
+
+
 def _build_nav_uturn(m: Match[str], cleaned: str) -> Dict[str, Any]:
     target = (m.groupdict().get("target") or "").strip()
     if m.groupdict().get("back"):
@@ -581,6 +593,54 @@ RULES: list[Rule] = [
         pattern=_rx(r"^(?:stop(?:\s+the)?\s+robot|robot\s+stop|emergency\s+stop)$"),
         static_args={"action": "stop"},
         confidence=0.98,
+    ),
+    # -- driving itself around, with nobody steering (robot_roam) -----------
+    #
+    # Ahead of robot_navigate on purpose: "go explore" is not a destination,
+    # and "move on your own" must never be read as a request to move forward.
+    Rule(
+        name="robot_roam_stop",
+        intent="devices",
+        tool="robot_roam",
+        pattern=_rx(
+            r"^(?:robot\s*,?\s*)?(?:stop|quit|end|cancel|band\s+karo|ruk\s+jao|rukko|bas)\s+"
+            r"(?:the\s+)?(?:exploring|exploration|roaming|roam|wandering|wander|"
+            r"ghoomna|ghumna|driving\s+yourself|moving\s+on\s+your\s+own)$"
+            r"|^(?:stop|band\s+karo)\s+(?:the\s+)?(?:robot\s+)?(?:roam|explore)$"
+        ),
+        static_args={"action": "stop"},
+        builder=lambda m, c: {"action": "stop"},
+        confidence=0.97,
+    ),
+    Rule(
+        name="robot_roam_status",
+        intent="devices",
+        tool="robot_roam",
+        pattern=_rx(
+            r"^(?:what|where)\s+(?:are\s+you\s+doing|is\s+the\s+robot\s+doing)$"
+            r"|^(?:are\s+you|is\s+the\s+robot)\s+(?:still\s+)?(?:exploring|roaming|wandering)\??$"
+            r"|^roam(?:ing)?\s+status$"
+        ),
+        builder=lambda m, c: {"action": "status"},
+        confidence=0.95,
+    ),
+    Rule(
+        name="robot_roam_start",
+        intent="devices",
+        tool="robot_roam",
+        pattern=_rx(
+            r"^(?:robot\s*,?\s*)?(?:please\s+)?"
+            r"(?:go\s+(?:and\s+)?)?"
+            r"(?:explore|roam|wander(?:\s+(?:around|about))?|"
+            r"drive\s+(?:yourself|around\s+yourself)|"
+            r"move\s+(?:on\s+your\s+own|by\s+yourself|yourself\s+around)|"
+            r"khud\s+se\s+(?:ghoomo|chalo|chal)|ghoomo|ghumo|"
+            r"look\s+around\s+the\s+room)"
+            r"(?:\s+(?:the\s+)?(?:room|around|here))?"
+            r"(?:\s+for\s+(?P<mins>[\d.]+)\s*(?:minutes?|mins?|m))?$"
+        ),
+        builder=_build_roam_start,
+        confidence=0.96,
     ),
     # -- going places on its own (robot_navigate) ---------------------------
     Rule(
