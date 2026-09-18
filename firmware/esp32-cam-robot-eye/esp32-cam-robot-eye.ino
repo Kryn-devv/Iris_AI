@@ -997,11 +997,57 @@ static void wifiMaintain() {
 
 /* ───────────────────────────── setup / loop ───────────────────────────── */
 
+/* A board that is rebooting in a loop prints its whole banner every few
+ * seconds, and the one line that says WHY scrolls past in the flood — so the
+ * serial log reads as whatever the last message before the crash happened to
+ * be, and people go and debug that instead. (Ours ends on the "register it
+ * with the brain" line, which has sent more than one person looking for a
+ * network fault that was a 5V rail.)
+ *
+ * A normal power-on stays quiet. Anything else says so in a block you cannot
+ * scroll past without noticing, and says what to do about it. */
+static void announceBadReset() {
+  const esp_reset_reason_t why = esp_reset_reason();
+  if (why == ESP_RST_POWERON || why == ESP_RST_EXT || why == ESP_RST_SW) return;
+
+  Serial.println("\n***********************************************");
+  Serial.printf("*  LAST BOOT ENDED IN: %-21s *\n", resetReasonName());
+  Serial.println("*                                             *");
+  switch (why) {
+    case ESP_RST_BROWNOUT:
+      Serial.println("*  The 5V supply sagged. This is POWER, not   *");
+      Serial.println("*  code. The camera spikes past 300mA on      *");
+      Serial.println("*  every WiFi transmit.                       *");
+      Serial.println("*   - use a 2A supply, not a laptop USB port  *");
+      Serial.println("*   - use a SHORT, THICK cable                *");
+      Serial.println("*   - 5V pin, never the 3.3V one              *");
+      break;
+    case ESP_RST_PANIC:
+      Serial.println("*  The code crashed. Most often this is       *");
+      Serial.println("*  memory: check Tools > PSRAM is Enabled     *");
+      Serial.println("*  and Partition Scheme is Huge APP, then     *");
+      Serial.println("*  reflash. Scroll up for the backtrace.      *");
+      break;
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT:
+      Serial.println("*  Something blocked for too long. Usually a  *");
+      Serial.println("*  camera read that never returned — reseat   *");
+      Serial.println("*  the ribbon cable, both ends.               *");
+      break;
+    default:
+      Serial.println("*  Unexpected. Scroll up for what came first. *");
+      break;
+  }
+  Serial.println("***********************************************\n");
+}
+
 void setup() {
   Serial.begin(115200);
   Serial.setDebugOutput(false);
   Serial.printf("\n== robot_eye starting (%s, reset: %s) ==\n",
                 CAMERA_BOARD_NAME, resetReasonName());
+  announceBadReset();
 
 #if STATUS_LED_GPIO_NUM >= 0
   pinMode(STATUS_LED_GPIO_NUM, OUTPUT);
