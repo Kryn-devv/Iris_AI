@@ -50,6 +50,14 @@
  * Power: 5V at ~180 mA steady, spikes past 300 mA on WiFi transmit. A power
  * bank rated 2 A per port on a short cable is fine; the S3's 3.3V pin is not.
  * If /status reports reset_reason "brownout", it is the supply, not the code.
+ *
+ * A supply too weak for the camera resets the board INSIDE esp_camera_init(),
+ * before it can report anything, so the log repeats "Camera init, attempt
+ * 1/3..." forever and never reaches attempt 2. The firmware notices that by
+ * itself: it leaves a mark in RTC memory across the reset and asks the sensor
+ * for less on the next boot (SVGA, then VGA at 10MHz), keeping whatever
+ * works. /status reports it as "cam_profile". Press RST once you have fixed
+ * the supply and it goes back to full resolution.
  */
 
 #include <strings.h>    // strcasecmp, for the framesize names
@@ -58,6 +66,7 @@
 #include "esp_http_server.h"
 #include "esp_timer.h"
 #include "esp_system.h"
+#include "esp_attr.h"   // RTC_NOINIT_ATTR, for the camera-init guard
 #include <WiFi.h>
 #include <ESPmDNS.h>
 
@@ -270,7 +279,96 @@ static bool applyFrameSize(framesize_t size) {
 
 /* ───────────────────────────── camera ───────────────────────────── */
 
-static bool initCameraOnce() {
+/* A camera that browns out does it INSIDE esp_camera_init(). Powering the
+ * sensor, starting its 20MHz clock and filling two UXGA frame buffers is the
+ * largest current draw this board ever makes, and a supply that cannot hold
+ * it resets the chip before esp_camera_init() can return so much as an error
+ * code. The log then reads "attempt 1/3" forever and never says why: the
+ * retry loop below never gets its turn, because the reset throws the loop
+ * away along with everything else.
+ *
+ * So the count has to outlive the reset. These live in RTC memory, which
+ * survives a brownout, panic or watchdog — but is undefined after a cold
+ * power cycle, hence the magic. We bump the counter before esp_camera_init()
+ * and clear it after, so a boot that never came back leaves its mark. Each
+ * mark makes the next boot ask the camera for less, and a board that cannot
+ * run UXGA on a thin USB cable settles at VGA instead of looping forever. */
+#define CAM_GUARD_MAGIC 0x43414D32UL  /* "CAM2" */
+#define CAM_GUARD_CEILING 10          /* stop counting; the message is made */
+
+/* Survive a reset, not a power cut. After a true power loss these hold noise,
+ * which is what the magic is for. */
+RTC_NOINIT_ATTR static uint32_t camGuardMagic;
+RTC_NOINIT_ATTR static uint32_t camGuardProfile;  // what to ask for this boot
+RTC_NOINIT_ATTR static uint32_t camGuardPending;  // 1 = an init is in flight
+RTC_NOINIT_ATTR static uint32_t camGuardDeaths;   // consecutive boots lost in init
+
+enum CameraProfile {
+  CAM_PROFILE_FULL = 0,     // what the board is meant to do
+  CAM_PROFILE_REDUCED = 1,  // one SVGA buffer: a third of the PSRAM traffic
+  CAM_PROFILE_MINIMAL = 2,  // VGA at 10MHz: the least the sensor can be asked
+};
+
+static const char* cameraProfileName(uint32_t profile) {
+  switch (profile) {
+    case CAM_PROFILE_FULL:    return "full (UXGA buffers, 20MHz)";
+    case CAM_PROFILE_REDUCED: return "reduced (SVGA, one buffer, 20MHz)";
+    default:                  return "minimal (VGA, one buffer, 10MHz)";
+  }
+}
+
+static void cameraGuardAdvice() {
+  Serial.println("Lowering the settings has not stopped it, so this is not a");
+  Serial.println("resolution problem. Check, in this order:");
+  Serial.println("  1. the 5V supply - 2A brick and a SHORT cable, not a laptop port");
+  Serial.println("  2. a 1000uF capacitor across 5V and GND (striped leg to GND)");
+  Serial.println("  3. the camera ribbon - unclip and reseat it at BOTH ends");
+}
+
+/* Called once in setup(), before anything touches the camera.
+ *
+ * Reads the mark the previous boot left and decides what to ask for. The
+ * profile that works is kept across reboots: re-probing full settings on
+ * every clean boot would just make a marginal board die every other time.
+ * Pressing RST is the way back to full — that is an unambiguous human saying
+ * "try again", usually because they have just changed the supply. A true
+ * power cut gets there by itself, since the magic will not survive it. */
+static void cameraGuardBegin() {
+  if (camGuardMagic != CAM_GUARD_MAGIC || esp_reset_reason() == ESP_RST_EXT) {
+    camGuardMagic = CAM_GUARD_MAGIC;
+    camGuardProfile = CAM_PROFILE_FULL;
+    camGuardPending = 0;
+    camGuardDeaths = 0;
+    return;
+  }
+
+  if (camGuardPending == 0) {
+    // The last boot got through esp_camera_init(), for better or worse.
+    if (camGuardProfile != CAM_PROFILE_FULL) {
+      Serial.printf("Camera held at %s after an earlier reset.\n",
+                    cameraProfileName(camGuardProfile));
+      Serial.println("Press RST to try full settings again.");
+    }
+    return;
+  }
+
+  // The last boot went into esp_camera_init() and never came out: the chip
+  // reset mid-call. Ask for less this time.
+  camGuardPending = 0;
+  if (camGuardDeaths < CAM_GUARD_CEILING) camGuardDeaths++;
+
+  Serial.printf("The last boot RESET INSIDE camera init (%u in a row).\n",
+                (unsigned)camGuardDeaths);
+  if (camGuardProfile < CAM_PROFILE_MINIMAL) {
+    camGuardProfile++;
+    Serial.printf("Backing off to: %s\n", cameraProfileName(camGuardProfile));
+  } else {
+    Serial.printf("Already at %s.\n", cameraProfileName(camGuardProfile));
+  }
+  if (camGuardDeaths >= 3) cameraGuardAdvice();
+}
+
+static bool initCameraOnce(int profile) {
   camera_config_t config = {};
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -290,10 +388,12 @@ static bool initCameraOnce() {
   config.pin_sccb_scl = SIOC_GPIO_NUM;
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
-  config.xclk_freq_hz = 20000000;
+  // Halving the sensor clock is the single most effective thing to try on a
+  // weak rail, and costs only frame rate.
+  config.xclk_freq_hz = (profile >= CAM_PROFILE_MINIMAL) ? 10000000 : 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
 
-  if (psramFound()) {
+  if (psramFound() && profile == CAM_PROFILE_FULL) {
     // Allocate for UXGA even though we will run smaller: the frame buffers are
     // sized once, at init, from this value. Ask for SVGA here and a later
     // /settings?framesize=uxga has nowhere to put the picture. Asking for the
@@ -303,6 +403,17 @@ static bool initCameraOnce() {
     config.jpeg_quality = 10;
     config.fb_count = 2;
     config.grab_mode = CAMERA_GRAB_LATEST;
+    config.fb_location = CAMERA_FB_IN_PSRAM;
+  } else if (psramFound()) {
+    // Backed off. Two UXGA buffers are ~1.5MB of PSRAM written at 20MHz; on a
+    // supply that cannot hold that, dropping to one smaller buffer is the
+    // difference between booting and not. /settings?framesize= can still go
+    // up to whatever was allocated here, no further.
+    config.frame_size = (profile >= CAM_PROFILE_MINIMAL) ? FRAMESIZE_VGA
+                                                         : FRAMESIZE_SVGA;
+    config.jpeg_quality = 12;
+    config.fb_count = 1;
+    config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
     config.fb_location = CAMERA_FB_IN_PSRAM;
   } else {
     // No PSRAM: one small buffer in internal RAM is all that fits.
@@ -322,7 +433,11 @@ static bool initCameraOnce() {
   sensor_t* s = esp_camera_sensor_get();
   if (s != nullptr) {
     // Down to the working resolution now that the buffers exist.
-    if (psramFound()) s->set_framesize(s, DEFAULT_FRAMESIZE);
+    // Only the full profile allocated UXGA buffers; the backed-off ones are
+    // already at or below DEFAULT_FRAMESIZE and must not be asked to grow.
+    if (psramFound() && profile == CAM_PROFILE_FULL) {
+      s->set_framesize(s, DEFAULT_FRAMESIZE);
+    }
     if (s->set_quality) s->set_quality(s, DEFAULT_JPEG_QUALITY);
 
     // Colour accuracy matters here: the brain judges ripeness and reads
@@ -350,14 +465,33 @@ static bool initCameraOnce() {
 // ribbon that has worked loose. Retry a few times before giving up, because a
 // brownout at boot often clears on the second attempt.
 static bool initCamera() {
+  uint32_t profile = camGuardProfile;
+  if (profile > CAM_PROFILE_MINIMAL) profile = CAM_PROFILE_MINIMAL;
+
   for (int attempt = 1; attempt <= 3; attempt++) {
-    Serial.printf("Camera init, attempt %d/3...\n", attempt);
-    if (initCameraOnce()) {
+    Serial.printf("Camera init, attempt %d/3 at %s...\n",
+                  attempt, cameraProfileName(profile));
+    Serial.flush();  // a reset inside the next call must not swallow this line
+
+    // Raise the flag BEFORE the call and lower it after. If the chip resets
+    // in between, the raised flag is the only thing that survives — and it is
+    // what tells the next boot to ask for less.
+    camGuardPending = 1;
+    const bool ok = initCameraOnce((int)profile);
+    camGuardPending = 0;
+
+    if (ok) {
+      // Remember what worked, so the next boot starts here instead of
+      // rediscovering it the hard way.
+      camGuardProfile = profile;
+      camGuardDeaths = 0;
       Serial.printf("Camera ready (%s, %s)\n", CAMERA_BOARD_NAME, frameSizeName());
       return true;
     }
+
     esp_camera_deinit();
     delay(500);
+    if (profile < CAM_PROFILE_MINIMAL) profile++;
   }
   return false;
 }
@@ -549,7 +683,7 @@ static esp_err_t statusHandler(httpd_req_t* req) {
   const bool motionRecent = false;
 #endif
 
-  char json[768];
+  char json[896];
   const int n = snprintf(
       json, sizeof(json),
       "{\"camera\":\"%s\",\"board\":\"%s\",\"firmware\":\"robot-eye-2.0\","
@@ -560,7 +694,8 @@ static esp_err_t statusHandler(httpd_req_t* req) {
       "\"frames_captured\":%lu,\"frames_streamed\":%lu,\"capture_errors\":%lu,"
       "\"last_capture_bytes\":%lu,\"last_capture_age_ms\":%lu,"
       "\"free_heap\":%u,\"min_free_heap\":%u,\"free_psram\":%u,"
-      "\"uptime_s\":%llu,\"reset_reason\":\"%s\",\"flash_on\":%s,\"auth\":%s}",
+      "\"uptime_s\":%llu,\"reset_reason\":\"%s\",\"cam_profile\":\"%s\","
+      "\"cam_deaths\":%u,\"flash_on\":%s,\"auth\":%s}",
       CAMERA_ID, CAMERA_BOARD_NAME,
       s ? (unsigned)s->id.PID : 0u,
       frameSizeName(), s ? (int)s->status.quality : -1,
@@ -578,6 +713,7 @@ static esp_err_t statusHandler(httpd_req_t* req) {
       (unsigned)ESP.getFreePsram(),
       (unsigned long long)(esp_timer_get_time() / 1000000ULL),
       resetReasonName(),
+      cameraProfileName(camGuardProfile), (unsigned)camGuardDeaths,
       flashOn ? "true" : "false",
       tokenRequired() ? "true" : "false");
 
@@ -1048,6 +1184,7 @@ void setup() {
   Serial.printf("\n== robot_eye starting (%s, reset: %s) ==\n",
                 CAMERA_BOARD_NAME, resetReasonName());
   announceBadReset();
+  cameraGuardBegin();
 
 #if STATUS_LED_GPIO_NUM >= 0
   pinMode(STATUS_LED_GPIO_NUM, OUTPUT);
