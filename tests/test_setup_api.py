@@ -278,7 +278,87 @@ class TestVerification:
                             self._provider_raising("gemini: connection failed (ConnectError)"))
         detail = client.post("/api/v1/setup",
                              json={"provider": "gemini", "api_key": KEY}).json()["detail"]
-        assert "online" in detail
+        # The wording may change; what must not is which thing gets blamed.
+        assert "reach" in detail.lower()
+        assert "model" not in detail.lower()
+
+    @staticmethod
+    def _provider_where_only(working_model):
+        """A provider that has exactly one model and 404s on every other."""
+        from iris.app.llm.base import LLMProviderError
+
+        asked = []
+
+        class Fake:
+            def __init__(self, model):
+                self.model = model
+
+            async def generate(self, *a, **k):
+                asked.append(self.model)
+                if self.model != working_model:
+                    raise LLMProviderError(
+                        f"gemini: HTTP 404 — models/{self.model} is not found"
+                    )
+                return type("R", (), {"content": "ok"})()
+
+            async def close(self):
+                return None
+
+        return (lambda name, creds: Fake(creds.get("model"))), asked
+
+    def test_a_retired_default_model_falls_back_instead_of_blaming_the_key(
+        self, client, env_file, monkeypatch
+    ):
+        """Providers retire model names; a first-run key must not pay for it."""
+        build, asked = self._provider_where_only("gemini-2.0-flash")
+        monkeypatch.setattr(setup_mod, "build_provider", build)
+
+        res = client.post("/api/v1/setup", json={"provider": "gemini", "api_key": KEY})
+
+        assert res.status_code == 200, res.json()
+        assert res.json()["model"] == "gemini-2.0-flash"
+        assert asked[0] == "gemini-flash-latest", "the default is still tried first"
+        assert "GEMINI_MODEL=gemini-2.0-flash" in env_file.read_text()
+
+    def test_a_model_you_chose_yourself_is_never_swapped(self, client, monkeypatch):
+        build, asked = self._provider_where_only("gemini-2.0-flash")
+        monkeypatch.setattr(setup_mod, "build_provider", build)
+
+        res = client.post("/api/v1/setup", json={
+            "provider": "gemini", "api_key": KEY, "model": "gemini-3-pro",
+        })
+
+        assert res.status_code == 400
+        assert asked == ["gemini-3-pro"], "no silent substitution behind your back"
+
+    def test_the_network_dying_mid_sweep_is_reported_as_the_network(
+        self, client, monkeypatch
+    ):
+        """Losing the connection while trying fallbacks blames the connection."""
+        from iris.app.llm.base import LLMProviderError
+
+        seen = []
+
+        class Fake:
+            def __init__(self, model):
+                self.model = model
+
+            async def generate(self, *a, **k):
+                seen.append(self.model)
+                if len(seen) == 1:
+                    raise LLMProviderError("gemini: HTTP 404 — model not found")
+                raise LLMProviderError("gemini: connection failed (ConnectError)")
+
+            async def close(self):
+                return None
+
+        monkeypatch.setattr(setup_mod, "build_provider",
+                            lambda name, creds: Fake(creds.get("model")))
+        detail = client.post("/api/v1/setup",
+                             json={"provider": "gemini", "api_key": KEY}).json()["detail"]
+        assert "reach" in detail.lower()
+        assert "model" not in detail.lower()
+        assert len(seen) == 2, "it stopped sweeping once the network went"
 
     def test_a_working_key_is_saved(self, client, env_file, monkeypatch):
         class Fake:

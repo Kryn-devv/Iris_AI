@@ -82,6 +82,19 @@ _BY_NAME = {p["name"]: p for p in PROVIDERS}
 #: key instead of needing a second setting nobody knows to look for.
 _VISION_CAPABLE = {"gemini"}
 
+#: Models to try when the default one is gone. Providers rename and retire
+#: models without warning, and when that happens the failure lands on someone
+#: pasting their first key — who is told their brand-new key does not work, and
+#: has no way to know the only wrong thing was a name baked into this file
+#: months ago. Each attempt is one tiny request, so trying a few costs a second
+#: and saves the whole first run. Only used when the caller did not name a
+#: model: an explicit choice is never quietly replaced.
+_FALLBACK_MODELS: Dict[str, List[str]] = {
+    "gemini": ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"],
+    "openrouter": ["deepseek/deepseek-chat-v3.1:free", "meta-llama/llama-3.3-70b-instruct:free"],
+    "groq": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
+}
+
 
 class SetupRequest(BaseModel):
     """Any subset: a key, a name, or both."""
@@ -169,10 +182,13 @@ async def save_setup(
                        f"{', '.join(_BY_NAME)}, or put it in .env yourself.",
             )
         key = body.api_key.strip()
-        model = (body.model or "").strip() or spec["default_model"]
+        chosen = (body.model or "").strip()
+        model = chosen or spec["default_model"]
 
         if body.verify:
-            error = await _verify(provider, key, model)
+            error, model = await _verify_chain(
+                provider, key, model, explicit=bool(chosen)
+            )
             if error:
                 # 400, not 500: the key is the input that was wrong.
                 raise HTTPException(status_code=400, detail=error)
@@ -232,11 +248,13 @@ def _apply(updates: Dict[str, Optional[str]]) -> None:
             setattr(settings, key, value)
 
 
-async def _verify(provider: str, key: str, model: str) -> Optional[str]:
-    """Ask the provider something tiny. Returns a human reason, or None.
+async def _verify_once(provider: str, key: str, model: str) -> Optional[str]:
+    """Ask the provider something tiny. Returns the raw failure, or None.
 
     A live check is the whole point: a key that is merely *stored* looks
-    identical to one that works until the first real question fails.
+    identical to one that works until the first real question fails. The error
+    comes back raw so the caller can tell a dead model from a dead network —
+    only one of those is worth retrying with a different name.
     """
     creds = dict(settings.provider_credentials().get(provider) or {})
     creds["api_key"] = key
@@ -250,12 +268,13 @@ async def _verify(provider: str, key: str, model: str) -> Optional[str]:
             max_tokens=5,
             temperature=0.0,
         )
-        logger.info("Setup verified %s in %.0f ms", provider, (time.perf_counter() - started) * 1000)
+        logger.info("Setup verified %s/%s in %.0f ms", provider, model,
+                    (time.perf_counter() - started) * 1000)
         return None
     except LLMProviderError as exc:
-        return _explain(provider, str(exc))
+        return str(exc)
     except Exception as exc:  # noqa: BLE001 - any failure here is the user's answer
-        return f"Could not reach {provider}: {exc}"
+        return f"{provider}: could not reach it ({exc})"
     finally:
         try:
             await candidate.close()
@@ -263,22 +282,96 @@ async def _verify(provider: str, key: str, model: str) -> Optional[str]:
             pass
 
 
+async def _verify_chain(
+    provider: str, key: str, model: str, *, explicit: bool
+) -> tuple[Optional[str], str]:
+    """Verify ``model``, falling back to others when only the name is wrong.
+
+    Returns ``(human_error_or_None, model_that_worked)``. A model the caller
+    chose is never silently swapped: being quietly moved off the model you
+    asked for is worse than being told it is gone.
+    """
+    failure = await _verify_once(provider, key, model)
+    if failure is None:
+        return None, model
+    if explicit or not _is_model_error(failure):
+        return _explain(provider, failure), model
+
+    for candidate in _FALLBACK_MODELS.get(provider, []):
+        if candidate == model:
+            continue
+        logger.info("Setup: %s has no %s, trying %s", provider, model, candidate)
+        retry = await _verify_once(provider, key, candidate)
+        if retry is None:
+            return None, candidate
+        if not _is_model_error(retry):
+            # The network or the key died mid-sweep; report that, not a
+            # roll-call of models we never really got to ask about.
+            return _explain(provider, retry), model
+
+    return _explain(provider, failure), model
+
+
+def _is_transport_error(lowered: str) -> bool:
+    """The request never got an answer — nothing was judged."""
+    return (
+        "connection failed" in lowered
+        or "transport error" in lowered
+        or "could not reach" in lowered
+        or "timeout" in lowered
+        or "timed out" in lowered
+    )
+
+
+def _is_auth_error(lowered: str) -> bool:
+    return (
+        "401" in lowered
+        or "403" in lowered
+        or "api key" in lowered
+        or "unauthor" in lowered
+        or "permission denied" in lowered
+    )
+
+
+def _is_model_error(raw: str) -> bool:
+    """The key was accepted; the model name was not.
+
+    Checked against the other two first, because a dead network loses to a
+    substring every time: the request URL carries the model name, so a plain
+    "connection failed" reply used to match a bare ``"model"`` test and tell
+    someone with the Wi-Fi off that Google did not have that model. The
+    message a person acts on has to name the thing that actually broke.
+    """
+    lowered = raw.lower()
+    if _is_transport_error(lowered) or _is_auth_error(lowered):
+        return False
+    return (
+        "404" in lowered
+        or "not found" in lowered
+        or "unknown model" in lowered
+        or "is not supported" in lowered
+        or "does not exist" in lowered
+    )
+
+
 def _explain(provider: str, raw: str) -> str:
     """Turn a provider's error into something worth reading."""
     lowered = raw.lower()
     label = _BY_NAME[provider]["label"]
-    if "401" in lowered or "403" in lowered or "api key" in lowered or "unauthor" in lowered:
+    if _is_transport_error(lowered):
+        return (f"Could not reach {label} — this machine looks offline. "
+                "Check the connection and press Connect again; the key is fine.")
+    if _is_auth_error(lowered):
         # The hint keeps its own capitals: "AIza" is case-sensitive, and
         # telling someone to look for "aiza" sends them hunting for a key
         # they already have.
         return (f"{label} refused that key. Check you copied all of it, and that it is "
                 f"a {label} key. {_BY_NAME[provider]['hint']}.")
-    if "404" in lowered or "not found" in lowered or "model" in lowered:
-        return (f"The key looks fine, but {label} does not have that model. "
-                "Leave the model box empty to use the default.")
     if "429" in lowered or "rate" in lowered or "quota" in lowered:
         return (f"{label} accepted the key but is rate-limiting right now. "
                 "It will most likely work in a minute — save it and try a message.")
-    if "connection" in lowered or "timeout" in lowered or "timed out" in lowered:
-        return f"Could not reach {label} — check this machine is online."
+    if _is_model_error(raw):
+        return (f"The key works, but {label} no longer offers any of the models "
+                "IRIS knows to ask for. Set the model name in .env "
+                f"({_BY_NAME[provider]['model_env']}) and restart.")
     return f"{label} rejected the key: {raw[:200]}"
