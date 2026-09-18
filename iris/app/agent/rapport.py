@@ -194,6 +194,13 @@ class RapportTracker:
 
         gap_minutes = (self._clock() - thread.last_at) / 60.0
         if gap_minutes >= float(getattr(settings, "RAPPORT_RETURN_GAP_MIN", 25)):
+            # Stamped here, not only in note_turn. Several reply paths — a
+            # confirmation prompt, a rejected confirmation, a timeout — never
+            # reach note_turn, so last_at stayed three hours old and she said
+            # "you've been away, say hello properly" on every single turn after
+            # that. Greeting someone once is warm; greeting them every sentence
+            # is a fault.
+            thread.last_at = self._clock()
             # Stated as the situation, not an order — but stated plainly enough
             # that the model does the obvious thing with it. "They have been
             # away 40 minutes" on its own got answered with the same flat

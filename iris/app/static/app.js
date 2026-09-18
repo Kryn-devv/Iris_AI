@@ -155,7 +155,20 @@
   let wsReady = false;
   let reconnectDelay = 800;
   let pendingTask = null;
-  const conversationId = "conv_" + Math.random().toString(36).slice(2, 10);
+  /* Kept across reloads on purpose. The thread lives server-side keyed by this
+     id, so minting a fresh one every page load meant she could never know you
+     had been away — the "back after three hours" greeting had no thread to
+     measure the gap against, and neither did the rolling summary. Closing the
+     tab was amnesia. */
+  const conversationId = (() => {
+    try {
+      const saved = localStorage.getItem("iris_conv");
+      if (saved) return saved;
+    } catch { /* private mode */ }
+    const fresh = "conv_" + Math.random().toString(36).slice(2, 10);
+    try { localStorage.setItem("iris_conv", fresh); } catch { }
+    return fresh;
+  })();
 
   function wsUrl() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -214,23 +227,15 @@
         break;
       case "agent.failed": setState("error", "failed"); break;
       case "voice.speaking":
-        if (shouldBrowserSpeak(p.engine)) {
-          speakBrowser(p.text, p.language, { filler: !!p.filler });
-        } else if (p.engine && p.engine !== "browser") {
-          // Spoken on the server (edge/piper). Nothing tells us when it ends,
-          // so estimate from the word count and hand the floor back then.
-          lastSpokenText = p.text || "";
-          speaking = true;
-          speakingInBrowser = false;      // the server holds this audio
-          setState("speaking", "speaking");
-          clearTimeout(serverSpeechTimer);
-          const wasFiller = !!p.filler;
-          serverSpeechTimer = setTimeout(() => {
-            speaking = false;
-            lastSpeechEndedAt = Date.now();
-            if (!wasFiller) openFollowUpWindow();
-          }, estimateSpeechMs(p.text));
-        }
+        if (shouldBrowserSpeak(p.engine)) speakBrowser(p.text, p.language, { filler: !!p.filler });
+        else if (LOCAL_SERVER_ENGINES.has(p.engine)) beginServerSpeech(p);
+        /* Anything else — "node" above all — is audio playing somewhere that
+           is not this machine: the robot's own speaker, in another room. It is
+           not ours to wait for, and treating it as local used to block this
+           page from speaking at all. */
+        break;
+      case "voice.spoken":
+        endServerSpeech(p.id);
         break;
       case "reminder.due":
       case "routine.fired": {
@@ -379,13 +384,19 @@
        `speakingInBrowser` is the other half: when audio is playing on the
        machine's own speakers we cannot stop it from here, so talking over it
        is how two voices ended up going at once. Let it finish. */
-    if (els.speakToggle.checked && !(speaking && !speakingInBrowser)) {
-      /* Only what the server marked as sayable. It sends a spoken lead with
-         every reply now, so an ABSENT one is a decision, not an omission: the
-         answer was nothing but a code block, and reading a code block out loud
-         is the thing we were trying to stop. Falling back to r.response here
-         would do exactly that. */
-      if (r.speech) speakBrowser(r.speech, r.response_language);
+    /* Only what the server marked as sayable. It sends a spoken lead with
+       every reply now, so an ABSENT one is a decision, not an omission: the
+       answer was nothing but a code block, and reading a code block out loud
+       is the thing we were trying to stop. */
+    if (els.speakToggle.checked && r.speech) {
+      if (current && current.source === "server") {
+        /* The speakers are busy with something we cannot stop — a reminder, the
+           camera. Wait for it rather than talking over it, and rather than
+           swallowing the answer, which is what dropping it here amounted to. */
+        deferredReply = { text: r.speech, lang: r.response_language };
+      } else {
+        speakBrowser(r.speech, r.response_language);
+      }
     }
     setState("idle", "ready");
   }
@@ -443,7 +454,6 @@
   let followUpUntil = 0;
   let lastSpokenText = "";
   let lastSpeechEndedAt = 0;
-  let serverSpeechTimer = null;
   let followUpSafety = null;
   /* Browser speech can be cancelled; server-side speech cannot. Pretending we
      stopped audio we cannot stop is what turns her own voice into a command. */
@@ -464,13 +474,12 @@
      floor with her forever and conversation mode would quietly end after every
      real reply. This is the backstop: hand the floor back once she has had
      time to finish, whatever the engine did or did not tell us. */
-  function armFollowUpSafety(text) {
+  function armFollowUpSafety(text, id) {
     clearTimeout(followUpSafety);
     followUpSafety = setTimeout(() => {
-      speaking = false;
-      speakingInBrowser = false;
-      lastSpeechEndedAt = Date.now();
-      openFollowUpWindow();
+      // Only if this utterance still holds the mouth: a backstop that fires
+      // for a reply two turns ago hands the floor away mid-sentence.
+      endSpeech(id, { wasFiller: false });
     }, Math.min(90000, estimateSpeechMs(text) + 1500));
   }
 
@@ -507,17 +516,93 @@
     return els.speakToggle.checked && (engine === "browser" || !engine);
   }
 
-  /* A filler is the "one sec" said while something slow runs. The answer that
-     follows must NOT cancel it — half of "one se—" sounds like a fault — so it
-     queues behind instead, which is also how a person finishes the words they
-     started. Everything else still cuts off whatever came before. */
-  let fillerSpeaking = false;
+  /* Engines whose audio comes out of THIS machine's speakers. "node" is
+     deliberately absent: that plays on the robot. */
+  const LOCAL_SERVER_ENGINES = new Set(["piper", "pyttsx3", "espeak", "edge", "gtts"]);
+
+  /* ── Who is talking ──────────────────────────────────────────────────────
+   * There is one mouth, and exactly one utterance owns it. `current` is that
+   * utterance; every callback checks that it still owns the mouth before
+   * touching shared state.
+   *
+   * Two booleans and a shared onend handler could not express that. A filler's
+   * "one sec" and the answer queued behind it are two utterances in flight at
+   * once, and the filler's callback — firing while the answer plays — cleared
+   * the answer's safety timer, declared speech over, and killed barge-in for
+   * the rest of the reply. Ownership is the fix: a callback whose id is stale
+   * cleans up after itself and leaves everything else alone. */
+  let utterSeq = 0;
+  let current = null;            // {id, source:"browser"|"server", filler, timer}
+  let deferredReply = null;      // a reply that arrived while the speakers were busy
+
+  function owns(id) { return current !== null && current.id === id; }
+
+  function beginSpeech(record) {
+    if (current && current.timer) clearTimeout(current.timer);
+    current = record;
+    speaking = true;
+    speakingInBrowser = record.source === "browser";
+    setState("speaking", "speaking");
+  }
+
+  function endSpeech(id, { wasFiller } = {}) {
+    if (!owns(id)) return false;   // something newer owns the mouth now
+    if (current.timer) clearTimeout(current.timer);
+    current = null;
+    speaking = false;
+    speakingInBrowser = false;
+    lastSpeechEndedAt = Date.now();
+    holo.setLevel(0);
+    if (!wasFiller) openFollowUpWindow();
+    if (currentState === "speaking") {
+      setState(listening || wakeMode ? "listening" : "idle",
+               listening || wakeMode ? "listening" : "ready");
+    }
+    flushDeferredReply();
+    return true;
+  }
+
+  function beginServerSpeech(p) {
+    /* Audio on this machine's speakers that we cannot stop. What we CAN stop
+       is our own: letting both run is the two-voices bug, and the browser's is
+       the one with a cancel button. */
+    if (speakingInBrowser) { try { window.speechSynthesis.cancel(); } catch { } }
+    clearTimeout(followUpSafety);
+    lastSpokenText = p.text || "";
+    const id = p.id || ("srv" + (++utterSeq));
+    const wasFiller = !!p.filler;
+    beginSpeech({
+      id, source: "server", filler: wasFiller,
+      /* A backstop only. The real end arrives as voice.spoken, because this
+         estimate starts before synthesis and a networked engine can spend
+         seconds there — the window used to expire mid-sentence. */
+      timer: setTimeout(() => endSpeech(id, { wasFiller }), estimateSpeechMs(p.text) + 4000),
+    });
+  }
+
+  function endServerSpeech(id) {
+    if (!id || !current || current.source !== "server") return;
+    endSpeech(current.id, { wasFiller: current.filler });
+  }
+
+  function flushDeferredReply() {
+    if (!deferredReply || current) return;
+    const pending = deferredReply;
+    deferredReply = null;
+    speakBrowser(pending.text, pending.lang);
+  }
+
 
   function speakBrowser(text, lang, opts) {
     if (!("speechSynthesis" in window) || !text) return;
     const isFiller = !!(opts && opts.filler);
     try {
-      if (!(fillerSpeaking && !isFiller)) window.speechSynthesis.cancel();
+      /* A filler is not cancelled by the answer that follows it — half of
+         "one se—" sounds like a fault — so the answer queues behind. Anything
+         else replaces what came before. */
+      const queueBehindFiller = current && current.source === "browser" && current.filler && !isFiller;
+      if (!queueBehindFiller) window.speechSynthesis.cancel();
+
       const utter = new SpeechSynthesisUtterance(text);
       utter.rate = 1.02;
       utter.pitch = 1.0;
@@ -534,24 +619,25 @@
         || voices.find((v) => female.test(v.name))
         || voices.find((v) => v.lang.startsWith("en"));
       if (preferred) utter.voice = preferred;
-      speaking = true;
-      speakingInBrowser = true;
-      if (!isFiller) armFollowUpSafety(text);
+
+      const id = "b" + (++utterSeq);
+      beginSpeech({ id, source: "browser", filler: isFiller, timer: null });
       // Kept for the echo guard either way: hearing her own "one sec" come
       // back through the microphone must not read as a command.
       lastSpokenText = text;
-      if (isFiller) fillerSpeaking = true;
-      setState("speaking", "speaking");
+      if (!isFiller) armFollowUpSafety(text, id);
       holo.setLevel(0.6);
+
       utter.onend = utter.onerror = () => {
-        if (isFiller) fillerSpeaking = false;
+        if (!owns(id)) {
+          /* A newer utterance already owns the mouth — this is a filler
+             finishing while the answer it queued ahead of plays on. Clearing
+             `speaking` here is what used to kill barge-in for the whole reply
+             and let her own voice back in as a command. */
+          return;
+        }
         clearTimeout(followUpSafety);        // the engine told us; no backstop needed
-        speaking = false;
-        speakingInBrowser = false;
-        lastSpeechEndedAt = Date.now();
-        if (!isFiller) openFollowUpWindow();   // a stop-gap is not her turn ending
-        holo.setLevel(0);
-        if (currentState === "speaking") setState(listening || wakeMode ? "listening" : "idle", listening || wakeMode ? "listening" : "ready");
+        endSpeech(id, { wasFiller: isFiller });
       };
       window.speechSynthesis.speak(utter);
     } catch { /* voice output unavailable */ }
@@ -587,10 +673,8 @@
             && interim.trim().split(/\s+/).length >= 3 && !looksLikeOwnVoice(interim)) {
           try { window.speechSynthesis.cancel(); } catch { }
           clearTimeout(followUpSafety);
-          speaking = false;
-          speakingInBrowser = false;
-          lastSpeechEndedAt = Date.now();
-          openFollowUpWindow();
+          deferredReply = null;     // they talked over it; do not play it later
+          if (current) endSpeech(current.id, { wasFiller: current.filler });
         }
       }
       if (finalText) {
@@ -699,7 +783,11 @@
 
   els.speakToggle.onchange = () => {
     try { localStorage.setItem("iris_speak", els.speakToggle.checked ? "1" : "0"); } catch { }
-    if (!els.speakToggle.checked) window.speechSynthesis && window.speechSynthesis.cancel();
+    if (!els.speakToggle.checked) {
+      deferredReply = null;
+      window.speechSynthesis && window.speechSynthesis.cancel();
+      if (current) endSpeech(current.id, { wasFiller: current.filler });
+    }
   };
 
   // Restore voice preferences.

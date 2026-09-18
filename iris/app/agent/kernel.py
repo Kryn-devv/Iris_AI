@@ -1148,7 +1148,12 @@ class AgentKernel:
         # SPEECH_MAX_CHARS as it always was. A tool's own spoken sentence is
         # authoritative everywhere and is never second-guessed.
         spoken = (speech or "").strip()
-        if not spoken and str(state.metadata.get("channel") or "web") in self._BROWSER_CHANNELS:
+        already_spoken = bool((ui or {}).get("already_spoken"))
+        if (
+            not spoken
+            and not already_spoken
+            and str(state.metadata.get("channel") or "web") in self._BROWSER_CHANNELS
+        ):
             spoken = spoken_lead(text)
 
         return ChatResponse(

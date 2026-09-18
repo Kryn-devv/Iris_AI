@@ -266,3 +266,67 @@ class TestVoiceOnlyChannelsKeepTheWholeAnswer:
         state.metadata["channel"] = "web"
         res = kernel._response(state, " ".join(f"Point {i} here." for i in range(60)))
         assert res.speech and len(res.speech) <= SPOKEN_LEAD_CHARS
+
+
+class TestSpokenLeadIsHardened:
+    """Nine ways the first version said the wrong thing out loud."""
+
+    def test_a_nested_fence_is_not_read_aloud(self):
+        said = spoken_lead(
+            'Wrap it like this:\n\n````markdown\n```python\nprint("hi")\n```\n````\n\nThat is all.'
+        )
+        assert "print" not in said and "python" not in said
+        assert "Wrap it like this" in said and "That is all" in said
+
+    def test_mentioning_a_fence_in_prose_does_not_delete_the_answer(self):
+        said = spoken_lead("Use ``` to open a fence. The rest of this sentence matters.")
+        assert "The rest of this sentence matters" in said
+
+    def test_a_truncated_fence_still_stops_the_reading(self):
+        said = spoken_lead("Here you go.\n\n```python\nimport os\nos.listdir()")
+        assert said == "Here you go."
+
+    def test_a_table_is_shown_not_recited(self):
+        said = spoken_lead(
+            "Here's the week:\n\n| Day | High |\n|-----|------|\n| Mon | 31 |\n\nHottest is Monday."
+        )
+        assert "|" not in said and "---" not in said
+        assert "Here's the week" in said and "Hottest is Monday" in said
+
+    def test_a_horizontal_rule_is_not_spoken(self):
+        assert spoken_lead("Done.\n\n---\n\nNext up: the tests.") == "Done. Next up: the tests."
+
+    def test_a_bare_url_becomes_a_link(self):
+        said = spoken_lead("Grab it from https://example.com/a/b?c=1 and run it.")
+        assert said == "Grab it from a link and run it."
+        assert "http" not in said
+
+    def test_multiplication_keeps_its_asterisks(self):
+        """Deleting emphasis markers blindly turned 2*3*4 into 234."""
+        assert "2*3*4" in spoken_lead("The answer is 2*3*4 which is 24.")
+
+    def test_bold_loses_its_markers(self):
+        assert spoken_lead("That is **really** important.") == "That is really important."
+
+    def test_a_quote_marker_is_not_spoken(self):
+        assert ">" not in spoken_lead("> quoted thing\n\nAnd my point.")
+
+    def test_a_code_span_keeps_its_contents(self):
+        said = spoken_lead("Run `hello_server.py` from the projects folder.")
+        assert "hello_server.py" in said and "`" not in said
+
+    @pytest.mark.parametrize("size", [4_000, 40_000, 400_000])
+    def test_hostile_input_does_not_stall_the_event_loop(self, size):
+        """`[` with no closing `](...)` rescanned to the end of the text for
+        every bracket — nearly two seconds of blocked loop on 32 KB, and this
+        runs synchronously inside an async reply path."""
+        import time
+
+        blob = "[a" * (size // 2)
+        started = time.perf_counter()
+        spoken_lead(blob)
+        assert time.perf_counter() - started < 0.25, f"{size} chars was too slow"
+
+    def test_a_single_enormous_token_still_yields_a_sentence(self):
+        said = spoken_lead("x" * 5000)
+        assert 0 < len(said) <= SPOKEN_LEAD_CHARS + 1

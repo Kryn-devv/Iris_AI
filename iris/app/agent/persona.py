@@ -531,20 +531,54 @@ def _decapitalize_after_lead(text: str, lead: str) -> str:
 # 3. What gets said out loud, when the written answer is longer than a breath
 # =============================================================================
 
-#: A fenced code block. Read aloud it is unbearable; on screen it is the answer.
-_CODE_FENCE = re.compile(r"```.*?```", re.DOTALL)
-#: An unterminated fence — a reply cut off mid-block still must not be read out.
-_OPEN_FENCE = re.compile(r"```.*$", re.DOTALL)
-#: ``[label](url)`` — say the label, never the URL.
-_MD_LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
-#: Leading list bullets and heading hashes, which are punctuation to the eye and
-#: noise to the ear.
-_MD_LEAD = re.compile(r"^[ \t]*(?:[-*+]|\d+[.)]|#{1,6})[ \t]+", re.MULTILINE)
+#: A fenced code block. The backtick run is captured so a fence of four or
+#: more — the standard way to show a fence inside a fence — is closed only by a
+#: run at least as long. Matching a bare ``` against ``` paired the wrong
+#: delimiters and left the inner block's body outside the match, to be read out
+#: loud: exactly what this exists to prevent.
+_CODE_FENCE = re.compile(r"(?m)^[ \t]*(`{3,})[^\n]*\n.*?^[ \t]*\1`*[ \t]*$", re.DOTALL)
+#: A fence that never closed — a reply cut off by a token limit. Anchored to
+#: the start of a line, because an inline mention of ``` in ordinary prose is
+#: not a truncated code block, and treating it as one deleted the rest of the
+#: answer ("Use ``` to open a fence. The rest matters." became "Use").
+_OPEN_FENCE = re.compile(r"(?m)^[ \t]*`{3,}.*\Z", re.DOTALL)
+#: A run of table rows. Pipes and the |---| rule row belong on screen; read
+#: aloud they are punctuation noise in the middle of a sentence.
+_TABLE_BLOCK = re.compile(r"(?m)^[ \t]*\|.*(?:\n[ \t]*\|.*)*\n?")
+#: A horizontal rule on its own line.
+_RULE_LINE = re.compile(r"(?m)^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*$")
+#: ``[label](url)`` — say the label, never the URL. The label is bounded and
+#: forbidden from spanning lines: an unbounded ``[^\]]+`` rescans to the end of
+#: the text for every unmatched ``[``, which on a long tool output is seconds
+#: of blocked event loop rather than a slow regex.
+_MD_LINK = re.compile(r"\[([^\]\n]{1,200})\]\([^)\s]*\)")
+#: Leading list bullets, heading hashes and quote markers.
+_MD_LEAD = re.compile(r"(?m)^[ \t]*(?:[-*+]|\d+[.)]|#{1,6}|>)+[ \t]+")
+#: Emphasis markers. Replaced through a function so ``2*3*4`` keeps its
+#: asterisks — deleting them unconditionally turned that into "234", and a
+#: spoken number that is not the written one is worse than a stray symbol.
+_EMPHASIS = re.compile(r"(\*\*|__|\*|_)(\S(?:[^*_\n]*\S)?)\1")
+#: An inline code span. The content is kept — a filename read aloud is useful.
+_CODE_SPAN = re.compile(r"`+([^`\n]+)`+")
+#: A bare URL. Said character by character it is unlistenable, and the browser
+#: speaks this string directly — it never passes through the voice service's
+#: own sanitiser, so the substitution has to happen here too.
+_BARE_URL = re.compile(r"(?:https?://|www\.)\S+")
 #: Where a sentence ends. The danda closes one in Devanagari.
 _SENTENCE_END = re.compile(r"(?<=[.!?\u0964])\s+")
 
 #: Longest spoken lead before it stops being a lead. About two sentences.
 SPOKEN_LEAD_CHARS = 260
+#: Never walk more than this multiple of the limit. Only the first `limit`
+#: characters can ever be returned, and `text` is not always a short model
+#: reply — a directory listing or a file read arrives here in full.
+_MAX_SCANNED = 8
+
+
+def _unemphasise(match: "re.Match[str]") -> str:
+    """Drop emphasis markers, but only around something with a letter in it."""
+    inner = match.group(2)
+    return inner if any(ch.isalpha() for ch in inner) else match.group(0)
 
 
 def spoken_lead(text: str, *, limit: int = SPOKEN_LEAD_CHARS) -> str:
@@ -556,10 +590,11 @@ def spoken_lead(text: str, *, limit: int = SPOKEN_LEAD_CHARS) -> str:
     worth hearing — came out as silence, and the ones that did get spoken had
     their code fences read aloud character by character.
 
-    This is a *subset* of her own words, never a paraphrase and never an
-    addition. Code blocks go (they are on screen, where code belongs), markdown
-    punctuation goes, and what remains is cut at a sentence boundary. If the
-    whole answer already fits in a breath, the whole answer is the lead.
+    This is a *subset* of her own words, with one substitution: a URL becomes
+    "a link", because the alternative is thirty seconds of spelling. Nothing
+    else is added and nothing is paraphrased. Code blocks and tables go (they
+    are on screen, where they belong), markdown punctuation goes, and what
+    remains is cut at a sentence boundary.
 
     Returns "" when nothing is left to say — an answer that was only code. The
     caller treats that as "show it, do not narrate it", which is also what a
@@ -567,17 +602,22 @@ def spoken_lead(text: str, *, limit: int = SPOKEN_LEAD_CHARS) -> str:
     """
     if not text:
         return ""
-    stripped = _CODE_FENCE.sub(" ", text)
+    scanned = text[: limit * _MAX_SCANNED]
+    stripped = _CODE_FENCE.sub(" ", scanned)
     stripped = _OPEN_FENCE.sub(" ", stripped)
+    stripped = _TABLE_BLOCK.sub(" ", stripped)
+    stripped = _RULE_LINE.sub(" ", stripped)
     stripped = _MD_LINK.sub(r"\1", stripped)
     stripped = _MD_LEAD.sub("", stripped)
-    stripped = stripped.replace("`", "").replace("**", "").replace("__", "")
+    stripped = _CODE_SPAN.sub(r"\1", stripped)
+    stripped = _EMPHASIS.sub(_unemphasise, stripped)
+    stripped = _BARE_URL.sub("a link", stripped)
+    stripped = stripped.replace("`", "")
     stripped = re.sub(r"[ \t]+", " ", stripped)
     # Blank lines separate thoughts; a single space would run two sentences
     # together and the cut below would then take both.
     stripped = re.sub(r"\n{2,}", "\n", stripped).strip()
-    collapsed = stripped.replace("\n", " ").strip()
-    collapsed = re.sub(r"\s{2,}", " ", collapsed)
+    collapsed = re.sub(r"\s{2,}", " ", stripped.replace("\n", " ")).strip()
     if not collapsed:
         return ""
     if len(collapsed) <= limit:
@@ -594,10 +634,11 @@ def spoken_lead(text: str, *, limit: int = SPOKEN_LEAD_CHARS) -> str:
     if not lead:
         lead = collapsed
     if len(lead) > limit:
-        # One sentence longer than the whole budget: cut it at a word rather
-        # than mid-syllable, and mark that it was cut.
+        # One sentence longer than the whole budget. Cut at a word, unless
+        # doing so throws away most of the breath — a single unbroken token
+        # would otherwise reduce the whole spoken line to a fragment.
         cut = lead[:limit].rsplit(" ", 1)[0].rstrip(",;:")
-        lead = f"{cut}…" if cut else lead[:limit]
+        lead = f"{cut}…" if len(cut) > limit // 2 else lead[:limit] + "…"
     return lead
 
 

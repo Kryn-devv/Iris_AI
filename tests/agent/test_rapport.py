@@ -346,3 +346,50 @@ class TestHelpers:
     def test_a_long_turn_is_clipped_not_dropped(self):
         out = _transcript([{"role": "user", "content": "x" * 900}])
         assert out.startswith("Them: xxx") and len(out) < 500
+
+
+class TestTheGreetingFiresOnceOnly:
+    """Greeting someone once is warm; greeting them every sentence is a fault.
+
+    ``context_block`` measured the gap from ``last_at``, which only advanced
+    inside ``_remember_turn``. Several reply paths never reach it — a
+    confirmation prompt, a rejected confirmation, a timeout — so a three-hour
+    absence stayed three hours old and the cue was re-issued on every
+    subsequent turn.
+    """
+
+    @staticmethod
+    def _tracker_at(clock):
+        from iris.app.agent.rapport import RapportTracker
+
+        return RapportTracker(clock=lambda: clock[0])
+
+    def test_the_cue_is_not_repeated_on_the_next_turn(self):
+        clock = [1000.0]
+        tracker = self._tracker_at(clock)
+        tracker.note_turn("c1", tool_name="time", was_command=True)
+
+        clock[0] += 3 * 3600                      # away three hours
+        first = tracker.context_block("c1")
+        assert "your turn to say hello" in first
+
+        clock[0] += 30                            # a reply that never records a turn
+        assert "your turn to say hello" not in tracker.context_block("c1")
+
+    def test_a_second_real_absence_is_greeted_again(self):
+        clock = [1000.0]
+        tracker = self._tracker_at(clock)
+        tracker.note_turn("c1")
+
+        clock[0] += 3 * 3600
+        assert "your turn to say hello" in tracker.context_block("c1")
+
+        clock[0] += 4 * 3600                      # genuinely away again
+        assert "your turn to say hello" in tracker.context_block("c1")
+
+    def test_a_short_gap_is_never_greeted(self):
+        clock = [1000.0]
+        tracker = self._tracker_at(clock)
+        tracker.note_turn("c1")
+        clock[0] += 60
+        assert "your turn to say hello" not in tracker.context_block("c1")

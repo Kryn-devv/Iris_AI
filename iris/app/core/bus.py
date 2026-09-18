@@ -171,6 +171,9 @@ class Topics:
     VOICE_PARTIAL = "voice.partial"
     VOICE_FINAL = "voice.final"
     VOICE_SPEAKING = "voice.speaking"
+    #: Server-side playback actually finished. The UI clears its state on
+    #: this rather than on a word-count guess that starts before synthesis.
+    VOICE_SPOKEN = "voice.spoken"
     VOICE_LEVEL = "voice.level"
 
     LLM_ROUTE = "llm.route"

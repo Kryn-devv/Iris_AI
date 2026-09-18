@@ -75,6 +75,8 @@ class VoiceService:
         self._tts_probed = False
         self._speak_lock = asyncio.Lock()
         self.enabled = settings.VOICE_ENABLED
+        #: Monotonic counter behind the id on every voice.speaking/voice.spoken pair.
+        self._utterance = 0
 
     # -------------------------------------------------------------------- TTS
     def _get_tts(self) -> Optional[tts_module.TTSEngineBase]:
@@ -134,11 +136,23 @@ class VoiceService:
         engine = None
         if not browser_only and self.enabled and settings.SPEAK_RESPONSES:
             engine = self._get_tts()
-        default_event_bus.publish(
-            Topics.VOICE_SPEAKING,
-            {"text": sentence, "engine": engine.name if engine else "browser",
-             "language": language, "filler": filler},
-        )
+
+        # Every utterance is stamped, and the pair — started, finished — carries
+        # the same stamp. The UI used to guess when server audio ended from a
+        # word count started *before* synthesis, so an engine that spends two
+        # seconds on a network round trip had its window expire while it was
+        # still talking, and the browser began the next reply over the top.
+        self._utterance += 1
+        utterance_id = f"u{self._utterance}"
+
+        def _announce(engine_name: str) -> None:
+            default_event_bus.publish(
+                Topics.VOICE_SPEAKING,
+                {"id": utterance_id, "text": sentence, "engine": engine_name,
+                 "language": language, "filler": filler},
+            )
+
+        _announce(engine.name if engine else "browser")
 
         spoken = False
         if engine is not None:
@@ -147,15 +161,19 @@ class VoiceService:
                     spoken = await engine.speak(sentence, language)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("TTS engine %s failed: %s", engine.name, exc)
+            # Said either way: the UI has a slot open for this utterance and the
+            # only thing worse than it closing early is it never closing.
+            default_event_bus.publish(
+                Topics.VOICE_SPOKEN,
+                {"id": utterance_id, "engine": engine.name, "spoken": spoken},
+            )
             if not spoken:
                 # Server audio failed — hand the sentence to the web UI's
                 # speechSynthesis so the user hears it instead of silence.
-                default_event_bus.publish(
-                    Topics.VOICE_SPEAKING,
-                    {"text": sentence, "engine": "browser", "language": language},
-                )
+                _announce("browser")
         engine_name = engine.name if engine is not None and spoken else "browser"
-        return {"spoken": spoken, "engine": engine_name, "text": sentence, "language": language}
+        return {"spoken": spoken, "engine": engine_name, "text": sentence,
+                "language": language, "id": utterance_id}
 
     async def synthesize(self, text: str, language: str = "en") -> Optional[str]:
         """Produce an audio file for a sentence (for phone clients)."""
