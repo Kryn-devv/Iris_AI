@@ -33,8 +33,14 @@ _URL_RX = re.compile(r"https?://\S+")
 _WS = re.compile(r"\s+")
 
 
-def sanitize_for_speech(text: str, max_chars: int = 500) -> str:
-    """Strip markdown noise and URLs so TTS reads naturally."""
+def sanitize_for_speech(text: str, max_chars: Optional[int] = None) -> str:
+    """Strip markdown noise and URLs so TTS reads naturally.
+
+    ``max_chars`` defaults to ``SPEECH_MAX_CHARS`` rather than a hard-coded
+    500: that limit is why a longer answer used to stop mid-thought out loud.
+    """
+    if max_chars is None:
+        max_chars = int(getattr(settings, "SPEECH_MAX_CHARS", 1400))
     cleaned = _URL_RX.sub("a link", text or "")
     cleaned = _SENTENCE_CLEAN.sub("", cleaned)
     cleaned = _WS.sub(" ", cleaned).strip()
@@ -69,6 +75,8 @@ class VoiceService:
         self._tts_probed = False
         self._speak_lock = asyncio.Lock()
         self.enabled = settings.VOICE_ENABLED
+        #: Monotonic counter behind the id on every voice.speaking/voice.spoken pair.
+        self._utterance = 0
 
     # -------------------------------------------------------------------- TTS
     def _get_tts(self) -> Optional[tts_module.TTSEngineBase]:
@@ -95,17 +103,56 @@ class VoiceService:
         engine = stt_module.pick_engine()
         return engine.name if engine else "browser"
 
-    async def speak(self, text: str, *, language: str = "en", interrupt: bool = False) -> dict[str, Any]:
-        """Speak a sentence (server-side when possible) and notify all UIs."""
+    async def speak(
+        self,
+        text: str,
+        *,
+        language: str = "en",
+        interrupt: bool = False,
+        filler: bool = False,
+        browser_only: bool = False,
+    ) -> dict[str, Any]:
+        """Speak a sentence (server-side when possible) and notify all UIs.
+
+        ``filler`` marks a stop-gap like "one sec" said while something slow
+        runs. The UI lets the real answer queue behind one of those instead of
+        cutting it off, because half of "one se—" sounds like a fault.
+
+        ``browser_only`` hands the sentence to the web UI and does **not** play
+        it on the machine's speakers. That is not a preference, it is the fix
+        for two voices talking over each other: the web UI speaks every reply
+        itself, so anything said *around* a reply — the "one sec" before it —
+        has to come out of the same mouth. Spoken server-side instead, the
+        filler played through the speakers while the browser read the answer
+        aloud at the same time, in a different voice, and neither could stop
+        the other. Ambient speech with no browser in the loop — a reminder
+        firing, the camera greeting someone, a node's microphone — still goes
+        to the speakers, which is the only mouth those have.
+        """
         sentence = sanitize_for_speech(text)
         if not sentence:
             return {"spoken": False, "engine": None, "text": ""}
 
-        engine = self._get_tts() if (self.enabled and settings.SPEAK_RESPONSES) else None
-        default_event_bus.publish(
-            Topics.VOICE_SPEAKING,
-            {"text": sentence, "engine": engine.name if engine else "browser", "language": language},
-        )
+        engine = None
+        if not browser_only and self.enabled and settings.SPEAK_RESPONSES:
+            engine = self._get_tts()
+
+        # Every utterance is stamped, and the pair — started, finished — carries
+        # the same stamp. The UI used to guess when server audio ended from a
+        # word count started *before* synthesis, so an engine that spends two
+        # seconds on a network round trip had its window expire while it was
+        # still talking, and the browser began the next reply over the top.
+        self._utterance += 1
+        utterance_id = f"u{self._utterance}"
+
+        def _announce(engine_name: str) -> None:
+            default_event_bus.publish(
+                Topics.VOICE_SPEAKING,
+                {"id": utterance_id, "text": sentence, "engine": engine_name,
+                 "language": language, "filler": filler},
+            )
+
+        _announce(engine.name if engine else "browser")
 
         spoken = False
         if engine is not None:
@@ -114,15 +161,19 @@ class VoiceService:
                     spoken = await engine.speak(sentence, language)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("TTS engine %s failed: %s", engine.name, exc)
+            # Said either way: the UI has a slot open for this utterance and the
+            # only thing worse than it closing early is it never closing.
+            default_event_bus.publish(
+                Topics.VOICE_SPOKEN,
+                {"id": utterance_id, "engine": engine.name, "spoken": spoken},
+            )
             if not spoken:
                 # Server audio failed — hand the sentence to the web UI's
                 # speechSynthesis so the user hears it instead of silence.
-                default_event_bus.publish(
-                    Topics.VOICE_SPEAKING,
-                    {"text": sentence, "engine": "browser", "language": language},
-                )
+                _announce("browser")
         engine_name = engine.name if engine is not None and spoken else "browser"
-        return {"spoken": spoken, "engine": engine_name, "text": sentence, "language": language}
+        return {"spoken": spoken, "engine": engine_name, "text": sentence,
+                "language": language, "id": utterance_id}
 
     async def synthesize(self, text: str, language: str = "en") -> Optional[str]:
         """Produce an audio file for a sentence (for phone clients)."""

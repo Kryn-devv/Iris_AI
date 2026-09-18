@@ -86,6 +86,12 @@ piece.
   outputs. One wire each to GPIO 2 / GPIO 1 buys a gas level and a light
   percent later.
 
+- **She talks like a person.** `agent/persona.py` (character brief + a voice
+  for every canned moment, never the same line twice) and `agent/rapport.py`
+  (the clock: greets after a gap, notices a repeat, gets terser mid-burst;
+  plus a rolling summary so she remembers past the last twelve turns). Small
+  talk steps aside when a model is available. The UI opens a nine-second
+  window after she speaks so you can just reply. docs/HUMAN-MODE.md.
 - **The robot goes places on its own.** `tools/devices/navigate.py`: turn by
   angle, drive a distance, drive until the ultrasonics see the target, plans
   of several legs, obstacle stop while moving, "stop" aborts, calibration by

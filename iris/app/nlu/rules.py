@@ -59,6 +59,13 @@ class Rule:
     static_args: Dict[str, Any] = field(default_factory=dict)
     confidence: float = 0.95
     needs_generation: bool = False
+    #: A phrasing that is a *question* as often as it is a command. "Who is
+    #: Narendra Modi" matches this file and gets an encyclopedia's opening
+    #: sentence pasted back — accurate, and nothing like an answer from someone
+    #: you are talking to. With a model reachable the kernel steps over these
+    #: and lets it answer; with no model, the lookup is still far better than
+    #: nothing, which is why the rule stays here rather than being deleted.
+    prefer_model: bool = False
 
     def build(self, m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
         if self.builder is not None:
@@ -270,6 +277,18 @@ def _build_nav_turn(m: Match[str], cleaned: str) -> Optional[Dict[str, Any]]:
     if (g.get("dir") or g.get("dir2") or "").lower() == "left":
         degrees = -degrees
     return {"turn_degrees": degrees}
+
+
+def _build_roam_start(m, cleaned: str) -> Dict[str, Any]:
+    """"go explore", optionally "for 5 minutes"."""
+    args: Dict[str, Any] = {"action": "start"}
+    raw = m.groupdict().get("mins")
+    if raw:
+        try:
+            args["minutes"] = max(0.1, min(120.0, float(raw)))
+        except ValueError:
+            pass
+    return args
 
 
 def _build_nav_uturn(m: Match[str], cleaned: str) -> Dict[str, Any]:
@@ -575,6 +594,54 @@ RULES: list[Rule] = [
         static_args={"action": "stop"},
         confidence=0.98,
     ),
+    # -- driving itself around, with nobody steering (robot_roam) -----------
+    #
+    # Ahead of robot_navigate on purpose: "go explore" is not a destination,
+    # and "move on your own" must never be read as a request to move forward.
+    Rule(
+        name="robot_roam_stop",
+        intent="devices",
+        tool="robot_roam",
+        pattern=_rx(
+            r"^(?:robot\s*,?\s*)?(?:stop|quit|end|cancel|band\s+karo|ruk\s+jao|rukko|bas)\s+"
+            r"(?:the\s+)?(?:exploring|exploration|roaming|roam|wandering|wander|"
+            r"ghoomna|ghumna|driving\s+yourself|moving\s+on\s+your\s+own)$"
+            r"|^(?:stop|band\s+karo)\s+(?:the\s+)?(?:robot\s+)?(?:roam|explore)$"
+        ),
+        static_args={"action": "stop"},
+        builder=lambda m, c: {"action": "stop"},
+        confidence=0.97,
+    ),
+    Rule(
+        name="robot_roam_status",
+        intent="devices",
+        tool="robot_roam",
+        pattern=_rx(
+            r"^(?:what|where)\s+(?:are\s+you\s+doing|is\s+the\s+robot\s+doing)$"
+            r"|^(?:are\s+you|is\s+the\s+robot)\s+(?:still\s+)?(?:exploring|roaming|wandering)\??$"
+            r"|^roam(?:ing)?\s+status$"
+        ),
+        builder=lambda m, c: {"action": "status"},
+        confidence=0.95,
+    ),
+    Rule(
+        name="robot_roam_start",
+        intent="devices",
+        tool="robot_roam",
+        pattern=_rx(
+            r"^(?:robot\s*,?\s*)?(?:please\s+)?"
+            r"(?:go\s+(?:and\s+)?)?"
+            r"(?:explore|roam|wander(?:\s+(?:around|about))?|"
+            r"drive\s+(?:yourself|around\s+yourself)|"
+            r"move\s+(?:on\s+your\s+own|by\s+yourself|yourself\s+around)|"
+            r"khud\s+se\s+(?:ghoomo|chalo|chal)|ghoomo|ghumo|"
+            r"look\s+around\s+the\s+room)"
+            r"(?:\s+(?:the\s+)?(?:room|around|here))?"
+            r"(?:\s+for\s+(?P<mins>[\d.]+)\s*(?:minutes?|mins?|m))?$"
+        ),
+        builder=_build_roam_start,
+        confidence=0.96,
+    ),
     # -- going places on its own (robot_navigate) ---------------------------
     Rule(
         name="command_later",
@@ -664,6 +731,21 @@ RULES: list[Rule] = [
         ),
         builder=_build_nav_calibrate,
         confidence=0.95,
+    ),
+    Rule(
+        name="reliability_check",
+        intent="system",
+        tool="reliability_check",
+        pattern=_rx(
+            r"^(?:(?:run\s+(?:a\s+)?)?(?:reliability|consistency|determinism)\s+(?:test|check)"
+            r"(?:\s+(?:on|for|with|of)\s+(?P<phrase>.+))?"
+            r"|(?:prove|show)\s+(?:me\s+)?(?:that\s+)?(?:you(?:'re|\s+are)|it(?:'s|\s+is))\s+reliable"
+            r"|(?:are\s+you|is\s+it)\s+reliable"
+            r"|how\s+reliable\s+are\s+you"
+            r"|(?:will|do)\s+you\s+(?:give|do)\s+the\s+same\s+(?:answer|thing)\s+every\s+time)\??$"
+        ),
+        builder=lambda m, c: ({"phrase": m.group("phrase").strip()} if m.groupdict().get("phrase") else {}),
+        confidence=0.97,
     ),
     Rule(
         name="sensor_motion_query",
@@ -1493,6 +1575,7 @@ RULES: list[Rule] = [
         pattern=_rx(r"^who\s+(?:is|was|are)\s+(?P<q>[\w .,'-]{2,60})$"),
         builder=_passthrough_query("topic"),
         confidence=0.8,
+        prefer_model=True,
     ),
 
     # ------------------------------------------------------------ web search

@@ -45,11 +45,29 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
+        # Hand list settings to _split_csv as the raw string.
+        #
+        # Without this, pydantic-settings JSON-decodes any field whose type is
+        # a list BEFORE a validator ever runs, and raises if that fails. So
+        # LLM_PROVIDER_ORDER=groq,gemini — the obvious thing to write, and what
+        # the setup dialog itself writes — did not merely get misparsed: it
+        # stopped IRIS booting at all, with a JSONDecodeError pointing at
+        # pydantic rather than at the line in .env. _split_csv below already
+        # understands JSON, CSV and real lists, so nothing is lost by taking
+        # the decoding into our own hands.
+        enable_decoding=False,
     )
 
     # ------------------------------------------------------------------ general
     APP_NAME: str = "IRIS"
     ASSISTANT_NAME: str = "Iris"
+    #: The person she works for. Used in the character brief so she can say
+    #: your name the way people do — occasionally, not every sentence.
+    USER_NAME: str = ""
+    #: Appended verbatim to the end of every system prompt. For model control
+    #: tokens, e.g. "/no_think" so Qwen3 answers chat instantly instead of
+    #: reasoning for ten seconds first. Empty for cloud models.
+    PROMPT_SUFFIX: str = ""
     APP_ENV: str = "development"
     LOG_LEVEL: str = "INFO"
     LOG_JSON: bool = False
@@ -160,11 +178,35 @@ class Settings(BaseSettings):
     # call at all: "open youtube" never needs the network.
     NLU_ENABLED: bool = True
     NLU_MIN_CONFIDENCE: float = 0.62
+    #: Canned regex replies for "how are you" / "who are you" / thanks. They
+    #: exist to answer instantly with no key and no network. With a model
+    #: configured they are what makes her sound like a vending machine, because
+    #: the model never sees those turns and so cannot follow the thread. Off in
+    #: human mode; on automatically when there is no cloud provider at all.
+    SMALLTALK_ENABLED: bool = False
+    #: Dress deterministic tool confirmations in her own voice — varied wording,
+    #: never the same line twice running, warmer after a gap, terser mid-burst.
+    #: The action stays deterministic either way; only the words move.
+    PERSONA_ACKS: bool = True
+    #: Say something the moment a slow job starts, instead of going silent.
+    #: Milliseconds before "one sec" is spoken; 0 disables.
+    THINKING_FILLER_MS: int = 900
     NLU_FUZZY_THRESHOLD: int = 82
 
     # ---------------------------------------------------------- agent limits
     MAX_PLANNING_ITERATIONS: int = 6
     MAX_TOOL_CALLS: int = 16
+    #: How many recent exchanges ride along on every model call. Unbounded
+    #: history is what blew through free-tier tokens-per-minute and made long
+    #: chats fail; a dozen turns keeps the thread without the blow-up.
+    HISTORY_MAX_TURNS: int = 12
+    #: Everything older than that window is folded into one rolling line of
+    #: notes, refreshed in the background, so she remembers an hour ago and not
+    #: only the last four things said.
+    ROLLING_SUMMARY_ENABLED: bool = True
+    ROLLING_SUMMARY_TIMEOUT_S: float = 25.0
+    #: Silence longer than this and the next reply greets rather than continues.
+    RAPPORT_RETURN_GAP_MIN: float = 25.0
     PER_TOOL_TIMEOUT_SECONDS: float = 20.0
     TOTAL_TASK_TIMEOUT_SECONDS: float = 120.0
 
@@ -214,6 +256,10 @@ class Settings(BaseSettings):
     VAD_AGGRESSIVENESS: int = 2
     MIC_SAMPLE_RATE: int = 16000
     SPEAK_RESPONSES: bool = True
+    #: Longest reply spoken before it is cut at a sentence boundary. The old
+    #: hard-coded 500 characters (~30 seconds) is why she could never finish a
+    #: thought out loud — the text was there, the voice just stopped.
+    SPEECH_MAX_CHARS: int = 1400
 
     # ----------------------------------------------------------- node links
     #: Shared secret a node presents when it dials in. REQUIRED for node links
@@ -240,6 +286,32 @@ class Settings(BaseSettings):
     ROBOT_OBSTACLE_STOP_CM: int = 35
     #: No single leg runs longer than this, whatever the numbers say.
     ROBOT_MAX_LEG_S: float = 30.0
+
+    #: Roaming: the robot driving itself around a room with nobody asking.
+    #: Off by default and deliberately so — a robot that starts moving the
+    #: moment IRIS launches is a robot that drives off a desk while you are
+    #: still reading the startup log. Turn it on by saying "go explore".
+    ROBOT_ROAM_ENABLED: bool = False
+    #: Slower than ROBOT_CRUISE_SPEED: it is deciding as it goes, and every
+    #: extra centimetre per second is less time to notice the table leg.
+    ROBOT_ROAM_SPEED: int = 150
+    #: Under this, stop going forward and get out of the way.
+    ROBOT_ROAM_CRITICAL_CM: int = 22
+    #: Under this, steer toward whichever side has more room.
+    ROBOT_ROAM_CAUTION_CM: int = 45
+    #: One forward pulse. Short on purpose — each one is a fresh decision on a
+    #: fresh reading, so the robot is never committed further than this.
+    ROBOT_ROAM_STEP_MS: int = 400
+    ROBOT_ROAM_TURN_MS: int = 320
+    #: How often it looks and decides. Just above the sense board's own cycle:
+    #: it fires the four ultrasonics in turn, 60 ms apart (distanceSlotMs in
+    #: the S3 firmware), so a full set of fresh readings takes 240 ms. Ticking
+    #: faster than that reads the same numbers twice and tells the wedge
+    #: detector the room has stopped changing when only the clock has.
+    ROBOT_ROAM_TICK_S: float = 0.25
+    #: It parks itself after this long without being asked again. 0 disables
+    #: the limit, which is not recommended on a robot with a battery.
+    ROBOT_ROAM_MAX_MINUTES: float = 10.0
 
     # ---------------------------------------------------------------- camera
     #: Let the camera act on its own: greet people it recognises when they

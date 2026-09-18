@@ -1,6 +1,6 @@
 # IRIS — Developer Guide
 
-Personal desktop AI assistant. FastAPI backend + vanilla-JS dark UI with a canvas hologram. Python 3.11+.
+Personal desktop AI assistant. FastAPI backend + vanilla-JS dark UI with a canvas hologram. Python 3.10+.
 
 ## Run
 ```bash

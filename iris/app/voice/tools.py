@@ -31,8 +31,11 @@ class SpeakTool(BaseTool):
         return {
             "spoken": outcome["spoken"],
             "engine": outcome["engine"],
-            # Deliberately no extra 'speech': the text itself was the speech.
             "display": f"🔊 {outcome['text']}",
+            # Saying it was the whole job, and it is already said. Without this
+            # the kernel derives a spoken line from the display string and the
+            # UI says it a second time, over the top of the first.
+            "ui": {"already_spoken": True},
         }
 
 

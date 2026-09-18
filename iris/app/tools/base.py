@@ -49,6 +49,11 @@ class ToolError(RuntimeError):
 class BaseTool(ABC):
     """Abstract interface for all executable tools in IRIS."""
 
+
+    #: Set by :meth:`ToolRegistry.register`. ``None`` until a tool is
+    #: registered, so anything reading it falls back to the global registry.
+    registry: Any = None
+
     #: Unique tool identifier exposed to the model and the REST API.
     name: ClassVar[str] = ""
     #: One-line description; this is what the model reads when choosing a tool.

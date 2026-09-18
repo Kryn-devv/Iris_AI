@@ -21,6 +21,7 @@ permission manager — including confirmation round-trips.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 import uuid
@@ -37,6 +38,8 @@ from iris.app.agent.prompts import (
     get_system_prompt,
     language_instruction,
 )
+from iris.app.agent.persona import default_voice, spoken_lead
+from iris.app.agent.rapport import default_rapport
 from iris.app.agent.smalltalk import match_smalltalk
 from iris.app.agent.state import AgentState
 from iris.app.agent.task_manager import TaskManager
@@ -149,21 +152,43 @@ class AgentKernel:
             # Layer 2: natural-language memory commands.
             memory_response = await self._try_memory_commands(state, user_input_clean)
             if memory_response is not None:
+                # Saved to history like any other exchange: a turn the model
+                # never learns about is a turn it will contradict later.
+                await self._remember_turn(state, memory_response.response)
                 return self._finish(state, memory_response)
 
             # Layer 3: instant small talk, in the user's own register.
-            smalltalk = match_smalltalk(user_input_clean, style=target_style)
-            if smalltalk is not None:
-                state.update_status(TaskStatus.COMPLETED)
-                self._dispatch_event(state, AgentEventType.AGENT_COMPLETED)
-                return self._finish(
-                    state,
-                    self._response(state, smalltalk, handler="smalltalk", intent="smalltalk"),
-                )
+            #
+            # A canned "I'm great!" the model never sees is precisely what
+            # breaks a conversation: she answers, forgets it happened, and the
+            # next turn starts from nothing. So with a model available this
+            # layer steps aside and real talk reaches the model. With no cloud
+            # provider configured it stays on — answering "how are you" offline
+            # with zero keys is a promise this project keeps.
+            if self._use_smalltalk():
+                smalltalk = match_smalltalk(user_input_clean, style=target_style)
+                if smalltalk is not None:
+                    state.update_status(TaskStatus.COMPLETED)
+                    self._dispatch_event(state, AgentEventType.AGENT_COMPLETED)
+                    await self._remember_turn(state, smalltalk)
+                    return self._finish(
+                        state,
+                        self._response(state, smalltalk, handler="smalltalk", intent="smalltalk"),
+                    )
 
             # Layer 4: deterministic command NLU.
             if settings.NLU_ENABLED:
                 match = self.intent_engine.match(user_input_clean)
+                if match is not None and self._prefers_model(match):
+                    # A question wearing a command's clothes. The model can use
+                    # the very same tool and then actually talk about what came
+                    # back, instead of handing over an encyclopedia's opening
+                    # sentence and calling it a conversation.
+                    logger.info(
+                        "NLU rule '%s' deferred to the model: this reads as a question.",
+                        match.rule_name,
+                    )
+                    match = None
                 if match is not None and match.confidence >= settings.NLU_MIN_CONFIDENCE:
                     if self.tool_registry.is_registered(match.tool_name):
                         response = await asyncio.wait_for(
@@ -259,12 +284,26 @@ class AgentKernel:
 
             state.user_approved = True
             state.update_status(TaskStatus.RUNNING)
-            summary, exec_result = await self._execute_tool(state, tool_name, arguments, True)
+            async with self._filler_for(tool_name, state):
+                summary, exec_result = await self._execute_tool(state, tool_name, arguments, True)
             text = exec_result.spoken_or_display() or f"Done — '{tool_name}' completed."
             if not exec_result.success:
                 text = exec_result.error or f"'{tool_name}' failed."
             state.update_status(TaskStatus.COMPLETED if exec_result.success else TaskStatus.FAILED)
             self._dispatch_event(state, AgentEventType.AGENT_COMPLETED)
+
+            # The same voice and the same memory as any other command: an
+            # approved action was still a thing she did, and a turn the model
+            # never learns about is one it will contradict later.
+            style = state.metadata.get("target_style")
+            if exec_result.success:
+                text = localize_ack(text, style)
+            speech = localize_ack(exec_result.speech, style) if exec_result.speech else None
+            text = self._voiced(state, text, tool_name, exec_result.success)
+            if speech:
+                speech = self._voiced(state, speech, tool_name, exec_result.success, reuse=text)
+            await self._remember_turn(state, text, tool_name=tool_name, was_command=True)
+
             return self._finish(
                 state,
                 self._response(
@@ -272,7 +311,7 @@ class AgentKernel:
                     text,
                     handler="confirmation",
                     tools=[summary],
-                    speech=exec_result.speech,
+                    speech=speech,
                     artifacts=exec_result.artifacts,
                     ui=exec_result.ui,
                     status=TaskStatus.COMPLETED if exec_result.success else TaskStatus.FAILED,
@@ -393,9 +432,10 @@ class AgentKernel:
         if match.needs_generation:
             arguments, generation_note = await self._enrich_content_arguments(state, match, arguments)
 
-        summary, exec_result = await self._execute_tool(
-            state, match.tool_name, arguments, user_approved
-        )
+        async with self._filler_for(match.tool_name, state):
+            summary, exec_result = await self._execute_tool(
+                state, match.tool_name, arguments, user_approved
+            )
 
         if exec_result.error == "__REQUIRES_CONFIRMATION__":
             return self._confirmation_response(state, match.tool_name, arguments, match.intent)
@@ -407,19 +447,26 @@ class AgentKernel:
         )
 
         text = exec_result.spoken_or_display()
-        if not text:
-            text = "Done." if exec_result.success else "That didn't work."
         speech = exec_result.speech
+        style = state.metadata.get("target_style")
         if exec_result.success:
             # Conservative localization of common acks ("Opened X." -> "X khol diya.").
-            style = state.metadata.get("target_style")
             text = localize_ack(text, style)
             if speech:
                 speech = localize_ack(speech, style)
+
+        # Then her own voice on top. The tool decided what happened and its
+        # words are never rewritten — a sensor reading paraphrased is a sensor
+        # reading invented. Only the packaging moves, and it moves with the
+        # moment: warmer after an hour away, terser in the middle of a burst,
+        # and never the same line twice running.
+        text = self._voiced(state, text, match.tool_name, exec_result.success)
+        if speech:
+            speech = self._voiced(state, speech, match.tool_name, exec_result.success, reuse=text)
         if generation_note:
             text = f"{text}\n\n{generation_note}" if exec_result.success else text
 
-        await self._remember_turn(state, text)
+        await self._remember_turn(state, text, tool_name=match.tool_name, was_command=True)
         return self._response(
             state,
             text,
@@ -823,7 +870,14 @@ class AgentKernel:
             error="REQUIRES_CONFIRMATION",
         )
 
-    async def _remember_turn(self, state: AgentState, final_text: str) -> None:
+    async def _remember_turn(
+        self,
+        state: AgentState,
+        final_text: str,
+        *,
+        tool_name: Optional[str] = None,
+        was_command: bool = False,
+    ) -> None:
         if state.conversation_id:
             try:
                 await self.conversation_memory.remember(
@@ -836,40 +890,213 @@ class AgentKernel:
             except Exception as exc:  # noqa: BLE001
                 logger.debug("Conversation memory store failed: %s", exc)
 
-    #: Tools attached to every agent call regardless of the message: the
-    #: conversation staples a model reaches for without obvious keywords.
+        # The shape of the conversation, for the next reply's wording — and,
+        # once enough of it has aged out of the live window, a background pass
+        # that folds the old part into one line she still remembers.
+        try:
+            default_rapport.note_turn(
+                state.conversation_id, tool_name=tool_name, was_command=was_command
+            )
+            if state.conversation_id:
+                history = await self.conversation_memory.retrieve(state.conversation_id)
+                if history:
+                    default_rapport.maybe_summarize(
+                        state.conversation_id, history, self.model_gateway
+                    )
+        except Exception as exc:  # noqa: BLE001 - awareness never breaks a reply
+            logger.debug("Rapport update skipped: %s", exc)
+
+    @contextlib.asynccontextmanager
+    async def _filler_for(self, tool_name: str, state: AgentState):
+        """Say "one sec" if a command goes quiet for too long.
+
+        Only for tools that reach the network, which are the ones that take
+        long enough for silence to be uncomfortable — a local command answers
+        before the filler's timer has finished, and speaking over it would be
+        worse than saying nothing. The agent loop is excluded on purpose: there
+        the model narrates its own work.
+        """
+        delay_ms = int(getattr(settings, "THINKING_FILLER_MS", 0) or 0)
+        tool = self.tool_registry.get(tool_name)
+        if delay_ms <= 0 or tool is None or not getattr(tool, "network", False):
+            yield
+            return
+
+        task = asyncio.create_task(self._say_filler(delay_ms / 1000.0, state))
+        try:
+            yield
+        finally:
+            task.cancel()
+
+    #: Channels where a browser is doing the talking, so the filler must not
+    #: also go to the machine's speakers. See ``VoiceService.speak``.
+    _BROWSER_CHANNELS = frozenset({"web", "ws"})
+
+    async def _say_filler(self, delay: float, state: AgentState) -> None:
+        try:
+            await asyncio.sleep(delay)
+            from iris.app.voice.service import default_voice_service
+
+            line = default_voice.working(state.metadata.get("target_style"))
+            channel = str(state.metadata.get("channel") or "web")
+            await default_voice_service.speak(
+                line, filler=True, browser_only=channel in self._BROWSER_CHANNELS
+            )
+        except asyncio.CancelledError:
+            raise            # the answer arrived first, which is the good case
+        except Exception as exc:  # noqa: BLE001 - a stop-gap never breaks a turn
+            logger.debug("Filler skipped: %s", exc)
+
+    def _prefers_model(self, match) -> bool:
+        """Should this match step aside and let the model answer?
+
+        Only for rules that said so, and only when a model would actually
+        answer — "reachable", not "configured", because with the provider
+        rate-limited the alternative is not a better answer, it is the offline
+        engine, and a Wikipedia lookup beats that every time.
+        """
+        if not getattr(match, "prefer_model", False):
+            return False
+        try:
+            return bool(self.model_gateway.can_answer)
+        except Exception:  # noqa: BLE001 - a gateway that cannot say is a no
+            return False
+
+    # --------------------------------------------------------------- persona
+    def _use_smalltalk(self) -> bool:
+        """Canned pleasantries only when there is no model to do better.
+
+        "Reachable", not "configured": with a key set but the provider
+        rate-limited — the normal state of a free tier on a busy afternoon —
+        "how are you" would otherwise fall through to the offline engine and
+        come back as the blurb telling you to add an API key you already have.
+        A warm canned line is better than that.
+        """
+        if getattr(settings, "SMALLTALK_ENABLED", False):
+            return True
+        try:
+            return not self.model_gateway.can_answer
+        except Exception:  # noqa: BLE001
+            return True
+
+    def _voiced(
+        self,
+        state: AgentState,
+        text: str,
+        tool_name: Optional[str],
+        success: bool,
+        *,
+        reuse: Optional[str] = None,
+    ) -> str:
+        """Put a tool's confirmation into her voice, situation and all."""
+        if not getattr(settings, "PERSONA_ACKS", True):
+            return text or ("Done." if success else "That didn't work.")
+        # The spoken line and the written one say the same thing; picking twice
+        # would have her say one sentence and show another.
+        if reuse is not None and (text or "").strip() == (state.metadata.get("_ack_source") or ""):
+            return reuse
+        state.metadata["_ack_source"] = (text or "").strip()
+        # Situation is decoration. If the tracker is unavailable she simply
+        # sounds flatter — she does not fail to answer.
+        returning = repeated = terse = False
+        try:
+            moment = default_rapport.moment(state.conversation_id)
+            returning = moment.returning and success
+            terse = moment.terse
+            repeated = default_rapport.repeats(state.conversation_id, tool_name) and success
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Situation unavailable, answering plainly: %s", exc)
+        return default_voice.acknowledge(
+            text,
+            style=state.metadata.get("target_style"),
+            success=success,
+            returning=returning,
+            repeated=repeated,
+            terse=terse,
+        )
+
+    #: Tools attached to every agent call regardless of the message.
+    #:
+    #: The rule is not "the most useful tools" — it is **the tools that are
+    #: needed when the user's words do not name them**. Anything with an
+    #: obvious keyword ("weather", "wikipedia", "screenshot") is found by the
+    #: matcher below and does not need a permanent seat.
+    #:
+    #: This set used to be ten lookup tools — search, wiki, weather, news,
+    #: time, calculator, reminders, notes — and nothing that touches the
+    #: machine. So "can you do it on my Linux" reached the model with no way
+    #: to run anything, and the honest answer it gave, "I can't run commands
+    #: on your machine directly", was false about IRIS and true about the
+    #: list it had been handed. An assistant that cannot act on the computer
+    #: it lives on is a search box, and that is exactly what it felt like.
     _CORE_AGENT_TOOLS = frozenset({
-        "web_search", "quick_answer", "wikipedia", "weather", "news",
-        "time", "calculator", "set_reminder", "set_timer", "quick_note",
+        # Acting on this machine. None of these match the words people
+        # actually use ("do it", "check", "fix this", "how much space").
+        "run_command", "run_python", "system_info", "take_screenshot",
+        "open_app", "open_website", "list_directory", "read_file",
+        # The conversation staples.
+        "web_search", "quick_answer", "time", "calculator",
+        "set_reminder", "set_timer", "quick_note",
     })
 
     #: Ceiling on tools per request. Free tiers meter tokens per minute
-    #: (Groq: 8k TPM) and the FULL 61-tool catalogue alone is ~6k tokens,
-    #: so shipping everything made every second request rate-limit into
-    #: the offline fallback.
-    _MAX_AGENT_TOOLS = 24
+    #: (Groq: 8k TPM) and the full catalogue is ~9k tokens of schema on its
+    #: own, so shipping everything makes every second request rate-limit into
+    #: the offline fallback. The fix for a tight budget is spending it well,
+    #: not raising it: see the scoring in ``_select_tools_for``.
+    _MAX_AGENT_TOOLS = 26
+
+    #: How a word matching each part of a tool's identity is weighted.
+    _NAME_MATCH = 4
+    _ALIAS_MATCH = 3
+    _DESC_MATCH = 1
+    #: A description can only ever contribute this much, so a long blurb that
+    #: happens to contain three common words cannot outrank a name match.
+    _DESC_CAP = 2
 
     def _select_tools_for(self, message: str) -> list:
-        """Core tools plus the ones whose name/alias/description matches the message."""
+        """The core tools, plus the ones this message actually points at.
+
+        Matched tools are *scored* rather than taken in registry order. With a
+        hard ceiling, arbitrary order means the ceiling decides which
+        capabilities exist this turn — and it decided badly: asking to be shown
+        everything produced a list of window-management tools, and the reply
+        that followed was invented rather than run.
+        """
         available = self.tool_registry.tools(available_only=True)
         words = {w for w in re.findall(r"[a-z0-9]+", message.lower()) if len(w) >= 3}
 
-        core, matched = [], []
+        core, scored = [], []
         for tool in available:
             meta = tool.get_metadata()
             if meta.name in self._CORE_AGENT_TOOLS:
                 core.append(tool)
                 continue
-            haystack = " ".join(
-                [meta.name.replace("_", " "), " ".join(meta.aliases), meta.description.lower()]
-            ).lower()
-            if any(word in haystack for word in words):
-                matched.append(tool)
+            if not words:
+                continue
+            name_words = set(meta.name.lower().replace("_", " ").split())
+            alias_words = {
+                part
+                for alias in meta.aliases
+                for part in alias.lower().replace("_", " ").split()
+            }
+            desc_words = set(re.findall(r"[a-z0-9]+", (meta.description or "").lower()))
 
-        selected = core + matched
-        if len(selected) > self._MAX_AGENT_TOOLS:
-            selected = selected[: self._MAX_AGENT_TOOLS]
-        return selected
+            score = 0
+            if words & name_words:
+                score += self._NAME_MATCH
+            if words & alias_words:
+                score += self._ALIAS_MATCH
+            score += min(len(words & desc_words) * self._DESC_MATCH, self._DESC_CAP)
+            if score:
+                # Name as the tie-break so the same message always yields the
+                # same tools — an assistant whose abilities shuffle between
+                # identical requests is the opposite of dependable.
+                scored.append((-score, meta.name, tool))
+
+        scored.sort(key=lambda item: (item[0], item[1]))
+        room = max(0, self._MAX_AGENT_TOOLS - len(core))
+        return core + [tool for _, _, tool in scored[:room]]
 
     def _response(
         self,
@@ -908,12 +1135,33 @@ class AgentKernel:
                 + detail
             )
 
+        # Every reply gets something sayable. Without this the UI spoke a reply
+        # only when it was under 300 characters, so the answers with any
+        # substance in them — an explanation, a walkthrough, anything worth
+        # hearing — arrived as silence, and the ones short enough to speak had
+        # their code fences read out symbol by symbol.
+        #
+        # A derived lead is only correct where a screen is carrying the rest.
+        # The robot's microphone has no screen: there, cutting the answer at two
+        # sentences does not summarise it, it loses it. So that channel is left
+        # with speech unset and speaks the whole reply, trimmed server-side at
+        # SPEECH_MAX_CHARS as it always was. A tool's own spoken sentence is
+        # authoritative everywhere and is never second-guessed.
+        spoken = (speech or "").strip()
+        already_spoken = bool((ui or {}).get("already_spoken"))
+        if (
+            not spoken
+            and not already_spoken
+            and str(state.metadata.get("channel") or "web") in self._BROWSER_CHANNELS
+        ):
+            spoken = spoken_lead(text)
+
         return ChatResponse(
             task_id=state.task_id,
             correlation_id=state.correlation_id,
             response=text,
             notice=notice,
-            speech=speech or None,
+            speech=spoken or None,
             intent_detected=intent,
             handler=handler,
             tools_executed=tools or [],

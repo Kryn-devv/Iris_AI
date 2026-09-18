@@ -33,7 +33,10 @@
   var MAX_LABEL_DROP_PX = 22 + (0.62 - 0.30) * 60;
 
   var LABEL_CSS = [
-    ".iris-labels{position:fixed;inset:0;z-index:2;pointer-events:none;overflow:hidden}",
+    /* z-index 1: above the background canvas (0), below #app (2). At 2 this
+       layer sat on top of the whole interface, so every modal and the
+       settings drawer were drawn underneath the agent names. */
+    ".iris-labels{position:fixed;inset:0;z-index:1;pointer-events:none;overflow:hidden}",
     ".iris-agent-label{position:absolute;left:0;top:0;transform:translate(-50%,0);",
     "  pointer-events:auto;text-align:center;line-height:1.25;white-space:nowrap;",
     /* No CSS transition: opacity is eased in JS below. A transition here fought

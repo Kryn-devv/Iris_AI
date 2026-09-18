@@ -218,7 +218,9 @@ class SchedulerService:
         try:
             from iris.app.agent.kernel import default_kernel
 
-            result = await default_kernel.process_request(text)
+            # Not a browser channel: this answer is spoken aloud with no
+            # screen carrying the rest of it, so it must not be cut to a lead.
+            result = await default_kernel.process_request(text, channel="scheduler")
             spoken = getattr(result, "speech", None) or getattr(result, "response", "") or ""
         except Exception as exc:  # noqa: BLE001 - a failed command is reported, not fatal
             logger.warning("Scheduled command %r failed: %s", text, exc)

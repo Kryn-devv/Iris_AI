@@ -769,13 +769,30 @@ void setup() {
   startEyes();
   face.begin(millis());
 
-  /* The UDP listener binds to any address, so it can come up before the
-   * network does — and must, for the banner below to report it honestly. */
-  if (!fast.begin(fastCommand)) Serial.println("  [warn] UDP fast path failed to start");
-
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
+
+  /* The millisecond path, bound here and not one line earlier.
+   *
+   * It used to be started before WiFi.mode(), on the reasoning that a socket
+   * bound to any address does not need an IP yet. It does not — but it does
+   * need the TCP/IP stack to EXIST, and on ESP32 that stack is brought up by
+   * WiFi.mode(). WiFiUDP::begin() before it reaches into lwIP for a mailbox
+   * that has not been created:
+   *
+   *     assert failed: tcpip_send_msg_wait_sem ... (Invalid mbox)
+   *
+   * which aborts the board and reboots it, forever, with the whole banner
+   * printing normally right up to the crash — so the serial log looks like a
+   * sensor or display fault rather than a startup-order one. Older cores let
+   * the bind fail quietly; 3.x asserts. The robot node has always bound after
+   * WiFi.mode() and has never had this.
+   *
+   * Still BEFORE the join wait below, so the port is live during those 25
+   * seconds and the banner can report it honestly. */
+  if (!fast.begin(fastCommand)) Serial.println("  [warn] UDP fast path failed to start");
+
   Serial.print("Connecting to WiFi");
   const unsigned long joinDeadline = millis() + WIFI_JOIN_MS;
   while (WiFi.status() != WL_CONNECTED && (long)(millis() - joinDeadline) < 0) {

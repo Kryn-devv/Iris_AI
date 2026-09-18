@@ -23,6 +23,15 @@ from iris.app.llm.mock import MockLLMProvider
 
 logger = get_logger("llm.gateway")
 
+#: Server-side hiccups: the provider is up, this one request was unlucky.
+#: Google says it outright — "Spikes in demand are usually temporary. Please
+#: try again later." Benching a provider for two minutes over a blip it told
+#: us to retry costs a whole conversation, so these are retried in place
+#: before the chain moves on.
+_TRANSIENT_STATUS = frozenset({500, 502, 503, 504, 529})
+#: First pause before retrying one of those; doubles each time.
+_TRANSIENT_BACKOFF_S = 1.0
+
 
 class _Circuit:
     """Cooldown bookkeeping for one provider."""
@@ -98,6 +107,19 @@ class ModelGateway:
     @property
     def has_cloud(self) -> bool:
         return bool(self.provider_chain())
+
+    @property
+    def can_answer(self) -> bool:
+        """True when a *real* model would take the next request.
+
+        ``has_cloud`` only says a key is configured. It stays true while every
+        provider is rate-limited or unreachable and the chain is falling
+        through to the offline engine — which is a different question, and the
+        one callers usually mean when they ask.
+        """
+        if settings.LLM_MODE in ("off", "mock"):
+            return False
+        return bool(self._usable_chain())
 
     # -------------------------------------------------------------- selection
     async def get_provider_and_name(self) -> Tuple[LLMProvider, str]:
@@ -178,6 +200,7 @@ class ModelGateway:
                 # provider's own "try again in Ns" until the patience budget
                 # (LLM_RATE_LIMIT_MAX_WAIT) is spent, then move on.
                 waited = 0.0
+                attempts = 0
                 while True:
                     try:
                         response = await provider.generate(
@@ -193,17 +216,38 @@ class ModelGateway:
                     except LLMProviderError as exc:
                         wait = getattr(exc, "retry_after", None)
                         if (
-                            exc.status_code != 429
-                            or wait is None
-                            or waited + wait > settings.LLM_RATE_LIMIT_MAX_WAIT
+                            exc.status_code == 429
+                            and wait is not None
+                            and waited + wait <= settings.LLM_RATE_LIMIT_MAX_WAIT
                         ):
-                            raise
-                        waited += wait
-                        logger.info(
-                            "Provider '%s' rate-limited; waiting %.1fs as requested (%.1fs of %.0fs budget).",
-                            provider.provider_name, wait, waited, settings.LLM_RATE_LIMIT_MAX_WAIT,
-                        )
-                        await asyncio.sleep(wait + 0.5)
+                            waited += wait
+                            logger.info(
+                                "Provider '%s' rate-limited; waiting %.1fs as requested "
+                                "(%.1fs of %.0fs budget).",
+                                provider.provider_name, wait, waited,
+                                settings.LLM_RATE_LIMIT_MAX_WAIT,
+                            )
+                            await asyncio.sleep(wait + 0.5)
+                            continue
+                        # A busy model is not a broken one. Without this, one
+                        # 503 sent the answer to the offline engine AND benched
+                        # the provider for the whole cooldown, so the next few
+                        # messages were flat too — from a spike that had
+                        # already passed.
+                        if (
+                            exc.status_code in _TRANSIENT_STATUS
+                            and attempts < max(0, int(settings.LLM_MAX_RETRIES))
+                        ):
+                            attempts += 1
+                            pause = _TRANSIENT_BACKOFF_S * (2 ** (attempts - 1))
+                            logger.info(
+                                "Provider '%s' returned %s; retrying in %.1fs (%d of %d).",
+                                provider.provider_name, exc.status_code, pause,
+                                attempts, settings.LLM_MAX_RETRIES,
+                            )
+                            await asyncio.sleep(pause)
+                            continue
+                        raise
                 circuit.record_success()
                 self.last_fallback_errors = []
                 if self._last_good != provider.provider_name:

@@ -57,6 +57,18 @@ class ContextAssembler:
                 proj_lines = [f"- {r.key}: {r.value}" for r in project_records]
                 memory_context_parts.append("\n[PROJECT CONTEXT]\n" + "\n".join(proj_lines))
 
+        # The shape of the conversation itself: how long they have been at it,
+        # whether they just came back, and one rolling line of notes about
+        # everything older than the live history window.
+        try:
+            from iris.app.agent.rapport import default_rapport
+
+            rapport_block = default_rapport.context_block(state.conversation_id)
+            if rapport_block:
+                memory_context_parts.append("\n[CONVERSATION SO FAR]\n" + rapport_block)
+        except Exception as exc:  # noqa: BLE001 - awareness is a nicety, never a failure
+            logger.debug("Rapport context skipped: %s", exc)
+
         # Retrieve language metadata if attached to state
         lang_det = state.metadata.get("language_detection")
         if lang_det:
@@ -110,6 +122,21 @@ class ContextAssembler:
         if self.conversation_memory and state.conversation_id:
             conv_history = await self.conversation_memory.retrieve(state.conversation_id)
             if conv_history:
+                # The thread, not the whole transcript: the last N exchanges.
+                # Everything older is already folded into the rolling summary
+                # above, and carrying it twice only burns tokens — on a free
+                # tier, enough of them to trip the rate limit mid-conversation.
+                from iris.app.core.config import settings as _settings
+
+                max_msgs = 2 * max(1, int(getattr(_settings, "HISTORY_MAX_TURNS", 12)))
+                if len(conv_history) > max_msgs:
+                    window = conv_history[-max_msgs:]
+                    # Never open the window on an orphaned assistant turn: a
+                    # reply with no question in front of it reads as a non
+                    # sequitur, and some APIs reject the shape outright.
+                    if window and window[0].get("role") == "assistant":
+                        window = window[1:]
+                    conv_history = window
                 messages.extend(conv_history)
 
         # Append user input

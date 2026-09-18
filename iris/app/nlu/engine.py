@@ -35,6 +35,9 @@ class IntentMatch:
     #: When True the kernel should still compose the final answer with a model
     #: (e.g. content-generation intents where the tool needs generated input).
     needs_generation: bool = False
+    #: When True this phrasing is a question as much as a command, and the
+    #: model should take it whenever one can answer. See ``Rule.prefer_model``.
+    prefer_model: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -44,6 +47,7 @@ class IntentMatch:
             "intent": self.intent,
             "rule_name": self.rule_name,
             "needs_generation": self.needs_generation,
+            "prefer_model": self.prefer_model,
         }
 
 
@@ -90,6 +94,7 @@ class IntentEngine:
                 intent=rule.intent,
                 rule_name=rule.name,
                 needs_generation=rule.needs_generation,
+                prefer_model=rule.prefer_model,
             )
             logger.debug("NLU matched %r -> %s%s", cleaned, rule.tool, match.arguments)
             return match

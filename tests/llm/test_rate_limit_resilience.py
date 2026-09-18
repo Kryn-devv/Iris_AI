@@ -172,3 +172,90 @@ class TestGatewayPatience:
         assert res.provider_name == "mock"
         assert provider.calls == 2
         assert gw.last_fallback_errors
+
+
+class TestTransientServerErrors:
+    """A busy model is not a broken one.
+
+    Google answers an overloaded model with 503 and says so in words —
+    "Spikes in demand are usually temporary. Please try again later." Taking
+    that at face value used to cost the whole conversation: the reply came
+    from the offline engine, and the provider was benched for the full
+    circuit-breaker cooldown, so the next messages were flat too, long after
+    the spike had passed.
+    """
+
+    @staticmethod
+    def _busy(status=503):
+        return LLMProviderError(
+            f"gemini: HTTP {status} — model is currently experiencing high demand",
+            status_code=status, retryable=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_503_is_retried_before_giving_up_on_the_provider(self, monkeypatch):
+        sleeps = []
+
+        async def fake_sleep(seconds):
+            sleeps.append(seconds)
+
+        monkeypatch.setattr(gateway_module.asyncio, "sleep", fake_sleep)
+        monkeypatch.setattr(settings, "LLM_MAX_RETRIES", 2)
+        provider = _ScriptedProvider([self._busy()])
+        gw = _gateway_with(provider, monkeypatch)
+
+        res = await gw.generate("hello")
+
+        assert res.provider_name == "groq", "the retry answered; no offline fallback"
+        assert provider.calls == 2
+        assert sleeps == [1.0], "it waited a moment rather than hammering"
+
+    @pytest.mark.asyncio
+    async def test_the_provider_is_not_benched_for_a_spike_that_passed(self, monkeypatch):
+        async def fake_sleep(seconds):
+            pass
+
+        monkeypatch.setattr(gateway_module.asyncio, "sleep", fake_sleep)
+        monkeypatch.setattr(settings, "LLM_MAX_RETRIES", 2)
+        gw = _gateway_with(_ScriptedProvider([self._busy()]), monkeypatch)
+
+        await gw.generate("hello")
+
+        assert not gw._circuits["groq"].is_open, "one blip must not cost the next two minutes"
+
+    @pytest.mark.asyncio
+    async def test_backoff_grows_and_then_it_stops(self, monkeypatch):
+        sleeps = []
+
+        async def fake_sleep(seconds):
+            sleeps.append(seconds)
+
+        monkeypatch.setattr(gateway_module.asyncio, "sleep", fake_sleep)
+        monkeypatch.setattr(settings, "LLM_MAX_RETRIES", 2)
+        provider = _ScriptedProvider([self._busy(), self._busy(), self._busy()])
+        gw = _gateway_with(provider, monkeypatch)
+
+        res = await gw.generate("hello")
+
+        assert provider.calls == 3, "the original try plus LLM_MAX_RETRIES"
+        assert sleeps == [1.0, 2.0], "each pause doubles"
+        assert res.provider_name == "mock", "a provider that stays down still yields"
+        assert gw.last_fallback_errors, "and the UI is told why"
+
+    @pytest.mark.asyncio
+    async def test_a_bad_key_is_not_retried(self, monkeypatch):
+        """Retrying a 401 wastes the user's time to reach the same answer."""
+        async def fake_sleep(seconds):
+            raise AssertionError("a refused key must not be retried")
+
+        monkeypatch.setattr(gateway_module.asyncio, "sleep", fake_sleep)
+        provider = _ScriptedProvider([
+            LLMProviderError("gemini: HTTP 401 — API key not valid",
+                             status_code=401, retryable=False),
+        ])
+        gw = _gateway_with(provider, monkeypatch)
+
+        res = await gw.generate("hello")
+
+        assert provider.calls == 1
+        assert res.provider_name == "mock"

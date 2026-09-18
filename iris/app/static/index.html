@@ -98,6 +98,43 @@
       </div>
     </div>
 
+    <!-- ═══════════ First-run setup ═══════════ -->
+    <div class="modal hidden" id="setupModal">
+      <div class="modal-card setup-card">
+        <h3 id="setupTitle">Connect a model</h3>
+        <p id="setupIntro">
+          Commands already work offline. A free API key is what turns this into a
+          conversation — and lets the camera say what it is looking at.
+        </p>
+
+        <label class="field">
+          <span>Provider</span>
+          <select id="setupProvider"></select>
+        </label>
+        <p class="field-note" id="setupNote"></p>
+
+        <label class="field">
+          <span>API key</span>
+          <input id="setupKey" type="password" autocomplete="off" spellcheck="false"
+                 placeholder="paste it here" aria-describedby="setupNote">
+        </label>
+
+        <label class="field">
+          <span>Your name <em class="muted">— optional</em></span>
+          <input id="setupName" type="text" autocomplete="off" maxlength="60"
+                 placeholder="what should she call you?">
+        </label>
+
+        <div class="setup-msg hidden" id="setupMsg" role="status" aria-live="polite"></div>
+
+        <div class="modal-actions">
+          <button class="btn ghost" id="btnSetupSkip">Skip for now</button>
+          <button class="btn solid" id="btnSetupSave">Connect</button>
+        </div>
+        <p class="field-note" id="setupFoot"></p>
+      </div>
+    </div>
+
     <!-- ═══════════ Settings drawer ═══════════ -->
     <aside class="drawer hidden" id="drawer">
       <div class="drawer-head">
@@ -112,6 +149,7 @@
         <section>
           <h4>Model</h4>
           <div class="kv" id="llmStatus">loading…</div>
+          <button class="btn ghost small" id="btnSetupOpen">Add or change API key</button>
         </section>
         <section>
           <h4>Voice</h4>

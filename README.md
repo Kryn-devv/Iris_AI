@@ -46,7 +46,9 @@ It's built **free-first**: every command works with *zero* API keys thanks to a 
 | "remember my project budget is 5000" | long-term memory |
 | "start iris when my pc boots" | registers itself as a startup app |
 
-…and anything else becomes a conversation with a free AI model, which can chain any of the 86 tools itself.
+…and anything else becomes a conversation with a free AI model, which can chain any of the 87 tools itself.
+
+She talks like a person rather than a form: a character brief instead of a rule list, confirmations that never repeat themselves, memory of what you were doing an hour ago, and a window after she speaks where you can simply reply instead of saying her name again. See [docs/HUMAN-MODE.md](docs/HUMAN-MODE.md).
 
 ## 🤖 The robot and its senses (ESP32)
 
@@ -174,7 +176,7 @@ iris token            # print the phone-pairing token
 │                          "open youtube" runs in milliseconds,      │
 │                          offline, no model call at all             │
 │ 5 LLM agent loop         free-provider router with fallback chain  │
-│                          + function calling over all 86 tools      │
+│                          + function calling over all 87 tools      │
 └──────────────────┬──────────────────────────────┬──────────────────┘
                    ▼                              ▼
         ┌──────────────────┐          ┌───────────────────────┐
