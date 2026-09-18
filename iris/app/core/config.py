@@ -45,6 +45,17 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
+        # Hand list settings to _split_csv as the raw string.
+        #
+        # Without this, pydantic-settings JSON-decodes any field whose type is
+        # a list BEFORE a validator ever runs, and raises if that fails. So
+        # LLM_PROVIDER_ORDER=groq,gemini — the obvious thing to write, and what
+        # the setup dialog itself writes — did not merely get misparsed: it
+        # stopped IRIS booting at all, with a JSONDecodeError pointing at
+        # pydantic rather than at the line in .env. _split_csv below already
+        # understands JSON, CSV and real lists, so nothing is lost by taking
+        # the decoding into our own hands.
+        enable_decoding=False,
     )
 
     # ------------------------------------------------------------------ general
