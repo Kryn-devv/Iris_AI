@@ -77,6 +77,19 @@ public:
 
   bool ready() const { return ready_; }
   Variant variant() const { return variant_; }
+
+  /* Below this much reflected infrared the photodiode is looking at the room,
+   * not at anybody. The right value depends on the part, the LED current and
+   * whose finger it is, so it is set from the sketch rather than fixed here:
+   * read ir_dc from /vitals with a finger on and off, and pick the middle.
+   *
+   * Letting go is a lower bar than settling, or a finger resting lightly
+   * makes the reading appear and vanish several times a second. */
+  void setFingerThreshold(uint32_t onDc) {
+    fingerOnDc_ = onDc;
+    fingerOffDc_ = onDc > 4000 ? onDc - (onDc / 3) : onDc / 2;
+  }
+  uint32_t fingerThreshold() const { return fingerOnDc_; }
   const char* partName() const {
     switch (variant_) {
       case PART_MAX30100: return "MAX30100";
@@ -148,6 +161,7 @@ public:
     j += ",\"spo2\":" + String(spo2());
     j += ",\"settled\":" + String(settled() ? "true" : "false");
     j += ",\"ir_dc\":" + String(irDc());
+    j += ",\"finger_threshold\":" + String(fingerOnDc_);
     j += ",\"beats\":" + String(beatsSeen_);
     /* Said in the data as well as the docs, because the number travels
      * further than the file it came from. */
@@ -166,9 +180,7 @@ private:
   static const uint32_t BEAT_MAX_MS = 2000;   /*  30 bpm floor   */
   static const uint8_t  INTERVALS = 5;
 
-  /* Below this the photodiode is looking at the room, not at anybody. */
-  static const uint32_t FINGER_ON_DC  = 30000;
-  static const uint32_t FINGER_OFF_DC = 20000;  /* hysteresis: no flicker */
+  static const uint32_t FINGER_ON_DEFAULT = 30000;
 
   /* ── part-specific setup ─────────────────────────────────────────────── */
 
@@ -240,8 +252,8 @@ private:
 
     /* Hysteresis on both edges, so a finger resting lightly does not make
      * the reading appear and vanish several times a second. */
-    if (!fingerOn_ && irDc_ > FINGER_ON_DC) { fingerOn_ = true; reset(); }
-    else if (fingerOn_ && irDc_ < FINGER_OFF_DC) { fingerOn_ = false; }
+    if (!fingerOn_ && irDc_ > (float)fingerOnDc_) { fingerOn_ = true; reset(); }
+    else if (fingerOn_ && irDc_ < (float)fingerOffDc_) { fingerOn_ = false; }
     if (!fingerOn_) return;
 
     /* A short moving average. The beat is around 1 Hz and the sampling is
@@ -358,7 +370,9 @@ private:
   bool     ready_ = false;
   char     err_[80] = "not started";
 
-  bool  fingerOn_ = false;
+  bool     fingerOn_ = false;
+  uint32_t fingerOnDc_ = FINGER_ON_DEFAULT;
+  uint32_t fingerOffDc_ = FINGER_ON_DEFAULT - FINGER_ON_DEFAULT / 3;
   float irDc_ = 0, redDc_ = 0;
   float smooth_ = 0, acAmplitude_ = 0;
 

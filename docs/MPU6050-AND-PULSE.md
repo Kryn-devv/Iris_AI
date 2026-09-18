@@ -50,14 +50,17 @@ buzz you want gone.
 In `firmware/esp32-s3-iris-sensors/esp32-s3-iris-sensors.ino`:
 
 ```cpp
-const bool IMU_FITTED     = true;    // MPU6050
+const bool IMU_FITTED     = false;   // MPU6050 — set true when one is wired
 const bool VITALS_FITTED  = true;    // MAX30100/2
 const int  PIN_AUX_SDA    = 38;
 const int  PIN_AUX_SCL    = 39;
+
+const uint32_t VITALS_FINGER_DC = 30000;   // see "it never sees my finger"
 ```
 
-Set either to `false` for a sensor you haven't wired and nothing is started
-for it. Flash, and the boot log says what answered:
+A sensor flagged `false` is never started and costs nothing. The IMU ships off
+because it is the later of the two additions; flip it to `true` the day one is
+on the bus. Flash, and the boot log says what answered:
 
 ```
   [aux] I2C on SDA 38 / SCL 39 at 400 kHz (shared with the right eye)
@@ -156,6 +159,32 @@ four percent oxygen" is the kind of sentence people act on.
 Rest a fingertip on the sensor **lightly** and hold still. Pressing hard
 squeezes the blood out of the capillaries and there's nothing left to measure —
 the commonest reason it reads nothing. Give it 10–15 seconds.
+
+### If it never sees your finger
+
+Open `/vitals` and look at two fields:
+
+```json
+{"finger": false, "ir_dc": 4210, "finger_threshold": 30000}
+```
+
+`ir_dc` is how much infrared is coming back. Read it twice — once with a finger
+resting on the sensor, once with nothing there — and set `VITALS_FINGER_DC` in
+the sketch to roughly halfway between:
+
+```
+  nothing on it:   ~4,000      →  VITALS_FINGER_DC = 30000
+  finger on it:   ~55,000
+```
+
+The right number is different for every setup. A MAX30102 counts to 262143
+where a MAX30100 stops at 65535, the LED current changes it, and so does whose
+finger it is. That is why it is a constant in the sketch and not a number
+buried in the driver.
+
+If `ir_dc` barely moves when you touch it, the sensor is not seeing skin at
+all — check it is the right way up and that nothing is between the LEDs and
+your fingertip.
 
 ### If it never answers at `0x57`
 

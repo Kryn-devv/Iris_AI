@@ -157,11 +157,19 @@ const int  PIN_R_SCL    = 39;     /* (17/18 are taken by the MQ-2 DO and LDR) */
  * The bus drops to 400 kHz when either is fitted, because that is the
  * MPU6050's ceiling and an OLED sharing the wires has to live within it. The
  * eyes redraw slightly slower; nothing else changes. */
-const bool IMU_FITTED     = true;   /* MPU6050 six-axis                      */
+const bool IMU_FITTED     = false;  /* MPU6050 six-axis — true when wired    */
 const bool VITALS_FITTED  = true;   /* MAX30100/2 pulse + SpO2               */
 const int  PIN_AUX_SDA    = 38;
 const int  PIN_AUX_SCL    = 39;
 const uint32_t I2C_AUX_HZ = 400000;
+
+/* How bright the reflection has to be before there is a finger on the pulse
+ * sensor rather than a lit room. The right number depends on the part (the
+ * MAX30102 counts to 262143 where the MAX30100 stops at 65535), on the LED
+ * current, and on whose finger it is, so it is here rather than buried in the
+ * driver. To find yours: open /vitals with a finger on the sensor and again
+ * with it off, read ir_dc both times, and put this halfway between. */
+const uint32_t VITALS_FINGER_DC = 30000;
 
 const uint8_t OLED_ADDR_L = 0x3C;
 const uint8_t OLED_ADDR_R = 0x3C;  /* set to 0x3D when SHARED_BUS is true    */
@@ -688,6 +696,7 @@ static void startAux() {
   if (VITALS_FITTED) {
     vitalsOk = vitals.begin(Wire1);
     if (vitalsOk) {
+      vitals.setFingerThreshold(VITALS_FINGER_DC);
       Serial.printf("  [aux] %s ok at 0x57 — pulse/SpO2 ready\n", vitals.partName());
       Serial.println("  [aux] NOT a medical device. Trends only, never diagnosis.");
     } else {
