@@ -70,6 +70,8 @@
 #include <WebServer.h>
 #include <ESPmDNS.h>
 #include <Wire.h>
+#include "imu.h"
+#include "vitals.h"
 #include <Adafruit_GFX.h>
 
 /* ── WHICH CHIP IS INSIDE EACH EYE MODULE ─────────────────────────────────
@@ -146,6 +148,21 @@ const int  PIN_L_SDA    = 20;     /* left eye (0.96")                         */
 const int  PIN_L_SCL    = 21;
 const int  PIN_R_SDA    = 38;     /* right eye (1.3"), its own two wires      */
 const int  PIN_R_SCL    = 39;     /* (17/18 are taken by the MQ-2 DO and LDR) */
+/* ── the aux I2C bus ──────────────────────────────────────────────────────
+ * MPU6050 at 0x68, MAX30100/MAX30102 at 0x57. Both hang on the right eye's
+ * two wires: three different addresses on one bus is the thing I2C is for,
+ * so a working right eye can stay exactly where it is. Set a flag false for
+ * a device you have not wired, and nothing is started for it.
+ *
+ * The bus drops to 400 kHz when either is fitted, because that is the
+ * MPU6050's ceiling and an OLED sharing the wires has to live within it. The
+ * eyes redraw slightly slower; nothing else changes. */
+const bool IMU_FITTED     = true;   /* MPU6050 six-axis                      */
+const bool VITALS_FITTED  = true;   /* MAX30100/2 pulse + SpO2               */
+const int  PIN_AUX_SDA    = 38;
+const int  PIN_AUX_SCL    = 39;
+const uint32_t I2C_AUX_HZ = 400000;
+
 const uint8_t OLED_ADDR_L = 0x3C;
 const uint8_t OLED_ADDR_R = 0x3C;  /* set to 0x3D when SHARED_BUS is true    */
 /* 400 kHz if any eye is an SH1106 (that is its rating); the SSD1306 is happy
@@ -216,12 +233,15 @@ static_assert(!(TWIN_PANELS && (EYE_L_CHIP_SH1106 != EYE_R_CHIP_SH1106)),
               "right eye its own SDA/SCL (38/39).");
 FaceAnimator face;
 Sensors sensors;
+Imu imu;
+Vitals vitals;
 CloudLink cloud;
 NodeVoice voice;
 FastPath fast;
 
 unsigned long bootMillis = 0;
 bool eyeLeftOk = false, eyeRightOk = false;
+bool imuOk = false, vitalsOk = false;
 bool apMode = false, staAnnounced = false;
 uint16_t framesLastSecond = 0, fps = 0;
 unsigned long fpsWindowMs = 0;
@@ -332,7 +352,20 @@ static bool argClamp(const Args& args, const char* name, long lo, long hi,
 /* ═════════════════════════ endpoints ═════════════════════════ */
 
 static String sensorsJson() {
-  return sensors.toJson(lastReading, (millis() - bootMillis) / 1000);
+  const unsigned long now = millis();
+  String j = sensors.toJson(lastReading, (now - bootMillis) / 1000);
+  /* Spliced onto the end rather than plumbed through SensorReading: these two
+   * live on their own bus with their own timing, and everything already
+   * reading /sensors or the telemetry stream picks them up without being
+   * told there is a second bus. toJson() always ends in "}" after at least
+   * one field, so this is safe. */
+  String extra;
+  if (imuOk)    extra += ",\"imu\":" + imu.toJson(now);
+  if (vitalsOk) extra += ",\"vitals\":" + vitals.toJson();
+  if (extra.length() && j.endsWith("}")) {
+    j = j.substring(0, j.length() - 1) + extra + "}";
+  }
+  return j;
 }
 
 static String faceJson() {
@@ -470,6 +503,10 @@ static CmdResult dispatch(const String& path, const Args& args) {
   if (path == "/speak")     return cmdSpeak(args);
   if (path == "/look")      return cmdLook(args);
   if (path == "/blink")     return cmdBlink(args);
+  if (path == "/imu")       return {200, imuOk ? imu.toJson(millis()) : String("{\"fitted\":false}")};
+  if (path == "/vitals")    return {200, vitalsOk ? vitals.toJson() : String("{\"fitted\":false}")};
+  if (path == "/imu/zero") { if (imuOk) imu.zeroHeading(); return {200, "{\"ok\":true}"}; }
+  if (path == "/imu/calibrate") { if (imuOk) imu.calibrate(); return {200, "{\"ok\":true}"}; }
   return {404, "{\"error\":\"unknown endpoint '" + path + "'\"}"};
 }
 
@@ -617,6 +654,48 @@ static void startEyes() {
     Serial.println("         work — use the two-bus wiring above, or move one to");
     Serial.println("         0x3D and set SHARED_BUS = true.");
   }
+}
+
+/* The IMU and the pulse sensor, on whatever bus PIN_AUX_* names. Called after
+ * startEyes() so that when they share the right eye's wires the bus is
+ * already up and this only has to slow it down. */
+static void startAux() {
+  if (!IMU_FITTED && !VITALS_FITTED) return;
+
+  const bool sharesEyeBus = !SHARED_BUS && !TWIN_PANELS &&
+                            PIN_AUX_SDA == PIN_R_SDA && PIN_AUX_SCL == PIN_R_SCL;
+  if (sharesEyeBus) {
+    /* 400 kHz is the MPU6050's limit and the OLED on the same wires has no
+     * say in the matter. */
+    Wire1.setClock(I2C_AUX_HZ);
+  } else {
+    if (isUsbPin(PIN_AUX_SDA) || isUsbPin(PIN_AUX_SCL)) reclaimUsbPins("the aux bus");
+    Wire1.begin(PIN_AUX_SDA, PIN_AUX_SCL, I2C_AUX_HZ);
+  }
+  Serial.printf("  [aux] I2C on SDA %d / SCL %d at %lu kHz%s\n",
+                PIN_AUX_SDA, PIN_AUX_SCL, (unsigned long)(I2C_AUX_HZ / 1000),
+                sharesEyeBus ? " (shared with the right eye)" : "");
+
+  if (IMU_FITTED) {
+    imuOk = imu.begin(Wire1);
+    if (imuOk) {
+      Serial.printf("  [aux] MPU6050 ok (who_am_i 0x%02X), heading zeroed\n", imu.whoAmI());
+    } else {
+      Serial.printf("  [aux] MPU6050 not found: %s\n", imu.error());
+    }
+  }
+
+  if (VITALS_FITTED) {
+    vitalsOk = vitals.begin(Wire1);
+    if (vitalsOk) {
+      Serial.printf("  [aux] %s ok at 0x57 — pulse/SpO2 ready\n", vitals.partName());
+      Serial.println("  [aux] NOT a medical device. Trends only, never diagnosis.");
+    } else {
+      Serial.printf("  [aux] pulse sensor not found: %s\n", vitals.error());
+    }
+  }
+
+  if ((IMU_FITTED && !imuOk) || (VITALS_FITTED && !vitalsOk)) scanBus(Wire1, "aux");
 }
 
 static void drawFace(const EyePose& left, const EyePose& right) {
@@ -767,6 +846,7 @@ void setup() {
   }
 
   startEyes();
+  startAux();
   face.begin(millis());
 
   WiFi.mode(WIFI_STA);
@@ -881,6 +961,8 @@ void loop() {
   server.handleClient();
   cloud.loop();
   sensors.tick(now);
+  imu.tick(now);
+  vitals.tick(now);
   fast.pump();
   animateOnce();
   voice.loop(now);

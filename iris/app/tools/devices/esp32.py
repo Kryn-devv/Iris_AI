@@ -51,6 +51,59 @@ async def _device_get(url: str, params: Optional[Dict[str, Any]] = None) -> Dict
     return await lan_get(url, params)
 
 
+def _describe_orientation(data: Dict[str, Any]) -> list[str]:
+    """How the robot is sitting, in words rather than degrees.
+
+    Nobody wants "pitch -37.4, roll 2.1". They want to know whether it is the
+    right way up, and if it is not, they want that first and loudest. Exact
+    angles stay in the ``readings`` payload for anything that needs them.
+    """
+    imu = data.get("imu")
+    if not isinstance(imu, dict) or not imu.get("fitted"):
+        return []
+    if imu.get("tilted"):
+        return ["it is not upright — on its side or picked up"]
+
+    out: list[str] = []
+    if imu.get("still"):
+        out.append("not moving")
+    try:
+        pitch = abs(float(imu.get("pitch", 0.0)))
+        roll = abs(float(imu.get("roll", 0.0)))
+    except (TypeError, ValueError):
+        return out
+    if max(pitch, roll) < 10.0:
+        out.append("sitting level")
+    else:
+        out.append(f"leaning about {round(max(pitch, roll))} degrees")
+    return out
+
+
+def _describe_pulse(data: Dict[str, Any]) -> list[str]:
+    """Heart rate and blood oxygen, with the caveat attached to the number.
+
+    The caveat travels with the reading on purpose. A number said out loud in
+    a house is repeated later without any of the context it was given in, and
+    "ninety-four percent oxygen" is the kind of sentence someone acts on. It
+    is a hobby sensor with no calibration, so it says so every time.
+    """
+    vitals = data.get("vitals")
+    if not isinstance(vitals, dict) or not vitals.get("fitted"):
+        return []
+    if not vitals.get("finger"):
+        return ["nothing on the pulse sensor"]
+    if not vitals.get("settled"):
+        return ["reading a pulse — keep your finger still"]
+
+    bpm = vitals.get("bpm")
+    spo2 = vitals.get("spo2")
+    said = f"pulse {bpm}"
+    if spo2:
+        said += f", oxygen around {spo2} percent"
+    said += " — rough numbers from a hobby sensor, not a medical reading"
+    return [said]
+
+
 def _describe_distances(data: Dict[str, Any]) -> list[str]:
     """One phrase for the nearest thing ahead and behind.
 
@@ -368,18 +421,21 @@ class DeviceSensorsTool(BaseTool):
     name = "device_sensors"
     description = (
         "Read live sensor values from a registered sensor node (ESP32 with motion, gas, "
-        "light, flame, temperature, humidity, four ultrasonic distances ahead and behind). Answers "
-        "'is there motion', 'gas level', 'how far is the object', 'what's the temperature'."
+        "light, flame, temperature, humidity, four ultrasonic distances ahead and behind, plus "
+        "orientation from an MPU6050 and pulse/blood-oxygen from a MAX30100). Answers "
+        "'is there motion', 'gas level', 'how far is the object', 'what's the temperature', "
+        "'is the robot upright', 'what's my heart rate'."
     )
     category = ToolCategory.AUTOMATION
     permission_level = PermissionLevel.READ
-    aliases = ["read sensors", "sensor readings", "check motion", "gas level", "temperature", "humidity"]
+    aliases = ["read sensors", "sensor readings", "check motion", "gas level", "temperature", "humidity",
+               "heart rate", "pulse", "blood oxygen", "spo2", "is it upright", "orientation", "tilt"]
     network = True
     input_schema = ToolParameterSchema(
         properties={
             "device": {"type": "string", "description": "Sensor node name (defaults to the first sensor device)"},
             "sensor": {"type": "string", "enum": ["all", "motion", "gas", "light", "distance", "flame",
-                                  "temperature", "humidity", "climate"],
+                                  "temperature", "humidity", "climate", "orientation", "pulse"],
                         "description": "Which reading to report (default all)"},
         },
     )
@@ -390,6 +446,8 @@ class DeviceSensorsTool(BaseTool):
         ToolExample(utterance="is there a fire", arguments={"sensor": "flame"}),
         ToolExample(utterance="what's the temperature", arguments={"sensor": "temperature"}),
         ToolExample(utterance="what's the humidity", arguments={"sensor": "humidity"}),
+        ToolExample(utterance="is the robot still upright", arguments={"sensor": "orientation"}),
+        ToolExample(utterance="what's my heart rate", arguments={"sensor": "pulse"}),
     ]
 
     def __init__(self, registry: Optional[DeviceRegistry] = None):
@@ -410,6 +468,15 @@ class DeviceSensorsTool(BaseTool):
                 parts.append(f"gas level {level} (normal)")
             else:
                 parts.append("no gas detected")     # the module's yes/no output only
+        # The robot being on its side outranks anything about the room: every
+        # other reading is advice, and this one is "stop driving".
+        if sensor in ("all", "orientation"):
+            imu = data.get("imu")
+            if isinstance(imu, dict) and imu.get("fitted"):
+                if imu.get("tilted"):
+                    parts.append("IT IS TIPPED OVER")
+                elif imu.get("bumped"):
+                    parts.append("it just hit something")
         if sensor in ("all", "motion") and "motion_recent" in data:
             parts.append(
                 "Motion detected" if data.get("motion") or data.get("motion_recent")
@@ -426,6 +493,10 @@ class DeviceSensorsTool(BaseTool):
         # disagree enough to matter. Four bare numbers are noise to a listener.
         if sensor in ("all", "distance"):
             parts.extend(_describe_distances(data))
+        if sensor in ("all", "orientation"):
+            parts.extend(_describe_orientation(data))
+        if sensor in ("all", "pulse"):
+            parts.extend(_describe_pulse(data))
         if not parts:
             return "The node answered but reported no matching sensors."
         return ", ".join(parts) + "."

@@ -772,3 +772,104 @@ class TestFastPath:
             assert client.trust_env is False
         finally:
             await client.aclose()
+
+
+class TestOrientationAndPulse:
+    """The MPU6050 and the MAX30100, as IRIS says them out loud.
+
+    Both sensors report numbers that mean nothing to a listener on their own:
+    "pitch -37.4" and "SpO2 94" are readings, not answers. What is tested here
+    is the translation — and, for the pulse sensor, that the caveat is welded
+    to the number rather than left in the documentation.
+    """
+
+    def test_tilt_leads_the_summary(self):
+        data = {
+            "motion_recent": True,
+            "distance_cm": 40,
+            "imu": {"fitted": True, "tilted": True, "pitch": -80.0, "roll": 2.0},
+        }
+        speech = esp32_mod.DeviceSensorsTool._summarize(data, "all")
+        # On its side outranks everything: it must come before the room news.
+        assert speech.index("TIPPED OVER") < speech.index("Motion")
+
+    def test_level_and_still(self):
+        data = {"imu": {"fitted": True, "tilted": False, "still": True,
+                        "pitch": 1.2, "roll": -0.8}}
+        speech = esp32_mod.DeviceSensorsTool._summarize(data, "orientation")
+        assert "not moving" in speech and "sitting level" in speech
+
+    def test_leaning_is_rounded_not_precise(self):
+        data = {"imu": {"fitted": True, "tilted": False, "pitch": 22.47, "roll": 3.0}}
+        speech = esp32_mod.DeviceSensorsTool._summarize(data, "orientation")
+        assert "leaning about 22 degrees" in speech
+
+    def test_bumped_is_reported(self):
+        data = {"imu": {"fitted": True, "tilted": False, "bumped": True,
+                        "pitch": 0.0, "roll": 0.0}}
+        speech = esp32_mod.DeviceSensorsTool._summarize(data, "all")
+        assert "hit something" in speech
+
+    def test_imu_absent_says_nothing_about_it(self):
+        data = {"motion_recent": False}
+        speech = esp32_mod.DeviceSensorsTool._summarize(data, "all")
+        assert "upright" not in speech and "level" not in speech
+
+    def test_garbled_imu_numbers_do_not_crash(self):
+        data = {"imu": {"fitted": True, "tilted": False, "pitch": None, "roll": "x"}}
+        speech = esp32_mod.DeviceSensorsTool._summarize(data, "orientation")
+        assert isinstance(speech, str)
+
+    def test_no_finger_on_the_sensor(self):
+        data = {"vitals": {"fitted": True, "finger": False}}
+        speech = esp32_mod.DeviceSensorsTool._summarize(data, "pulse")
+        assert "nothing on the pulse sensor" in speech
+
+    def test_still_measuring_does_not_publish_a_number(self):
+        data = {"vitals": {"fitted": True, "finger": True, "settled": False,
+                           "bpm": 0, "spo2": 0}}
+        speech = esp32_mod.DeviceSensorsTool._summarize(data, "pulse")
+        assert "keep your finger still" in speech
+        assert "0" not in speech          # a half-made reading is not a reading
+
+    def test_settled_reading_carries_its_caveat(self):
+        data = {"vitals": {"fitted": True, "finger": True, "settled": True,
+                           "bpm": 72, "spo2": 97}}
+        speech = esp32_mod.DeviceSensorsTool._summarize(data, "pulse")
+        assert "72" in speech and "97" in speech
+        # The disclaimer travels with the number, because the number gets
+        # repeated later and the documentation does not.
+        assert "not a medical reading" in speech
+
+    def test_pulse_without_spo2_still_answers(self):
+        data = {"vitals": {"fitted": True, "finger": True, "settled": True,
+                           "bpm": 68, "spo2": 0}}
+        speech = esp32_mod.DeviceSensorsTool._summarize(data, "pulse")
+        assert "68" in speech and "oxygen" not in speech
+        assert "not a medical reading" in speech
+
+    @pytest.mark.asyncio
+    async def test_end_to_end_through_the_node(self, registry, monkeypatch):
+        from iris.app.tools.devices.esp32 import DeviceSensorsTool
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={
+                "uptime_s": 30,
+                "imu": {"fitted": True, "tilted": False, "still": False,
+                        "pitch": 0.5, "roll": 0.2, "heading": 91.4},
+                "vitals": {"fitted": True, "finger": True, "settled": True,
+                           "bpm": 74, "spo2": 96, "medical_grade": False},
+            })
+
+        transport = httpx.MockTransport(handler)
+        real_client = httpx.AsyncClient
+        monkeypatch.setattr(esp32_mod.httpx, "AsyncClient",
+                            lambda **kw: real_client(transport=transport, **{k: v for k, v in kw.items() if k != "transport"}))
+        registry.add(Device(name="robot", base_url="http://192.168.1.72", kind="sensor"))
+
+        res = await DeviceSensorsTool(registry).execute(sensor="all")
+        assert res.success
+        assert "sitting level" in res.result["speech"]
+        assert "74" in res.result["speech"]
+        # The raw numbers survive for anything that wants them.
+        assert res.result["readings"]["imu"]["heading"] == 91.4
