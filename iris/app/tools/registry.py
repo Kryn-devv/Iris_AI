@@ -28,6 +28,11 @@ class ToolRegistry:
             logger.warning("Overwriting existing registered tool: %s", tool.name)
 
         self._tools[tool.name] = tool
+        # A tool that reports on the catalogue has to report on the one it is
+        # actually in. Reaching for the process-wide registry instead gives the
+        # right answer in production and a silently empty one everywhere else,
+        # which is the shape of bug that reaches users through a passing suite.
+        tool.registry = self
         for alias in tool.aliases:
             key = alias.strip().lower()
             if key and key not in self._tools:

@@ -1015,40 +1015,88 @@ class AgentKernel:
             terse=terse,
         )
 
-    #: Tools attached to every agent call regardless of the message: the
-    #: conversation staples a model reaches for without obvious keywords.
+    #: Tools attached to every agent call regardless of the message.
+    #:
+    #: The rule is not "the most useful tools" — it is **the tools that are
+    #: needed when the user's words do not name them**. Anything with an
+    #: obvious keyword ("weather", "wikipedia", "screenshot") is found by the
+    #: matcher below and does not need a permanent seat.
+    #:
+    #: This set used to be ten lookup tools — search, wiki, weather, news,
+    #: time, calculator, reminders, notes — and nothing that touches the
+    #: machine. So "can you do it on my Linux" reached the model with no way
+    #: to run anything, and the honest answer it gave, "I can't run commands
+    #: on your machine directly", was false about IRIS and true about the
+    #: list it had been handed. An assistant that cannot act on the computer
+    #: it lives on is a search box, and that is exactly what it felt like.
     _CORE_AGENT_TOOLS = frozenset({
-        "web_search", "quick_answer", "wikipedia", "weather", "news",
-        "time", "calculator", "set_reminder", "set_timer", "quick_note",
+        # Acting on this machine. None of these match the words people
+        # actually use ("do it", "check", "fix this", "how much space").
+        "run_command", "run_python", "system_info", "take_screenshot",
+        "open_app", "open_website", "list_directory", "read_file",
+        # The conversation staples.
+        "web_search", "quick_answer", "time", "calculator",
+        "set_reminder", "set_timer", "quick_note",
     })
 
     #: Ceiling on tools per request. Free tiers meter tokens per minute
-    #: (Groq: 8k TPM) and the FULL 61-tool catalogue alone is ~6k tokens,
-    #: so shipping everything made every second request rate-limit into
-    #: the offline fallback.
-    _MAX_AGENT_TOOLS = 24
+    #: (Groq: 8k TPM) and the full catalogue is ~9k tokens of schema on its
+    #: own, so shipping everything makes every second request rate-limit into
+    #: the offline fallback. The fix for a tight budget is spending it well,
+    #: not raising it: see the scoring in ``_select_tools_for``.
+    _MAX_AGENT_TOOLS = 26
+
+    #: How a word matching each part of a tool's identity is weighted.
+    _NAME_MATCH = 4
+    _ALIAS_MATCH = 3
+    _DESC_MATCH = 1
+    #: A description can only ever contribute this much, so a long blurb that
+    #: happens to contain three common words cannot outrank a name match.
+    _DESC_CAP = 2
 
     def _select_tools_for(self, message: str) -> list:
-        """Core tools plus the ones whose name/alias/description matches the message."""
+        """The core tools, plus the ones this message actually points at.
+
+        Matched tools are *scored* rather than taken in registry order. With a
+        hard ceiling, arbitrary order means the ceiling decides which
+        capabilities exist this turn — and it decided badly: asking to be shown
+        everything produced a list of window-management tools, and the reply
+        that followed was invented rather than run.
+        """
         available = self.tool_registry.tools(available_only=True)
         words = {w for w in re.findall(r"[a-z0-9]+", message.lower()) if len(w) >= 3}
 
-        core, matched = [], []
+        core, scored = [], []
         for tool in available:
             meta = tool.get_metadata()
             if meta.name in self._CORE_AGENT_TOOLS:
                 core.append(tool)
                 continue
-            haystack = " ".join(
-                [meta.name.replace("_", " "), " ".join(meta.aliases), meta.description.lower()]
-            ).lower()
-            if any(word in haystack for word in words):
-                matched.append(tool)
+            if not words:
+                continue
+            name_words = set(meta.name.lower().replace("_", " ").split())
+            alias_words = {
+                part
+                for alias in meta.aliases
+                for part in alias.lower().replace("_", " ").split()
+            }
+            desc_words = set(re.findall(r"[a-z0-9]+", (meta.description or "").lower()))
 
-        selected = core + matched
-        if len(selected) > self._MAX_AGENT_TOOLS:
-            selected = selected[: self._MAX_AGENT_TOOLS]
-        return selected
+            score = 0
+            if words & name_words:
+                score += self._NAME_MATCH
+            if words & alias_words:
+                score += self._ALIAS_MATCH
+            score += min(len(words & desc_words) * self._DESC_MATCH, self._DESC_CAP)
+            if score:
+                # Name as the tie-break so the same message always yields the
+                # same tools — an assistant whose abilities shuffle between
+                # identical requests is the opposite of dependable.
+                scored.append((-score, meta.name, tool))
+
+        scored.sort(key=lambda item: (item[0], item[1]))
+        room = max(0, self._MAX_AGENT_TOOLS - len(core))
+        return core + [tool for _, _, tool in scored[:room]]
 
     def _response(
         self,

@@ -51,7 +51,7 @@
     sentinel: [
       /* system — including every high-risk action, which is why it is the one
        * warm colour in the constellation */
-      "autostart", "cancel_shutdown", "environment_info", "kill_process",
+      "autostart", "cancel_shutdown", "capabilities", "environment_info", "kill_process",
       "list_processes", "lock_screen", "network_info", "ping", "restart_pc",
       "reliability_check", "run_command", "shutdown_pc", "sleep_pc", "system_info", "time",
     ],
