@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 if ! command -v python3 >/dev/null; then
-    echo "Python 3.11+ is required."; exit 1
+    echo "Python 3.10+ is required."; exit 1
 fi
 
 echo "[1/4] Creating virtual environment..."
