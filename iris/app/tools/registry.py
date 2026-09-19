@@ -32,7 +32,11 @@ class ToolRegistry:
         # actually in. Reaching for the process-wide registry instead gives the
         # right answer in production and a silently empty one everywhere else,
         # which is the shape of bug that reaches users through a passing suite.
-        tool.registry = self
+        #
+        # The name matters: this was `tool.registry` for one release, which
+        # overwrote the DeviceRegistry the ESP32 tools keep under that same
+        # attribute, and broke every one of them at call time.
+        tool.tool_registry = self
         for alias in tool.aliases:
             key = alias.strip().lower()
             if key and key not in self._tools:

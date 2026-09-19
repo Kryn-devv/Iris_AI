@@ -83,7 +83,7 @@ class TestItReportsTheRealRegistry:
         bare = ToolRegistry()
         bare.register(CapabilitiesTool(), quiet=True)
         tool = bare.get("capabilities")
-        tool.registry = ToolRegistry()          # genuinely empty
+        tool.tool_registry = ToolRegistry()          # genuinely empty
         result = await tool.execute()
         assert result.success
         assert result.result["total"] == 0
@@ -98,7 +98,7 @@ class TestItReportsTheRealRegistry:
 class TestItIsReachable:
     def test_the_registry_hands_every_tool_a_way_back_to_itself(self, registry):
         for name in ("capabilities", "read_file"):
-            assert registry.get(name).registry is registry
+            assert registry.get(name).tool_registry is registry
 
     def test_the_phrases_people_use_are_aliases(self):
         aliases = set(CapabilitiesTool().aliases)

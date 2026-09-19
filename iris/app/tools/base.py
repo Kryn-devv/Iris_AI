@@ -50,9 +50,16 @@ class BaseTool(ABC):
     """Abstract interface for all executable tools in IRIS."""
 
 
-    #: Set by :meth:`ToolRegistry.register`. ``None`` until a tool is
-    #: registered, so anything reading it falls back to the global registry.
-    registry: Any = None
+    #: The catalogue this tool was registered in, set by
+    #: :meth:`ToolRegistry.register`. ``None`` until then, so anything reading
+    #: it falls back to the global registry.
+    #:
+    #: Deliberately not called ``registry``: several tools keep a registry of
+    #: their own under that name — the device tools hold a ``DeviceRegistry``
+    #: of ESP32 boards — and assigning the catalogue over it left every one of
+    #: them calling ToolRegistry methods that do not exist. The failure landed
+    #: at call time, in the tool, long after the assignment that caused it.
+    tool_registry: Any = None
 
     #: Unique tool identifier exposed to the model and the REST API.
     name: ClassVar[str] = ""
@@ -148,11 +155,23 @@ class BaseTool(ABC):
         except Exception as exc:  # noqa: BLE001 - tools must never escape
             elapsed = time.perf_counter() - start_time
             logger.error("Tool '%s' execution error: %s", self.name, exc, exc_info=True)
+            reason = str(exc).strip() or exc.__class__.__name__
             return ToolExecutionResult(
                 tool_name=self.name,
                 success=False,
-                error=str(exc),
-                speech="That didn't work.",
+                error=reason,
+                # The reason goes in the spoken line too, and that is
+                # deliberate. A canned "That didn't work." outranks `error` in
+                # spoken_or_display(), and the persona then recognises it as a
+                # bare failure and swaps in another one — so the only
+                # information anyone had was deleted twice over, and a user
+                # whose tool died on an AttributeError was told "That one
+                # didn't go through." and nothing else.
+                #
+                # An exception string is a poor sentence. It is still the
+                # difference between a person who can act and one who cannot.
+                # No `speech` at all, so the reason is what surfaces and the
+                # persona supplies its own lead-in rather than two in a row.
                 execution_time_seconds=elapsed,
             )
 

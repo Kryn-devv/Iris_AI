@@ -84,7 +84,7 @@ class CapabilitiesTool(BaseTool):
         detail: bool = False,
         **_: Any,
     ) -> Dict[str, Any]:
-        registry = self.registry
+        registry = self.tool_registry
         if registry is None:          # not registered anywhere: use the global one
             from iris.app.tools.registry import default_tool_registry
 
