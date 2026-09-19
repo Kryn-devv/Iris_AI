@@ -14,7 +14,8 @@
    moment two audio streams are live at once. */
 const fs = require("fs");
 
-function run(scenario) {
+function run(scenario, opts) {
+  opts = opts || {};
   let now = 0;
   const timers = [];
   let seq = 0;
@@ -84,7 +85,12 @@ function run(scenario) {
     setInterval: () => 0, clearInterval: () => {},
     localStorage: { getItem: () => null, setItem(){}, removeItem(){} },
     location: { protocol:"http:", host:"127.0.0.1:8756" },
-    Notification: function(){}, fetch: () => Promise.resolve({json: async()=>({})}),
+    Notification: function(){},
+    /* The default answers every request with a body and no ``ok``, which
+     * jfetch treats as a failure — the same shape a server that is down
+     * produces, and the state most of these scenarios want. Pass opts.fetch
+     * to answer particular URLs instead. */
+    fetch: opts.fetch || (() => Promise.resolve({json: async()=>({})})),
     WebSocket: function(){ this.send = (m) => ctx.__sent.push(m); ctx.__ws = this; },
     SpeechSynthesisUtterance: function(t){ this.text=t; this.onend=null; this.onerror=null; },
     speechSynthesis: synth,

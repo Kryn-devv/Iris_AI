@@ -959,6 +959,35 @@
    * session only — a browser that forgot would nag on every reload, and one
    * that remembered forever would hide the way in. */
   let setupState = null;
+  let setupLoadError = "";
+
+  /* The dialog's one job is to accept a key. It can do that without knowing
+   * what is already configured, so a failed status probe must not leave an
+   * empty dropdown and nothing to choose from — that reads as a broken
+   * dialog rather than a failed request, and there is no way forward from
+   * it. These are the same three providers the server offers; the live list
+   * replaces them the moment it arrives. */
+  const FALLBACK_PROVIDERS = [
+    {
+      name: "groq", label: "Groq", signup: "https://console.groq.com/keys",
+      hint: "Usually starts with gsk_",
+      note: "Very fast, with a tight free rate limit.",
+      configured: false, masked: "",
+    },
+    {
+      name: "gemini", label: "Google Gemini", signup: "https://aistudio.google.com/apikey",
+      hint: "Usually starts with AIza",
+      note: "Free tier, and the same model can read pictures for the camera.",
+      configured: false, masked: "",
+    },
+    {
+      name: "openrouter", label: "OpenRouter", signup: "https://openrouter.ai/keys",
+      hint: "Usually starts with sk-or-",
+      note: "One key, many free models.",
+      configured: false, masked: "",
+    },
+  ];
+  let shownProviders = FALLBACK_PROVIDERS;
 
   async function jpost(url, body) {
     const res = await fetch(url, {
@@ -982,8 +1011,11 @@
   }
 
   function renderSetupProviders() {
-    if (!setupState || !els.setupProvider) return;
-    els.setupProvider.innerHTML = setupState.providers
+    if (!els.setupProvider) return;
+    shownProviders = (setupState && Array.isArray(setupState.providers) && setupState.providers.length)
+      ? setupState.providers
+      : FALLBACK_PROVIDERS;
+    els.setupProvider.innerHTML = shownProviders
       .map((p) => `<option value="${escapeHtml(p.name)}">${escapeHtml(p.label)}` +
                   `${p.configured ? " — connected" : ""}</option>`)
       .join("");
@@ -991,9 +1023,9 @@
   }
 
   function describeProvider() {
-    if (!setupState) return;
-    const chosen = setupState.providers.find((p) => p.name === els.setupProvider.value)
-      || setupState.providers[0];
+    if (!els.setupProvider || !els.setupNote) return;
+    const chosen = shownProviders.find((p) => p.name === els.setupProvider.value)
+      || shownProviders[0];
     if (!chosen) return;
     const where = chosen.configured ? ` Currently set to ${escapeHtml(chosen.masked)}.` : "";
     els.setupNote.innerHTML =
@@ -1004,7 +1036,12 @@
 
   function openSetup() {
     if (!els.setupModal) return;
-    setupMessage("", "");
+    renderSetupProviders();
+    setupMessage(
+      setupLoadError
+        ? `Could not read current settings (${setupLoadError}). Pasting a key still works.`
+        : "",
+      "bad");
     els.setupModal.classList.remove("hidden");
     const configured = setupState && setupState.configured;
     els.setupTitle.textContent = configured ? "Change the model" : "Connect a model";
@@ -1060,9 +1097,18 @@
   async function refreshSetupState() {
     try {
       setupState = await jfetch("/api/v1/setup/status");
+      setupLoadError = "";
       renderSetupProviders();
       return setupState;
-    } catch { return null; }
+    } catch (err) {
+      /* Keep the dialog usable and say what went wrong. Swallowing this is
+       * what turned a failed probe into an empty dropdown with no
+       * explanation — the one state the dialog cannot be talked out of. */
+      setupState = null;
+      setupLoadError = String((err && err.message) || err || "request failed");
+      renderSetupProviders();
+      return null;
+    }
   }
 
   if (els.btnSetupSave) {
