@@ -873,3 +873,44 @@ class TestOrientationAndPulse:
         assert "74" in res.result["speech"]
         # The raw numbers survive for anything that wants them.
         assert res.result["readings"]["imu"]["heading"] == 91.4
+
+
+class TestMultipleCommandsInOneMessage:
+    """Three registrations pasted as one message.
+
+    The pattern takes everything after the first name as the name, so the
+    complaint used to land on a "name" nobody typed — the whole paste, quoted
+    back — and sent people inspecting a word that was fine. The name is not
+    the problem and the message should not say it is.
+    """
+
+    def test_pasted_block_says_what_actually_happened(self):
+        from iris.app.tools.devices.registry import normalize_name, DeviceError
+
+        swallowed = ("eye at 192.168.3.48 as camera add device face at "
+                     "192.168.1.70 as face add device wheels")
+        with pytest.raises(DeviceError) as err:
+            normalize_name(swallowed)
+        assert "more than one command" in str(err.value)
+        assert "one at a time" in str(err.value)
+
+    def test_newlines_are_caught_too(self):
+        from iris.app.tools.devices.registry import normalize_name, DeviceError
+
+        with pytest.raises(DeviceError) as err:
+            normalize_name("eye at 1.2.3.4 as camera\nadd device face at 5.6.7.8 as face")
+        assert "more than one command" in str(err.value)
+
+    def test_a_genuinely_bad_name_still_says_so(self):
+        """The new branch must not swallow the case it was added beside."""
+        from iris.app.tools.devices.registry import normalize_name, DeviceError
+
+        with pytest.raises(DeviceError) as err:
+            normalize_name("robot!!!")
+        assert "not a valid device name" in str(err.value)
+
+    def test_ordinary_names_are_untouched(self):
+        from iris.app.tools.devices.registry import normalize_name
+
+        assert normalize_name("  Room  Sensor ") == "room sensor"
+        assert normalize_name("robot-eye_2") == "robot-eye_2"

@@ -55,14 +55,33 @@ class DeviceError(ValueError):
     """Raised for invalid device definitions or lookups."""
 
 
+#: The opening of a second registration, left inside a name because the whole
+#: paste arrived as one message.
+_ANOTHER_COMMAND_RE = re.compile(
+    r"\b(?:add|register|pair|connect)\s+(?:a\s+|new\s+|my\s+)?(?:device|esp32|board|node)\b"
+)
+
+
 def normalize_name(name: str) -> str:
     """Canonical device name: lowercase, single spaces."""
-    cleaned = " ".join(str(name or "").strip().lower().split())
-    if not cleaned or not _NAME_RE.match(cleaned):
+    raw = str(name or "")
+    cleaned = " ".join(raw.strip().lower().split())
+    if cleaned and _NAME_RE.match(cleaned):
+        return cleaned
+
+    # Pasting three registrations at once is the ordinary way to arrive here:
+    # the pattern takes everything after the first name as the name, so the
+    # complaint lands on a "name" the person never typed and sends them
+    # inspecting a word that was fine. Say what actually happened instead.
+    if "\n" in raw.strip() or _ANOTHER_COMMAND_RE.search(cleaned):
         raise DeviceError(
-            f"'{name}' is not a valid device name (letters, digits, spaces, - or _; max 32 chars)."
+            "That reads as more than one command in a single message, so "
+            "everything after the first device name was taken as part of it. "
+            "Send one at a time: add device <name> at <address> as <kind>."
         )
-    return cleaned
+    raise DeviceError(
+        f"'{name}' is not a valid device name (letters, digits, spaces, - or _; max 32 chars)."
+    )
 
 
 def normalize_base_url(address: str) -> str:
